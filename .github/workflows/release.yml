@@ -47,7 +47,7 @@ jobs:
         run: python -m pytest tests/ -v
 
   publish:
-    if: never()
+    if: false  # Disabled until PyPI publishing is configured
     needs: [build, test]
     runs-on: ubuntu-latest
     environment: pypi
