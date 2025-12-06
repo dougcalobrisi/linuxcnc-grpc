@@ -46,18 +46,6 @@ jobs:
         run: |
           python -m pytest tests/ -v --tb=short
 
-      - name: Run tests with coverage (Python 3.12 only)
-        if: matrix.python-version == '3.12'
-        run: |
-          python -m pytest tests/ -v --cov=src/linuxcnc_grpc_server --cov-report=xml
-
-      - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
-
   build:
     runs-on: ubuntu-latest
     steps:
