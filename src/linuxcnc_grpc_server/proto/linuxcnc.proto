@@ -1,0 +1,655 @@
+syntax = "proto3";
+
+package linuxcnc;
+
+option go_package = "linuxcnc/pb";
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+// Interpreter state
+enum InterpState {
+  INTERP_STATE_UNSPECIFIED = 0;
+  INTERP_IDLE = 1;
+  INTERP_READING = 2;
+  INTERP_PAUSED = 3;
+  INTERP_WAITING = 4;
+}
+
+// Task mode
+enum TaskMode {
+  TASK_MODE_UNSPECIFIED = 0;
+  MODE_MANUAL = 1;
+  MODE_AUTO = 2;
+  MODE_MDI = 3;
+}
+
+// Task state
+enum TaskState {
+  TASK_STATE_UNSPECIFIED = 0;
+  STATE_ESTOP = 1;
+  STATE_ESTOP_RESET = 2;
+  STATE_ON = 3;
+  STATE_OFF = 4;
+}
+
+// Execution state
+enum ExecState {
+  EXEC_STATE_UNSPECIFIED = 0;
+  EXEC_ERROR = 1;
+  EXEC_DONE = 2;
+  EXEC_WAITING_FOR_MOTION = 3;
+  EXEC_WAITING_FOR_MOTION_QUEUE = 4;
+  EXEC_WAITING_FOR_IO = 5;
+  EXEC_WAITING_FOR_MOTION_AND_IO = 6;
+  EXEC_WAITING_FOR_DELAY = 7;
+  EXEC_WAITING_FOR_SYSTEM_CMD = 8;
+  EXEC_WAITING_FOR_SPINDLE_ORIENTED = 9;
+}
+
+// RCS status
+enum RcsStatus {
+  RCS_STATUS_UNSPECIFIED = 0;
+  RCS_DONE = 1;
+  RCS_EXEC = 2;
+  RCS_ERROR = 3;
+}
+
+// Trajectory mode
+enum TrajMode {
+  TRAJ_MODE_UNSPECIFIED = 0;
+  TRAJ_MODE_FREE = 1;
+  TRAJ_MODE_COORD = 2;
+  TRAJ_MODE_TELEOP = 3;
+}
+
+// Motion type
+enum MotionType {
+  MOTION_TYPE_NONE = 0;
+  MOTION_TYPE_TRAVERSE = 1;
+  MOTION_TYPE_FEED = 2;
+  MOTION_TYPE_ARC = 3;
+  MOTION_TYPE_TOOLCHANGE = 4;
+  MOTION_TYPE_PROBING = 5;
+  MOTION_TYPE_INDEXROTARY = 6;
+}
+
+// Kinematics type
+enum KinematicsType {
+  KINEMATICS_UNSPECIFIED = 0;
+  KINEMATICS_IDENTITY = 1;
+  KINEMATICS_FORWARD_ONLY = 2;
+  KINEMATICS_INVERSE_ONLY = 3;
+  KINEMATICS_BOTH = 4;
+}
+
+// Joint type
+enum JointType {
+  JOINT_TYPE_UNSPECIFIED = 0;
+  JOINT_LINEAR = 1;
+  JOINT_ANGULAR = 2;
+}
+
+// Spindle direction
+enum SpindleDirection {
+  SPINDLE_STOPPED = 0;
+  SPINDLE_FORWARD = 1;
+  SPINDLE_REVERSE = -1;
+}
+
+// Spindle command
+enum SpindleCommand {
+  SPINDLE_CMD_OFF = 0;
+  SPINDLE_CMD_FORWARD = 1;
+  SPINDLE_CMD_REVERSE = 2;
+  SPINDLE_CMD_INCREASE = 3;
+  SPINDLE_CMD_DECREASE = 4;
+  SPINDLE_CMD_CONSTANT = 5;
+}
+
+// Coolant state
+enum CoolantState {
+  COOLANT_OFF = 0;
+  COOLANT_ON = 1;
+}
+
+// Brake state
+enum BrakeState {
+  BRAKE_RELEASE = 0;
+  BRAKE_ENGAGE = 1;
+}
+
+// Jog type
+enum JogType {
+  JOG_STOP = 0;
+  JOG_CONTINUOUS = 1;
+  JOG_INCREMENT = 2;
+}
+
+// Auto command type
+enum AutoCommandType {
+  AUTO_RUN = 0;
+  AUTO_PAUSE = 1;
+  AUTO_RESUME = 2;
+  AUTO_STEP = 3;
+  AUTO_REVERSE = 4;
+  AUTO_FORWARD = 5;
+}
+
+// ============================================================================
+// POSITION AND OFFSET TYPES
+// ============================================================================
+
+// 9-axis position (X, Y, Z, A, B, C, U, V, W)
+message Position {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double a = 4;
+  double b = 5;
+  double c = 6;
+  double u = 7;
+  double v = 8;
+  double w = 9;
+}
+
+// ============================================================================
+// STATUS MESSAGES
+// ============================================================================
+
+// Task status information
+message TaskStatus {
+  int32 echo_serial_number = 1;
+  RcsStatus state = 2;
+  TaskMode task_mode = 3;
+  TaskState task_state = 4;
+  ExecState exec_state = 5;
+  InterpState interp_state = 6;
+  int32 call_level = 7;
+  int32 read_line = 8;
+  int32 motion_line = 9;
+  int32 current_line = 10;
+  string file = 11;
+  string command = 12;
+  int32 program_units = 13;  // 1=inch, 2=mm, 3=cm
+  int32 interpreter_errcode = 14;
+  bool optional_stop = 15;
+  bool block_delete = 16;
+  int32 task_paused = 17;
+  bool input_timeout = 18;
+  double rotation_xy = 19;
+  string ini_filename = 20;
+  double delay_left = 21;
+  int32 queued_mdi_commands = 22;
+}
+
+// Trajectory status information
+message TrajectoryStatus {
+  double linear_units = 1;
+  double angular_units = 2;
+  double cycle_time = 3;
+  int32 joints = 4;
+  int32 spindles = 5;
+  int32 axis_mask = 6;
+  TrajMode motion_mode = 7;
+  bool enabled = 8;
+  bool inpos = 9;
+  int32 queue = 10;
+  int32 active_queue = 11;
+  bool queue_full = 12;
+  int32 motion_id = 13;
+  bool paused = 14;
+  double feedrate = 15;      // Feed override scale (0.0-1.0+)
+  double rapidrate = 16;     // Rapid override scale (0.0-1.0)
+  double velocity = 17;
+  double acceleration = 18;
+  double max_velocity = 19;
+  double max_acceleration = 20;
+  bool probe_tripped = 21;
+  bool probing = 22;
+  int32 probe_val = 23;
+  KinematicsType kinematics_type = 24;
+  MotionType motion_type = 25;
+  double distance_to_go = 26;
+  double current_vel = 27;
+  bool feed_override_enabled = 28;
+  bool adaptive_feed_enabled = 29;
+  bool feed_hold_enabled = 30;
+  int32 num_extrajoints = 31;
+}
+
+// Position status
+message PositionStatus {
+  Position position = 1;            // Commanded position
+  Position actual_position = 2;     // Actual/feedback position
+  Position probed_position = 3;     // Position where probe tripped
+  Position dtg = 4;                 // Distance to go
+  Position g5x_offset = 5;          // Current work offset (G54-G59.3)
+  Position g92_offset = 6;          // G92 offset
+  Position tool_offset = 7;         // Current tool offset
+  int32 g5x_index = 8;              // Work coordinate system (1=G54, 2=G55, ...)
+}
+
+// Joint status
+message JointStatus {
+  int32 joint_number = 1;
+  JointType joint_type = 2;
+  double units = 3;
+  double backlash = 4;
+  double min_position_limit = 5;
+  double max_position_limit = 6;
+  double max_ferror = 7;
+  double min_ferror = 8;
+  double ferror_current = 9;
+  double ferror_highmark = 10;
+  double output = 11;              // Commanded position
+  double input = 12;               // Feedback position
+  double velocity = 13;
+  bool inpos = 14;
+  bool homing = 15;
+  bool homed = 16;
+  bool fault = 17;
+  bool enabled = 18;
+  bool min_soft_limit = 19;
+  bool max_soft_limit = 20;
+  bool min_hard_limit = 21;
+  bool max_hard_limit = 22;
+  bool override_limits = 23;
+}
+
+// Axis status
+message AxisStatus {
+  int32 axis_number = 1;           // 0=X, 1=Y, 2=Z, 3=A, 4=B, 5=C, 6=U, 7=V, 8=W
+  double velocity = 2;
+  double min_position_limit = 3;
+  double max_position_limit = 4;
+}
+
+// Spindle status
+message SpindleStatus {
+  int32 spindle_number = 1;
+  bool brake = 2;
+  int32 direction = 3;             // -1=reverse, 0=stopped, 1=forward
+  bool enabled = 4;
+  bool override_enabled = 5;
+  double speed = 6;                // Commanded speed (RPM)
+  double override = 7;             // Override scale
+  bool homed = 8;
+  int32 orient_state = 9;
+  int32 orient_fault = 10;
+}
+
+// Tool entry in tool table
+message ToolEntry {
+  int32 id = 1;                    // Tool number
+  double x_offset = 2;
+  double y_offset = 3;
+  double z_offset = 4;
+  double a_offset = 5;
+  double b_offset = 6;
+  double c_offset = 7;
+  double u_offset = 8;
+  double v_offset = 9;
+  double w_offset = 10;
+  double diameter = 11;
+  double front_angle = 12;
+  double back_angle = 13;
+  int32 orientation = 14;
+  string comment = 15;
+}
+
+// Tool status
+message ToolStatus {
+  int32 pocket_prepped = 1;        // Pocket index prepped for change (-1 if none)
+  int32 tool_in_spindle = 2;       // Tool number in spindle (0 if none)
+  int32 tool_from_pocket = 3;      // Pocket of current tool (0 if none)
+  repeated ToolEntry tool_table = 4;
+}
+
+// I/O status
+message IOStatus {
+  bool estop = 1;
+  CoolantState mist = 2;
+  CoolantState flood = 3;
+  repeated double analog_inputs = 4;   // 64 analog inputs
+  repeated double analog_outputs = 5;  // 64 analog outputs
+  repeated bool digital_inputs = 6;    // 64 digital inputs
+  repeated bool digital_outputs = 7;   // 64 digital outputs
+}
+
+// G-code and M-code status
+message GCodeStatus {
+  repeated int32 active_gcodes = 1;     // Active G-codes (multiplied by 10)
+  repeated int32 active_mcodes = 2;     // Active M-codes
+  double sequence_number = 3;
+  double feed_rate = 4;
+  double spindle_speed = 5;
+  double g64_p_tolerance = 6;
+  double g64_q_tolerance = 7;
+}
+
+// Limit status for a joint (bitmask: 1=min_hard, 2=max_hard, 4=min_soft, 8=max_soft)
+message LimitStatus {
+  repeated int32 limit_flags = 1;       // One per joint
+  repeated bool homed = 2;              // Homed status per joint
+  repeated int32 misc_error = 3;        // Misc error codes
+}
+
+// Error/message from error channel
+message ErrorMessage {
+  enum ErrorType {
+    ERROR_TYPE_UNSPECIFIED = 0;
+    OPERATOR_ERROR = 1;
+    OPERATOR_TEXT = 2;
+    OPERATOR_DISPLAY = 3;
+    NML_ERROR = 4;
+    NML_TEXT = 5;
+    NML_DISPLAY = 6;
+  }
+  ErrorType type = 1;
+  string message = 2;
+  int64 timestamp = 3;                  // Unix timestamp in nanoseconds
+}
+
+// ============================================================================
+// MAIN STATUS MESSAGE - Returned on poll()
+// ============================================================================
+
+message LinuxCNCStatus {
+  // Metadata
+  int64 timestamp = 1;                  // Unix timestamp in nanoseconds
+  string version = 2;                   // LinuxCNC version
+  int32 debug = 3;                      // Debug flags
+
+  // Status sections
+  TaskStatus task = 10;
+  TrajectoryStatus trajectory = 11;
+  PositionStatus position = 12;
+  repeated JointStatus joints = 13;     // Up to 16 joints
+  repeated AxisStatus axes = 14;        // Up to 9 axes (XYZABCUVW)
+  repeated SpindleStatus spindles = 15; // Up to 8 spindles
+  ToolStatus tool = 16;
+  IOStatus io = 17;
+  GCodeStatus gcode = 18;
+  LimitStatus limits = 19;
+
+  // Errors (if any)
+  repeated ErrorMessage errors = 20;
+}
+
+// ============================================================================
+// COMMAND MESSAGES
+// ============================================================================
+
+// Set machine state (estop, on, off)
+message StateCommand {
+  TaskState state = 1;
+}
+
+// Set task mode (manual, auto, mdi)
+message ModeCommand {
+  TaskMode mode = 1;
+}
+
+// Execute MDI command
+message MdiCommand {
+  string command = 1;
+}
+
+// Jog command
+message JogCommand {
+  JogType type = 1;
+  bool is_joint = 2;                    // True for joint, false for axis
+  int32 index = 3;                      // Joint or axis number
+  double velocity = 4;                  // Jog velocity
+  double increment = 5;                 // For JOG_INCREMENT only
+}
+
+// Home command
+message HomeCommand {
+  int32 joint = 1;                      // Joint number, or -1 for all
+}
+
+// Unhome command
+message UnhomeCommand {
+  int32 joint = 1;
+}
+
+// Spindle command
+message SpindleCmd {
+  SpindleCommand command = 1;
+  double speed = 2;                     // For FORWARD/REVERSE
+  int32 spindle = 3;                    // Spindle number (default 0)
+  bool wait_for_at_speed = 4;           // Wait for spindle to reach speed
+}
+
+// Spindle override command
+message SpindleOverrideCommand {
+  double scale = 1;                     // Override scale
+  int32 spindle = 2;                    // Spindle number
+}
+
+// Brake command
+message BrakeCommand {
+  BrakeState state = 1;
+  int32 spindle = 2;
+}
+
+// Feed rate override command
+message FeedrateCommand {
+  double scale = 1;                     // Feed rate scale (0.0-2.0+)
+}
+
+// Rapid rate override command
+message RapidrateCommand {
+  double scale = 1;                     // Rapid rate scale (0.0-1.0)
+}
+
+// Maximum velocity command
+message MaxVelCommand {
+  double velocity = 1;
+}
+
+// Coolant command
+message CoolantCommand {
+  bool mist = 1;
+  bool flood = 2;
+}
+
+// Tool offset command
+message ToolOffsetCommand {
+  int32 tool_number = 1;
+  double z_offset = 2;
+  double x_offset = 3;
+  double diameter = 4;
+  double front_angle = 5;
+  double back_angle = 6;
+  int32 orientation = 7;
+}
+
+// Program control commands
+message ProgramCommand {
+  oneof command {
+    string open = 1;                    // Open program file
+    int32 run_from_line = 2;            // Run from line number
+    bool pause = 3;                     // Pause program
+    bool resume = 4;                    // Resume program
+    bool step = 5;                      // Single step
+    bool abort = 6;                     // Abort program
+  }
+}
+
+// Auto mode command
+message AutoCommand {
+  AutoCommandType command = 1;
+  int32 line = 2;                       // For AUTO_RUN, starting line
+}
+
+// Set digital output
+message DigitalOutputCommand {
+  int32 index = 1;
+  bool value = 2;
+}
+
+// Set analog output
+message AnalogOutputCommand {
+  int32 index = 1;
+  double value = 2;
+}
+
+// Set joint limits
+message SetLimitCommand {
+  int32 joint = 1;
+  double min_limit = 2;
+  double max_limit = 3;
+}
+
+// Override configuration
+message OverrideConfigCommand {
+  bool feed_override_enable = 1;
+  bool spindle_override_enable = 2;
+  int32 spindle = 3;                    // For spindle override
+  bool feed_hold_enable = 4;
+  bool adaptive_feed_enable = 5;
+}
+
+// Optional stop and block delete
+message ProgramOptionsCommand {
+  bool optional_stop = 1;
+  bool block_delete = 2;
+}
+
+// Teleop enable
+message TeleopCommand {
+  bool enable = 1;
+}
+
+// Trajectory mode
+message TrajModeCommand {
+  TrajMode mode = 1;
+}
+
+// Override limits (for recovery from limit switches)
+message OverrideLimitsCommand {
+  // No parameters - affects all joints
+}
+
+// Reset interpreter
+message ResetInterpreterCommand {
+  // No parameters
+}
+
+// Load tool table
+message LoadToolTableCommand {
+  // No parameters - reloads from INI file
+}
+
+// Task plan sync
+message TaskPlanSyncCommand {
+  // No parameters
+}
+
+// Debug level
+message DebugCommand {
+  int32 level = 1;
+}
+
+// Operator messages
+message OperatorMessageCommand {
+  enum MessageType {
+    ERROR = 0;
+    TEXT = 1;
+    DISPLAY = 2;
+  }
+  MessageType type = 1;
+  string message = 2;
+}
+
+// ============================================================================
+// UNIFIED COMMAND MESSAGE
+// ============================================================================
+
+message LinuxCNCCommand {
+  int64 timestamp = 1;                  // Command timestamp
+  int32 serial = 2;                     // Command serial number
+
+  oneof command {
+    StateCommand state = 10;
+    ModeCommand mode = 11;
+    MdiCommand mdi = 12;
+    JogCommand jog = 13;
+    HomeCommand home = 14;
+    UnhomeCommand unhome = 15;
+    SpindleCmd spindle = 16;
+    SpindleOverrideCommand spindle_override = 17;
+    BrakeCommand brake = 18;
+    FeedrateCommand feedrate = 19;
+    RapidrateCommand rapidrate = 20;
+    MaxVelCommand maxvel = 21;
+    CoolantCommand coolant = 22;
+    ToolOffsetCommand tool_offset = 23;
+    ProgramCommand program = 24;
+    DigitalOutputCommand digital_output = 25;
+    AnalogOutputCommand analog_output = 26;
+    SetLimitCommand set_limit = 27;
+    OverrideConfigCommand override_config = 28;
+    ProgramOptionsCommand program_options = 29;
+    TeleopCommand teleop = 30;
+    TrajModeCommand traj_mode = 31;
+    OverrideLimitsCommand override_limits = 32;
+    ResetInterpreterCommand reset_interpreter = 33;
+    LoadToolTableCommand load_tool_table = 34;
+    TaskPlanSyncCommand task_plan_sync = 35;
+    DebugCommand debug = 36;
+    OperatorMessageCommand operator_message = 37;
+  }
+}
+
+// ============================================================================
+// COMMAND RESPONSE
+// ============================================================================
+
+message CommandResponse {
+  int32 serial = 1;                     // Echo of command serial
+  RcsStatus status = 2;                 // Command status
+  string error_message = 3;             // Error message if status is RCS_ERROR
+}
+
+// ============================================================================
+// SERVICE DEFINITIONS (for gRPC if needed)
+// ============================================================================
+
+service LinuxCNCService {
+  // Get current status (poll equivalent)
+  rpc GetStatus(GetStatusRequest) returns (LinuxCNCStatus);
+
+  // Send a command
+  rpc SendCommand(LinuxCNCCommand) returns (CommandResponse);
+
+  // Wait for command completion
+  rpc WaitComplete(WaitCompleteRequest) returns (CommandResponse);
+
+  // Stream status updates
+  rpc StreamStatus(StreamStatusRequest) returns (stream LinuxCNCStatus);
+
+  // Stream errors
+  rpc StreamErrors(StreamErrorsRequest) returns (stream ErrorMessage);
+}
+
+message GetStatusRequest {
+  // Empty - returns full status
+}
+
+message WaitCompleteRequest {
+  int32 serial = 1;                     // Command serial to wait for
+  double timeout = 2;                   // Timeout in seconds
+}
+
+message StreamStatusRequest {
+  double interval = 1;                  // Update interval in seconds
+}
+
+message StreamErrorsRequest {
+  // Empty - streams all errors
+}

@@ -1,0 +1,422 @@
+syntax = "proto3";
+
+package hal;
+
+option go_package = "linuxcnc/pb/hal";
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+// HAL data types
+enum HalType {
+  HAL_TYPE_UNSPECIFIED = 0;
+  HAL_BIT = 1;              // Boolean
+  HAL_FLOAT = 2;            // Double precision float
+  HAL_S32 = 3;              // Signed 32-bit integer
+  HAL_U32 = 4;              // Unsigned 32-bit integer
+  HAL_S64 = 5;              // Signed 64-bit integer
+  HAL_U64 = 6;              // Unsigned 64-bit integer
+  HAL_PORT = 7;             // Port type (advanced)
+}
+
+// Pin direction (from component's perspective)
+enum PinDirection {
+  PIN_DIR_UNSPECIFIED = 0;
+  HAL_IN = 1;               // Input (component reads)
+  HAL_OUT = 2;              // Output (component writes)
+  HAL_IO = 3;               // Bidirectional
+}
+
+// Parameter access mode
+enum ParamDirection {
+  PARAM_DIR_UNSPECIFIED = 0;
+  HAL_RO = 1;               // Read-only
+  HAL_RW = 2;               // Read-write
+}
+
+// Message level for RTAPI
+enum MessageLevel {
+  MSG_LEVEL_UNSPECIFIED = 0;
+  MSG_NONE = 1;             // No messages
+  MSG_ERR = 2;              // Errors only
+  MSG_WARN = 3;             // Warnings and errors
+  MSG_INFO = 4;             // Info, warnings, errors
+  MSG_DBG = 5;              // Debug and above
+  MSG_ALL = 6;              // All messages
+}
+
+// ============================================================================
+// VALUE TYPES
+// ============================================================================
+
+// Universal HAL value (can hold any HAL type)
+message HalValue {
+  oneof value {
+    bool bit_value = 1;
+    double float_value = 2;
+    int32 s32_value = 3;
+    uint32 u32_value = 4;
+    int64 s64_value = 5;
+    uint64 u64_value = 6;
+  }
+}
+
+// ============================================================================
+// STATUS MESSAGES
+// ============================================================================
+
+// Information about a HAL pin
+message HalPinInfo {
+  string name = 1;              // Full pin name (component.pin)
+  string short_name = 2;        // Pin name without component prefix
+  string component = 3;         // Parent component name
+  HalType type = 4;             // Data type
+  PinDirection direction = 5;   // Pin direction
+  HalValue value = 6;           // Current value
+  string signal = 7;            // Connected signal name (empty if none)
+  bool has_writer = 8;          // True if pin has a writer
+}
+
+// Information about a HAL signal
+message HalSignalInfo {
+  string name = 1;              // Signal name
+  HalType type = 2;             // Data type
+  HalValue value = 3;           // Current value
+  string driver = 4;            // Driving pin name (empty if none)
+  repeated string readers = 5;  // List of reading pin names
+  int32 reader_count = 6;       // Number of readers
+}
+
+// Information about a HAL parameter
+message HalParamInfo {
+  string name = 1;              // Full param name (component.param)
+  string short_name = 2;        // Param name without component prefix
+  string component = 3;         // Parent component name
+  HalType type = 4;             // Data type
+  ParamDirection direction = 5; // Access mode (RO/RW)
+  HalValue value = 6;           // Current value
+}
+
+// Information about a HAL component
+message HalComponentInfo {
+  string name = 1;              // Component name
+  int32 id = 2;                 // Component ID
+  bool ready = 3;               // True if component is ready
+  int32 type = 4;               // Component type (RT, user, etc)
+  int32 pid = 5;                // Process ID (for userspace components)
+  repeated string pins = 6;     // List of pin names
+  repeated string params = 7;   // List of parameter names
+}
+
+// Complete HAL system status
+message HalSystemStatus {
+  int64 timestamp = 1;                          // Unix timestamp in nanoseconds
+  repeated HalPinInfo pins = 2;                 // All pins
+  repeated HalSignalInfo signals = 3;           // All signals
+  repeated HalParamInfo params = 4;             // All parameters
+  repeated HalComponentInfo components = 5;     // All components
+  MessageLevel message_level = 6;               // Current message level
+  bool is_sim = 7;                              // Running in simulation
+  bool is_rt = 8;                               // Running real-time
+  bool is_userspace = 9;                        // Userspace HAL
+  string kernel_version = 10;                   // Kernel version
+}
+
+// ============================================================================
+// COMMAND MESSAGES
+// ============================================================================
+
+// Create a new HAL component
+message CreateComponentCommand {
+  string name = 1;              // Component name
+  string prefix = 2;            // Optional prefix for pins/params
+}
+
+// Create a new pin
+message CreatePinCommand {
+  string component = 1;         // Parent component name
+  string name = 2;              // Pin name
+  HalType type = 3;             // Data type
+  PinDirection direction = 4;   // Pin direction
+  HalValue initial_value = 5;   // Optional initial value
+}
+
+// Create a new parameter
+message CreateParamCommand {
+  string component = 1;         // Parent component name
+  string name = 2;              // Parameter name
+  HalType type = 3;             // Data type
+  ParamDirection direction = 4; // Access mode
+  HalValue initial_value = 5;   // Optional initial value
+}
+
+// Set pin value
+message SetPinValueCommand {
+  string name = 1;              // Full pin name (component.pin)
+  HalValue value = 2;           // Value to set
+}
+
+// Set parameter value
+message SetParamValueCommand {
+  string name = 1;              // Full param name (component.param)
+  HalValue value = 2;           // Value to set
+}
+
+// Create a new signal
+message CreateSignalCommand {
+  string name = 1;              // Signal name
+  HalType type = 2;             // Data type
+}
+
+// Set signal value
+message SetSignalValueCommand {
+  string name = 1;              // Signal name
+  HalValue value = 2;           // Value to set
+}
+
+// Connect pin to signal
+message ConnectCommand {
+  string pin = 1;               // Full pin name (component.pin)
+  string signal = 2;            // Signal name
+}
+
+// Disconnect pin from signal
+message DisconnectCommand {
+  string pin = 1;               // Full pin name (component.pin)
+}
+
+// Mark component ready
+message ReadyCommand {
+  string component = 1;         // Component name
+}
+
+// Mark component not ready
+message UnreadyCommand {
+  string component = 1;         // Component name
+}
+
+// Exit/destroy component
+message ExitComponentCommand {
+  string component = 1;         // Component name
+}
+
+// Delete a signal
+message DeleteSignalCommand {
+  string name = 1;              // Signal name
+}
+
+// Set message level
+message SetMessageLevelCommand {
+  MessageLevel level = 1;       // New message level
+}
+
+// Get value of any pin, param, or signal
+message GetValueCommand {
+  string name = 1;              // Full name of pin, param, or signal
+}
+
+// Query pins matching a pattern
+message QueryPinsCommand {
+  string pattern = 1;           // Glob pattern (e.g., "axis.*" or "*speed*")
+}
+
+// Query signals matching a pattern
+message QuerySignalsCommand {
+  string pattern = 1;           // Glob pattern
+}
+
+// Query params matching a pattern
+message QueryParamsCommand {
+  string pattern = 1;           // Glob pattern
+}
+
+// Query components matching a pattern
+message QueryComponentsCommand {
+  string pattern = 1;           // Glob pattern
+}
+
+// Check if component exists
+message ComponentExistsCommand {
+  string name = 1;              // Component name
+}
+
+// Check if component is ready
+message ComponentReadyCommand {
+  string name = 1;              // Component name
+}
+
+// Check if pin has a writer
+message PinHasWriterCommand {
+  string name = 1;              // Full pin name
+}
+
+// ============================================================================
+// UNIFIED COMMAND MESSAGE
+// ============================================================================
+
+message HalCommand {
+  int64 timestamp = 1;          // Command timestamp
+  int32 serial = 2;             // Command serial number
+
+  oneof command {
+    // Component commands
+    CreateComponentCommand create_component = 10;
+    ReadyCommand ready = 11;
+    UnreadyCommand unready = 12;
+    ExitComponentCommand exit_component = 13;
+
+    // Pin commands
+    CreatePinCommand create_pin = 20;
+    SetPinValueCommand set_pin = 21;
+
+    // Parameter commands
+    CreateParamCommand create_param = 30;
+    SetParamValueCommand set_param = 31;
+
+    // Signal commands
+    CreateSignalCommand create_signal = 40;
+    SetSignalValueCommand set_signal = 41;
+    DeleteSignalCommand delete_signal = 42;
+
+    // Connection commands
+    ConnectCommand connect = 50;
+    DisconnectCommand disconnect = 51;
+
+    // Query commands
+    GetValueCommand get_value = 60;
+    QueryPinsCommand query_pins = 61;
+    QuerySignalsCommand query_signals = 62;
+    QueryParamsCommand query_params = 63;
+    QueryComponentsCommand query_components = 64;
+    ComponentExistsCommand component_exists = 65;
+    ComponentReadyCommand component_ready = 66;
+    PinHasWriterCommand pin_has_writer = 67;
+
+    // System commands
+    SetMessageLevelCommand set_message_level = 70;
+  }
+}
+
+// ============================================================================
+// RESPONSE MESSAGES
+// ============================================================================
+
+// Generic command response
+message HalCommandResponse {
+  int32 serial = 1;             // Echo of command serial
+  bool success = 2;             // True if command succeeded
+  string error = 3;             // Error message if failed
+}
+
+// Response for get_value command
+message GetValueResponse {
+  int32 serial = 1;
+  bool success = 2;
+  string error = 3;
+  HalValue value = 4;           // The requested value
+  HalType type = 5;             // Type of the value
+}
+
+// Response for component_exists/component_ready/pin_has_writer
+message BoolResponse {
+  int32 serial = 1;
+  bool success = 2;
+  string error = 3;
+  bool result = 4;              // The boolean result
+}
+
+// Response for query commands
+message QueryPinsResponse {
+  int32 serial = 1;
+  bool success = 2;
+  string error = 3;
+  repeated HalPinInfo pins = 4;
+}
+
+message QuerySignalsResponse {
+  int32 serial = 1;
+  bool success = 2;
+  string error = 3;
+  repeated HalSignalInfo signals = 4;
+}
+
+message QueryParamsResponse {
+  int32 serial = 1;
+  bool success = 2;
+  string error = 3;
+  repeated HalParamInfo params = 4;
+}
+
+message QueryComponentsResponse {
+  int32 serial = 1;
+  bool success = 2;
+  string error = 3;
+  repeated HalComponentInfo components = 4;
+}
+
+// ============================================================================
+// WATCH/SUBSCRIBE MESSAGES
+// ============================================================================
+
+// Subscribe to value changes
+message WatchRequest {
+  repeated string names = 1;    // Pin/signal/param names to watch
+  double interval = 2;          // Minimum update interval (seconds)
+}
+
+// Value change notification
+message ValueChange {
+  int64 timestamp = 1;          // When the change was detected
+  string name = 2;              // Name of pin/signal/param
+  HalValue old_value = 3;       // Previous value
+  HalValue new_value = 4;       // New value
+}
+
+// Batch of value changes
+message ValueChangeBatch {
+  int64 timestamp = 1;
+  repeated ValueChange changes = 2;
+}
+
+// ============================================================================
+// SERVICE DEFINITIONS (for gRPC if needed)
+// ============================================================================
+
+service HalService {
+  // Get complete HAL system status
+  rpc GetSystemStatus(GetSystemStatusRequest) returns (HalSystemStatus);
+
+  // Send a command
+  rpc SendCommand(HalCommand) returns (HalCommandResponse);
+
+  // Get a single value
+  rpc GetValue(GetValueCommand) returns (GetValueResponse);
+
+  // Query pins
+  rpc QueryPins(QueryPinsCommand) returns (QueryPinsResponse);
+
+  // Query signals
+  rpc QuerySignals(QuerySignalsCommand) returns (QuerySignalsResponse);
+
+  // Query parameters
+  rpc QueryParams(QueryParamsCommand) returns (QueryParamsResponse);
+
+  // Query components
+  rpc QueryComponents(QueryComponentsCommand) returns (QueryComponentsResponse);
+
+  // Stream system status updates
+  rpc StreamStatus(StreamStatusRequest) returns (stream HalSystemStatus);
+
+  // Watch for value changes
+  rpc WatchValues(WatchRequest) returns (stream ValueChangeBatch);
+}
+
+message GetSystemStatusRequest {
+  // Empty - returns complete status
+}
+
+message StreamStatusRequest {
+  double interval = 1;          // Update interval in seconds
+  repeated string filter = 2;   // Optional: only include these components
+}
