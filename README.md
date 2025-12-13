@@ -69,6 +69,45 @@ make lint          # Check Python syntax
 
 Tests use mocked `linuxcnc` and `hal` modules, so no LinuxCNC installation or hardware is required to run them.
 
+## Generating Client Code
+
+Proto/gRPC stubs for Python are pre-generated and included in the package. To regenerate or generate stubs for other languages:
+
+```bash
+make proto         # Python only (default)
+make proto-go      # Python + Go
+make proto-rust    # Python + Rust
+make proto-node    # Python + Node.js/TypeScript
+make proto-all     # All languages
+```
+
+### Language Prerequisites
+
+**Go:**
+```bash
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+```
+
+**Rust:**
+```bash
+cargo install protoc-gen-prost protoc-gen-tonic
+```
+
+**Node.js/TypeScript:**
+```bash
+npm install ts-proto
+```
+
+### Output Locations
+
+| Language | Path | VCS |
+|----------|------|-----|
+| Python | `src/linuxcnc_grpc_server/_generated/` | Committed |
+| Go | `gen/go/` | Gitignored |
+| Rust | `gen/rust/` | Gitignored |
+| Node.js | `gen/node/` | Gitignored |
+
 ## Safety Warning
 
 This server provides remote control of CNC machinery. Ensure proper safety measures:
