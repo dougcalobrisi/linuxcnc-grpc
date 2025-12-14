@@ -18,7 +18,7 @@ Direct proto access:
     from linuxcnc_pb import linuxcnc_pb2, hal_pb2
 """
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 
 # =============================================================================
 # RE-EXPORT ALL PROTOBUF TYPES FROM linuxcnc_pb

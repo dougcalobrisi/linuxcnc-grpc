@@ -21,7 +21,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.24"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -158,7 +158,7 @@ jobs:
 
   # Go tests
   test-go:
-    name: test-go (1.22)
+    name: test-go (1.24)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -166,7 +166,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.24"
 
       - name: Set up Python (for mock server)
         uses: actions/setup-python@v5
@@ -209,7 +209,7 @@ jobs:
   # Integration tests - run examples against mock server
   test-examples:
     runs-on: ubuntu-latest
-    needs: [test-python]
+    needs: [proto-check, test-python, test-node, test-rust, test-go]
     steps:
       - uses: actions/checkout@v4
 
@@ -221,7 +221,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.24"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

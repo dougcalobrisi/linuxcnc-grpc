@@ -144,6 +144,24 @@ This server provides remote control of CNC machinery. Ensure proper safety measu
 - Never leave machines unattended during remote operation
 - Verify E-stop and safety systems are functional
 
+## Production Deployment
+
+For production use, enable TLS authentication:
+
+```python
+# Server with TLS
+credentials = grpc.ssl_server_credentials([(private_key, certificate)])
+server.add_secure_port('[::]:50051', credentials)
+```
+
+```python
+# Client with TLS
+credentials = grpc.ssl_channel_credentials(root_certificates)
+channel = grpc.secure_channel('your-machine:50051', credentials)
+```
+
+See [Server Configuration](docs/server.md#security-considerations) for complete TLS setup instructions.
+
 ## Development
 
 ```bash
