@@ -20,6 +20,8 @@ tonic-build = "0.12"
 [dev-dependencies]
 serde_json = "1.0"
 tokio-test = "0.4"
+futures-util = "0.3"
+serial_test = "3.0"
 
 [features]
 default = []

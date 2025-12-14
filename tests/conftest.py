@@ -91,6 +91,12 @@ def mock_linuxcnc_module():
     """Mock linuxcnc module with required constants."""
     mock = MagicMock()
 
+    # Version
+    mock.version = "2.9"
+
+    # Error class (must inherit from BaseException for try/except)
+    mock.error = type("LinuxCNCError", (Exception,), {})
+
     # RCS status
     mock.RCS_DONE = 1
     mock.RCS_EXEC = 2

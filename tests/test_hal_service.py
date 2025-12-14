@@ -511,7 +511,7 @@ class TestStreamStatus:
                 from linuxcnc_pb import hal_pb2
 
                 service = HalServiceServicer()
-                request = hal_pb2.HalStreamStatusRequest(interval=0.001)
+                request = hal_pb2.HalStreamStatusRequest(interval_ms=1)
 
                 results = list(service.StreamStatus(request, mock_grpc_context))
 
@@ -519,7 +519,7 @@ class TestStreamStatus:
                 assert all(r.timestamp > 0 for r in results)
 
     def test_uses_default_interval(self, mock_hal_module, mock_grpc_context):
-        """Uses default 0.1s interval when not specified."""
+        """Uses default 100ms interval when not specified."""
         mock_grpc_context.is_active.side_effect = [True, False]
 
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
@@ -528,7 +528,7 @@ class TestStreamStatus:
                 from linuxcnc_pb import hal_pb2
 
                 service = HalServiceServicer()
-                request = hal_pb2.HalStreamStatusRequest(interval=0)
+                request = hal_pb2.HalStreamStatusRequest(interval_ms=0)
 
                 list(service.StreamStatus(request, mock_grpc_context))
 
@@ -544,7 +544,7 @@ class TestStreamStatus:
                 from linuxcnc_pb import hal_pb2
 
                 service = HalServiceServicer()
-                request = hal_pb2.HalStreamStatusRequest(interval=0.5)
+                request = hal_pb2.HalStreamStatusRequest(interval_ms=500)
 
                 list(service.StreamStatus(request, mock_grpc_context))
 
@@ -561,7 +561,7 @@ class TestWatchValues:
             from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
-            request = hal_pb2.WatchRequest(names=[], interval=0.1)
+            request = hal_pb2.WatchRequest(names=[], interval_ms=100)
 
             results = list(service.WatchValues(request, mock_grpc_context))
 
@@ -582,7 +582,7 @@ class TestWatchValues:
                 service = HalServiceServicer()
                 request = hal_pb2.WatchRequest(
                     names=["axis.x.pos-cmd"],
-                    interval=0.001
+                    interval_ms=1
                 )
 
                 results = list(service.WatchValues(request, mock_grpc_context))
@@ -604,7 +604,7 @@ class TestWatchValues:
                 service = HalServiceServicer()
                 request = hal_pb2.WatchRequest(
                     names=["axis.x.pos-cmd"],
-                    interval=0.001
+                    interval_ms=1
                 )
 
                 results = list(service.WatchValues(request, mock_grpc_context))
@@ -625,7 +625,7 @@ class TestWatchValues:
                 service = HalServiceServicer()
                 request = hal_pb2.WatchRequest(
                     names=["axis.x.pos-cmd"],
-                    interval=0
+                    interval_ms=0
                 )
 
                 list(service.WatchValues(request, mock_grpc_context))

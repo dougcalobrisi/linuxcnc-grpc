@@ -27,6 +27,7 @@ import {
   ParamDirection,
   halTypeToJSON,
   pinDirectionToJSON,
+  credentials,
 } from "linuxcnc-grpc";
 
 program
@@ -64,13 +65,20 @@ program
   .description("Get HAL system status")
   .action(() => runCommand("status", ""));
 
+// Declare client before parse() since actions may run synchronously during parse()
+let client: HalServiceClient;
+
 program.parse();
 
-const opts = program.opts();
-const address = `${opts.host}:${opts.port}`;
-const intervalMs = parseInt(opts.interval);
+function getAddress(): string {
+  const opts = program.opts();
+  return `${opts.host}:${opts.port}`;
+}
 
-let client: HalServiceClient;
+function getIntervalMs(): number {
+  const opts = program.opts();
+  return parseInt(opts.interval);
+}
 
 function formatValue(value: HalValue | undefined): string {
   if (!value) return "?";
@@ -246,9 +254,9 @@ function queryComponents(pattern: string): void {
 function watchValues(names: string[]): void {
   const request = WatchRequest.create();
   request.names = names;
-  request.intervalMs = intervalMs;
+  request.intervalMs = getIntervalMs();
 
-  console.log(`Watching ${names.length} values (interval: ${intervalMs}ms)`);
+  console.log(`Watching ${names.length} values (interval: ${getIntervalMs()}ms)`);
   console.log("Press Ctrl+C to stop\n");
 
   const stream = client.watchValues(request);
@@ -304,7 +312,7 @@ function getSystemStatus(): void {
 }
 
 function runCommand(command: string, arg: string | string[]): void {
-  client = new HalServiceClient(address, grpc.credentials.createInsecure());
+  client = new HalServiceClient(getAddress(), credentials.createInsecure());
 
   switch (command) {
     case "pins":

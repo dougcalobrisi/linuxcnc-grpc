@@ -16,8 +16,8 @@ EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 
 
 def get_example_files():
-    """Get all Python files in the examples directory."""
-    return sorted(EXAMPLES_DIR.glob("*.py"))
+    """Get all Python files in the examples/python directory."""
+    return sorted(EXAMPLES_DIR.glob("python/*.py"))
 
 
 @pytest.mark.parametrize("example_file", get_example_files(), ids=lambda p: p.name)
@@ -32,7 +32,7 @@ def test_example_syntax(example_file):
 def test_examples_exist():
     """Verify that example files exist."""
     examples = get_example_files()
-    assert len(examples) > 0, "No example files found in examples/"
+    assert len(examples) > 0, "No example files found in examples/python/"
 
 
 def test_examples_have_docstrings():

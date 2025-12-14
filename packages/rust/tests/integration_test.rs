@@ -18,7 +18,9 @@ use linuxcnc_grpc::hal::{
     QueryParamsCommand, QueryComponentsCommand, GetValueCommand,
     HalStreamStatusRequest, HalType,
 };
-use tokio_stream::StreamExt;
+use tonic::Streaming;
+use futures_util::StreamExt;
+use serial_test::serial;
 
 const MOCK_SERVER_PORT: u16 = 50096;
 
@@ -67,6 +69,7 @@ impl Drop for MockServer {
 // =============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_get_status() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -111,6 +114,7 @@ async fn test_get_status() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_send_command_state() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -120,6 +124,7 @@ async fn test_send_command_state() {
         .expect("Failed to connect");
 
     let command = LinuxCncCommand {
+        timestamp: 0,
         serial: 100,
         command: Some(linuxcnc_grpc::linuxcnc::linux_cnc_command::Command::State(
             StateCommand {
@@ -139,6 +144,7 @@ async fn test_send_command_state() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_send_command_mdi() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -148,6 +154,7 @@ async fn test_send_command_mdi() {
         .expect("Failed to connect");
 
     let command = LinuxCncCommand {
+        timestamp: 0,
         serial: 101,
         command: Some(linuxcnc_grpc::linuxcnc::linux_cnc_command::Command::Mdi(
             MdiCommand {
@@ -167,6 +174,7 @@ async fn test_send_command_mdi() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_send_command_jog() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -176,6 +184,7 @@ async fn test_send_command_jog() {
         .expect("Failed to connect");
 
     let command = LinuxCncCommand {
+        timestamp: 0,
         serial: 102,
         command: Some(linuxcnc_grpc::linuxcnc::linux_cnc_command::Command::Jog(
             JogCommand {
@@ -183,7 +192,7 @@ async fn test_send_command_jog() {
                 is_joint: false,
                 index: 0,
                 velocity: 10.0,
-                distance: 0.0,
+                increment: 0.0,
             },
         )),
     };
@@ -199,6 +208,7 @@ async fn test_send_command_jog() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_wait_complete() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -221,6 +231,7 @@ async fn test_wait_complete() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stream_status() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -229,8 +240,8 @@ async fn test_stream_status() {
         .await
         .expect("Failed to connect");
 
-    let mut stream = client
-        .stream_status(StreamStatusRequest { interval: 0.05 })
+    let mut stream: Streaming<_> = client
+        .stream_status(StreamStatusRequest { interval_ms: 50 })
         .await
         .expect("StreamStatus failed")
         .into_inner();
@@ -256,6 +267,7 @@ async fn test_stream_status() {
 // =============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_hal_get_system_status() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -286,6 +298,7 @@ async fn test_hal_get_system_status() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hal_query_pins() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -297,7 +310,6 @@ async fn test_hal_query_pins() {
     // Query all pins
     let response = client
         .query_pins(QueryPinsCommand {
-            serial: 0,
             pattern: "*".to_string(),
         })
         .await
@@ -310,7 +322,6 @@ async fn test_hal_query_pins() {
     // Query filtered
     let response = client
         .query_pins(QueryPinsCommand {
-            serial: 0,
             pattern: "axis.*".to_string(),
         })
         .await
@@ -323,6 +334,7 @@ async fn test_hal_query_pins() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hal_query_signals() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -333,7 +345,6 @@ async fn test_hal_query_signals() {
 
     let response = client
         .query_signals(QuerySignalsCommand {
-            serial: 0,
             pattern: "*".to_string(),
         })
         .await
@@ -345,6 +356,7 @@ async fn test_hal_query_signals() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hal_query_params() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -355,7 +367,6 @@ async fn test_hal_query_params() {
 
     let response = client
         .query_params(QueryParamsCommand {
-            serial: 0,
             pattern: "*".to_string(),
         })
         .await
@@ -367,6 +378,7 @@ async fn test_hal_query_params() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hal_query_components() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -377,7 +389,6 @@ async fn test_hal_query_components() {
 
     let response = client
         .query_components(QueryComponentsCommand {
-            serial: 0,
             pattern: "*".to_string(),
         })
         .await
@@ -394,6 +405,7 @@ async fn test_hal_query_components() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hal_get_value() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -404,7 +416,6 @@ async fn test_hal_get_value() {
 
     let response = client
         .get_value(GetValueCommand {
-            serial: 0,
             name: "axis.x.pos-cmd".to_string(),
         })
         .await
@@ -413,10 +424,20 @@ async fn test_hal_get_value() {
 
     assert!(resp.success);
     assert_eq!(resp.r#type, HalType::HalFloat as i32);
-    assert_eq!(resp.value.as_ref().unwrap().float_value, 123.456);
+    // Check the float value using the oneof
+    if let Some(value) = resp.value {
+        if let Some(linuxcnc_grpc::hal::hal_value::Value::FloatValue(v)) = value.value {
+            assert_eq!(v, 123.456);
+        } else {
+            panic!("Expected float value");
+        }
+    } else {
+        panic!("Expected value to be present");
+    }
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hal_stream_status() {
     let server = MockServer::start().expect("Failed to start mock server");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -425,9 +446,9 @@ async fn test_hal_stream_status() {
         .await
         .expect("Failed to connect");
 
-    let mut stream = client
+    let mut stream: Streaming<_> = client
         .stream_status(HalStreamStatusRequest {
-            interval: 0.05,
+            interval_ms: 50,
             filter: vec![],
         })
         .await

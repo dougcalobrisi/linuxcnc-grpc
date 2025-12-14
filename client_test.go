@@ -294,7 +294,7 @@ func TestStreamStatus(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	stream, err := client.StreamStatus(ctx, &StreamStatusRequest{Interval: 0.05})
+	stream, err := client.StreamStatus(ctx, &StreamStatusRequest{IntervalMs: 50})
 	if err != nil {
 		t.Fatalf("StreamStatus failed: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestHalStreamStatus(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	stream, err := client.StreamStatus(ctx, &HalStreamStatusRequest{Interval: 0.05})
+	stream, err := client.StreamStatus(ctx, &HalStreamStatusRequest{IntervalMs: 50})
 	if err != nil {
 		t.Fatalf("StreamStatus failed: %v", err)
 	}

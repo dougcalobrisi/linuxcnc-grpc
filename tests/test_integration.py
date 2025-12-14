@@ -191,7 +191,7 @@ class TestLinuxCNCServiceIntegration:
 
     def test_stream_status(self, linuxcnc_client):
         """Test StreamStatus returns multiple updates."""
-        request = linuxcnc_pb2.StreamStatusRequest(interval=0.05)
+        request = linuxcnc_pb2.StreamStatusRequest(interval_ms=50)
         stream = linuxcnc_client.StreamStatus(request)
 
         # Get a few updates
@@ -303,7 +303,7 @@ class TestHalServiceIntegration:
 
     def test_stream_status(self, hal_client):
         """Test StreamStatus returns multiple updates."""
-        request = hal_pb2.HalStreamStatusRequest(interval=0.05)
+        request = hal_pb2.HalStreamStatusRequest(interval_ms=50)
         stream = hal_client.StreamStatus(request)
 
         updates = []

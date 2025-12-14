@@ -1,56 +1,70 @@
-# LinuxCNC gRPC Server - Development Notes
+# LinuxCNC gRPC - Development Notes
 
 ## Project Setup
 
-Repository: `dougcalobrisi/linuxcnc-grpc-server`
+Repository: `dougcalobrisi/linuxcnc-grpc`
 
-## Open Source Preparation (2025-12-03)
+## Project Structure
 
-Added the following for open source release:
+```
+/                              # Go module at repo root
+├── go.mod                     # module github.com/dougcalobrisi/linuxcnc-grpc
+├── *.pb.go                    # Generated Go code
+├── proto/                     # Proto source files (canonical location)
+│   ├── linuxcnc.proto
+│   └── hal.proto
+├── src/linuxcnc_grpc/         # Python package (PyPI: linuxcnc-grpc)
+│   ├── _generated/            # Python generated code
+│   └── *.py                   # Server implementation
+├── packages/
+│   ├── node/                  # npm package (linuxcnc-grpc)
+│   │   ├── package.json
+│   │   └── src/*.ts           # Generated TypeScript
+│   └── rust/                  # Rust crate (linuxcnc-grpc)
+│       ├── Cargo.toml
+│       └── src/               # Generated Rust code
+├── scripts/                   # Build, publish, and utility scripts
+│   ├── generate-protos.sh     # Generate proto code for all languages
+│   ├── build-*.sh             # Build scripts per language
+│   ├── publish-*.sh           # Publish scripts per registry
+│   └── sync-versions.sh       # Version management
+└── examples/                  # Multi-language client examples
+    ├── python/                # Python examples
+    ├── go/                    # Go examples (in cmd/ subdirectories)
+    └── node/                  # Node.js/TypeScript examples
+```
 
-1. **`.gitignore`** - Standard Python gitignore (pycache, dist, eggs, venv, IDE files)
+**`examples/`** - Client examples in all supported languages:
 
-2. **`examples/`** - Python client examples demonstrating the gRPC API:
-   - `get_status.py` - Basic status polling
-   - `jog_axis.py` - Continuous and incremental jogging
-   - `mdi_command.py` - MDI G-code execution with interactive mode
-   - `stream_status.py` - Real-time status streaming
-   - `hal_query.py` - HAL pin/signal/parameter querying
-   - `README.md` - Setup instructions for examples
+Each language directory contains equivalent implementations:
+- `get_status` - Basic status polling
+- `stream_status` - Real-time status streaming
+- `jog_axis` - Continuous and incremental jogging
+- `mdi_command` - MDI G-code execution with interactive mode
+- `hal_query` - HAL pin/signal/parameter querying
 
-3. **`pyproject.toml`** - Fixed repository URL to `dougcalobrisi/linuxcnc-grpc-server`
+Run examples:
+```bash
+# Python
+cd examples/python && python get_status.py
 
-4. **`tests/`** - Test suite (157 tests):
-   - `conftest.py` - Pytest fixtures with mock HAL/LinuxCNC data
-   - `test_examples_syntax.py` - Verifies example scripts compile
-   - `test_hal_mapper.py` - Full unit tests for HalMapper (pure Python)
-   - `test_linuxcnc_mapper.py` - Unit tests for LinuxCNCMapper (mocked linuxcnc)
-   - `test_hal_service.py` - Full unit tests for HalServiceServicer (~45 tests)
-   - `test_linuxcnc_service.py` - Full unit tests for LinuxCNCServiceServicer (~55 tests)
+# Go
+cd examples/go && go run ./cmd/get_status
 
-5. **`.github/workflows/ci.yml`** - GitHub Actions CI:
-   - Python 3.8-3.12 matrix
-   - Runs lint and tests on push/PR
-   - Coverage reporting
+# Node.js/TypeScript
+cd examples/node && npm install && npx tsx get_status.ts
+```
 
-6. **Updated files**:
-   - `pyproject.toml` - Added pytest config, pytest-cov deps
-   - `Makefile` - Added `make test` and `make test-cov` targets
-   - `README.md` - Added CI badge
+## Package Names
 
-## Updates (2025-12-04)
+All packages use consistent naming across registries:
 
-- **Examples import fix**: Updated all examples to import from installed package first (`linuxcnc_grpc_server._generated`), with fallback to local `pb/` directory. This allows examples to work out-of-box when package is installed via `pip install -e .`
-
-- **License change**: Changed from `GPL-2.0-only` to `GPL-2.0-or-later`. This maintains compatibility with LinuxCNC (GPLv2) while allowing future compatibility if LinuxCNC ever upgrades to GPLv3.
-
-## Updates (2025-12-05)
-
-- **Added full service layer tests**: Increased test count from 68 to 157 tests by adding comprehensive unit tests for:
-  - `HalServiceServicer` (~45 tests) - Tests for GetSystemStatus, SendCommand, GetValue, QueryPins, QuerySignals, QueryParams, QueryComponents, StreamStatus, WatchValues RPCs
-  - `LinuxCNCServiceServicer` (~55 tests) - Tests for GetStatus, SendCommand (all command types: state, mode, mdi, jog, home, spindle, feedrate, coolant, program, etc.), WaitComplete, StreamStatus, StreamErrors RPCs
-
-- **Service layer test coverage**: The gRPC service layer now has comprehensive test coverage using mocked `hal` and `linuxcnc` modules.
+| Registry  | Package Name                                |
+|-----------|---------------------------------------------|
+| PyPI      | `linuxcnc-grpc`                             |
+| npm       | `linuxcnc-grpc`                             |
+| crates.io | `linuxcnc-grpc`                             |
+| Go        | `github.com/dougcalobrisi/linuxcnc-grpc`    |
 
 ## Running Tests
 
@@ -83,18 +97,104 @@ cargo install protoc-gen-prost protoc-gen-tonic
 
 **Node.js/TypeScript prerequisites:**
 ```bash
-npm install ts-proto
+cd packages/node && npm install
 # or globally: npm install -g ts-proto
 ```
 
-Generated code locations:
-- Python: `src/linuxcnc_grpc_server/_generated/` (committed)
-- Go: `gen/go/` (gitignored)
-- Rust: `gen/rust/` (gitignored)
-- Node.js/TypeScript: `gen/node/` (gitignored)
+## Generated Code Locations
 
-## Still Missing (consider adding)
+All generated code is **committed** so users don't need protoc:
 
-- `CONTRIBUTING.md`
-- `SECURITY.md` (recommended for machine control software)
-- `CODE_OF_CONDUCT.md`
+- **Python**: `src/linuxcnc_grpc/_generated/`
+- **Go**: `*.pb.go` at repo root
+- **Rust**: `packages/rust/src/linuxcnc/`, `packages/rust/src/hal/`
+- **Node.js**: `packages/node/src/linuxcnc.ts`, `packages/node/src/hal.ts`
+
+## Client Installation
+
+### Python
+```bash
+pip install linuxcnc-grpc
+```
+
+### Go
+```bash
+go get github.com/dougcalobrisi/linuxcnc-grpc
+```
+
+```go
+import linuxcnc "github.com/dougcalobrisi/linuxcnc-grpc"
+```
+
+### Node.js/TypeScript
+```bash
+npm install linuxcnc-grpc
+```
+
+```typescript
+import { LinuxCNCServiceClient, GetStatusRequest } from 'linuxcnc-grpc';
+```
+
+### Rust
+```toml
+[dependencies]
+linuxcnc-grpc = "0.5"
+```
+
+```rust
+use linuxcnc_grpc::linuxcnc::linux_cnc_service_client::LinuxCncServiceClient;
+```
+
+## Scripts
+
+All automation scripts are in the `scripts/` directory:
+
+| Script | Purpose |
+|--------|---------|
+| `generate-protos.sh` | Generate protobuf code for all languages |
+| `build-python.sh` | Build Python wheel and sdist |
+| `build-node.sh` | Build Node.js/TypeScript package |
+| `build-rust.sh` | Build Rust crate |
+| `build-all.sh` | Build all packages |
+| `publish-python.sh` | Publish to PyPI |
+| `publish-node.sh` | Publish to npm |
+| `publish-rust.sh` | Publish to crates.io |
+| `publish-all.sh` | Publish all packages (with confirmation) |
+| `sync-versions.sh` | Synchronize version across all packages |
+
+### Building Packages
+
+```bash
+make build-all     # Build all packages
+make build-python  # Build Python only
+make build-node    # Build Node.js only
+make build-rust    # Build Rust only
+```
+
+### Publishing Packages
+
+```bash
+make publish-all      # Publish all (with confirmation)
+make publish-dry-run  # Test publish without uploading
+```
+
+### Version Management
+
+```bash
+make sync-version VERSION=0.6.0  # Update all package versions
+./scripts/sync-versions.sh 0.6.0 --commit --tag  # With git commit and tag
+```
+
+## CI/CD
+
+GitHub Actions workflows:
+
+- **ci.yml**: Runs on push/PR - tests all languages, checks proto freshness
+- **release-python.yml**: Publishes to PyPI on `v*` tag
+- **release-node.yml**: Publishes to npm on `v*` tag
+- **release-rust.yml**: Publishes to crates.io on `v*` tag
+
+Required secrets for publishing:
+- `NPM_TOKEN`: npm authentication token
+- `CARGO_REGISTRY_TOKEN`: crates.io API token
+- PyPI: Uses trusted publishing (OIDC)

@@ -207,7 +207,7 @@ describe('LinuxCNCService', () => {
 
   it('StreamStatus returns multiple updates', async () => {
     const stream = linuxcncClient.streamStatus(
-      StreamStatusRequest.create({ interval: 0.05 })
+      StreamStatusRequest.create({ intervalMs: 50 })
     );
 
     const updates: any[] = [];
@@ -338,7 +338,7 @@ describe('HalService', () => {
 
   it('StreamStatus returns multiple updates', async () => {
     const stream = halClient.streamStatus(
-      HalStreamStatusRequest.create({ interval: 0.05 })
+      HalStreamStatusRequest.create({ intervalMs: 50 })
     );
 
     const updates: any[] = [];

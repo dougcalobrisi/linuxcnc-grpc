@@ -1,17 +1,22 @@
 #!/bin/bash
 # Generate protobuf and gRPC code from .proto files
-# Usage: ./generate_protos.sh [--go] [--rust] [--node]
+# Usage: ./scripts/generate-protos.sh [--go] [--rust] [--node] [--all]
 #   --go    Generate Go code (requires protoc-gen-go, protoc-gen-go-grpc)
 #   --rust  Generate Rust code (requires protoc-gen-prost, protoc-gen-tonic)
 #   --node  Generate Node.js/TypeScript code (requires ts-proto)
+#   --all   Generate all languages
+
 set -e
 
+# Get project root (parent of scripts directory)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROTO_DIR="$SCRIPT_DIR/src/linuxcnc_grpc_server/proto"
-PYTHON_OUT_DIR="$SCRIPT_DIR/src/linuxcnc_grpc_server/_generated"
-GO_OUT_DIR="$SCRIPT_DIR/gen/go"
-RUST_OUT_DIR="$SCRIPT_DIR/gen/rust"
-NODE_OUT_DIR="$SCRIPT_DIR/gen/node"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PROTO_DIR="$PROJECT_ROOT/proto"
+PYTHON_OUT_DIR="$PROJECT_ROOT/packages/python/linuxcnc_pb"
+GO_OUT_DIR="$PROJECT_ROOT/packages/go"
+RUST_OUT_DIR="$PROJECT_ROOT/packages/rust/src"
+NODE_OUT_DIR="$PROJECT_ROOT/packages/node/src"
 
 # Parse arguments
 GENERATE_GO=false
@@ -29,11 +34,17 @@ for arg in "$@"; do
         --node)
             GENERATE_NODE=true
             ;;
+        --all)
+            GENERATE_GO=true
+            GENERATE_RUST=true
+            GENERATE_NODE=true
+            ;;
         --help|-h)
-            echo "Usage: ./generate_protos.sh [--go] [--rust] [--node]"
+            echo "Usage: ./scripts/generate-protos.sh [--go] [--rust] [--node] [--all]"
             echo "  --go    Generate Go code (requires protoc-gen-go, protoc-gen-go-grpc)"
             echo "  --rust  Generate Rust code (requires protoc-gen-prost, protoc-gen-tonic)"
             echo "  --node  Generate Node.js/TypeScript code (requires ts-proto)"
+            echo "  --all   Generate all languages"
             echo ""
             echo "Python code is always generated."
             exit 0
@@ -49,6 +60,18 @@ done
 echo "Generating protobuf code..."
 echo "Proto source: $PROTO_DIR"
 
+# Detect platform for sed compatibility
+PLATFORM="$(uname -s)"
+
+# Cross-platform sed in-place
+sed_inplace() {
+    if [ "$PLATFORM" = "Darwin" ]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
+
 # --- Python (always generated) ---
 echo ""
 echo "=== Python ==="
@@ -62,9 +85,8 @@ python3 -m grpc_tools.protoc \
     "$PROTO_DIR/hal.proto"
 
 # Fix imports in generated grpc files to use relative imports
-# Use sed -i '' for macOS compatibility (BSD sed requires argument after -i)
-sed -i '' 's/^import linuxcnc_pb2/from . import linuxcnc_pb2/' "$PYTHON_OUT_DIR/linuxcnc_pb2_grpc.py"
-sed -i '' 's/^import hal_pb2/from . import hal_pb2/' "$PYTHON_OUT_DIR/hal_pb2_grpc.py"
+sed_inplace 's/^import linuxcnc_pb2/from . import linuxcnc_pb2/' "$PYTHON_OUT_DIR/linuxcnc_pb2_grpc.py"
+sed_inplace 's/^import hal_pb2/from . import hal_pb2/' "$PYTHON_OUT_DIR/hal_pb2_grpc.py"
 
 # Create/update __init__.py for the generated package
 cat > "$PYTHON_OUT_DIR/__init__.py" << 'EOF'
@@ -95,12 +117,14 @@ if [ "$GENERATE_GO" = true ]; then
         exit 1
     fi
 
+    # Generate Go code in packages/go (subpackage of main module)
     mkdir -p "$GO_OUT_DIR"
-
     protoc \
         -I"$PROTO_DIR" \
-        --go_out="$GO_OUT_DIR" --go_opt=paths=source_relative \
-        --go-grpc_out="$GO_OUT_DIR" --go-grpc_opt=paths=source_relative \
+        --go_out="$GO_OUT_DIR" \
+        --go_opt=paths=source_relative \
+        --go-grpc_out="$GO_OUT_DIR" \
+        --go-grpc_opt=paths=source_relative \
         "$PROTO_DIR/linuxcnc.proto" \
         "$PROTO_DIR/hal.proto"
 
@@ -143,13 +167,15 @@ if [ "$GENERATE_NODE" = true ]; then
 
     # Check for ts-proto plugin
     TS_PROTO_PLUGIN=""
-    if [ -x "$SCRIPT_DIR/node_modules/.bin/protoc-gen-ts_proto" ]; then
-        TS_PROTO_PLUGIN="$SCRIPT_DIR/node_modules/.bin/protoc-gen-ts_proto"
+    if [ -x "$PROJECT_ROOT/node_modules/.bin/protoc-gen-ts_proto" ]; then
+        TS_PROTO_PLUGIN="$PROJECT_ROOT/node_modules/.bin/protoc-gen-ts_proto"
+    elif [ -x "$PROJECT_ROOT/packages/node/node_modules/.bin/protoc-gen-ts_proto" ]; then
+        TS_PROTO_PLUGIN="$PROJECT_ROOT/packages/node/node_modules/.bin/protoc-gen-ts_proto"
     elif command -v protoc-gen-ts_proto &> /dev/null; then
         TS_PROTO_PLUGIN="$(command -v protoc-gen-ts_proto)"
     else
         echo "Error: protoc-gen-ts_proto not found. Install with:"
-        echo "  npm install ts-proto"
+        echo "  cd packages/node && npm install"
         echo "  # or globally: npm install -g ts-proto"
         exit 1
     fi

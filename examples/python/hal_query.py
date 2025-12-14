@@ -20,13 +20,13 @@ import grpc
 
 # Try installed package first, fall back to local src/ directory
 try:
-    from linuxcnc_grpc_server._generated import hal_pb2
-    from linuxcnc_grpc_server._generated import hal_pb2_grpc
+    from linuxcnc_grpc._generated import hal_pb2
+    from linuxcnc_grpc._generated import hal_pb2_grpc
 except ImportError:
     from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-    from linuxcnc_grpc_server._generated import hal_pb2
-    from linuxcnc_grpc_server._generated import hal_pb2_grpc
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+    from linuxcnc_grpc._generated import hal_pb2
+    from linuxcnc_grpc._generated import hal_pb2_grpc
 
 
 def format_value(value: hal_pb2.HalValue) -> str:
@@ -142,13 +142,13 @@ def query_components(stub: hal_pb2_grpc.HalServiceStub, pattern: str = "*"):
         print(f"{comp.name:<30} {comp.id:<6} {ready:<6} {len(comp.pins):<6} {len(comp.params)}")
 
 
-def watch_values(stub: hal_pb2_grpc.HalServiceStub, names: list[str], interval: float = 0.5):
+def watch_values(stub: hal_pb2_grpc.HalServiceStub, names: list[str], interval_ms: int = 500):
     """Watch HAL values for changes."""
     request = hal_pb2.WatchRequest()
     request.names.extend(names)
-    request.interval = interval
+    request.interval_ms = interval_ms
 
-    print(f"Watching {len(names)} values (interval: {interval}s)")
+    print(f"Watching {len(names)} values (interval: {interval_ms}ms)")
     print("Press Ctrl+C to stop\n")
 
     try:
@@ -209,7 +209,7 @@ def main():
 
     watch_parser = subparsers.add_parser("watch", help="Watch values for changes")
     watch_parser.add_argument("names", nargs="+", help="Pin/signal/param names to watch")
-    watch_parser.add_argument("--interval", type=float, default=0.5, help="Update interval")
+    watch_parser.add_argument("--interval", type=int, default=500, help="Update interval in ms")
 
     subparsers.add_parser("status", help="Get HAL system status")
 

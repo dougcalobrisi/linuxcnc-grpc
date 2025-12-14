@@ -48,6 +48,8 @@ class TestGetStatus:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            # Force reimport to use updated mock
+            sys.modules.pop("linuxcnc_grpc.linuxcnc_service", None)
             from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
             from linuxcnc_pb import linuxcnc_pb2
 
@@ -60,24 +62,27 @@ class TestGetStatus:
             assert len(response.joints) == 3
 
     def test_linuxcnc_error(self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context):
-        """Sets error code on linuxcnc.error."""
+        """Sets error code on linuxcnc.error after reconnect fails."""
         mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
         mock_linuxcnc_module.command.return_value = MagicMock()
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
-        mock_linuxcnc_module.error = Exception
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_pb import linuxcnc_pb2
+            # Force reimport to use updated mock
+            sys.modules.pop("linuxcnc_grpc.linuxcnc_service", None)
+            with patch("linuxcnc_grpc.linuxcnc_service.time.sleep"):
+                from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+                from linuxcnc_pb import linuxcnc_pb2
 
-            service = LinuxCNCServiceServicer()
-            mock_linuxcnc_stat.poll.side_effect = mock_linuxcnc_module.error(
-                "Connection lost"
-            )
-            request = linuxcnc_pb2.GetStatusRequest()
-            service.GetStatus(request, mock_grpc_context)
+                service = LinuxCNCServiceServicer()
+                mock_linuxcnc_stat.poll.side_effect = mock_linuxcnc_module.error(
+                    "Connection lost"
+                )
+                request = linuxcnc_pb2.GetStatusRequest()
+                service.GetStatus(request, mock_grpc_context)
 
-            mock_grpc_context.set_code.assert_called_with(grpc.StatusCode.INTERNAL)
+                # After reconnect fails, returns UNAVAILABLE
+                mock_grpc_context.set_code.assert_called_with(grpc.StatusCode.UNAVAILABLE)
 
 
 class TestSendCommand:
@@ -911,11 +916,13 @@ class TestStreamStatus:
         mock_grpc_context.is_active.side_effect = [True, True, False]
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            # Force reimport to use updated mock
+            sys.modules.pop("linuxcnc_grpc.linuxcnc_service", None)
             from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
             from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
-            request = linuxcnc_pb2.StreamStatusRequest(interval=0.001)
+            request = linuxcnc_pb2.StreamStatusRequest(interval_ms=1)
 
             results = list(service.StreamStatus(request, mock_grpc_context))
 
@@ -925,19 +932,22 @@ class TestStreamStatus:
     def test_uses_default_interval(
         self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
     ):
-        """Uses default 0.1s interval when not specified."""
+        """Uses default 100ms interval when not specified."""
         mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
         mock_linuxcnc_module.command.return_value = MagicMock()
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
         mock_grpc_context.is_active.side_effect = [True, False]
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            with patch("time.sleep") as mock_sleep:
-                from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
-                from linuxcnc_pb import linuxcnc_pb2
+            # Force reimport to use updated mock
+            sys.modules.pop("linuxcnc_grpc.linuxcnc_service", None)
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
+            # Patch time.sleep after import
+            with patch("linuxcnc_grpc.linuxcnc_service.time.sleep") as mock_sleep:
                 service = LinuxCNCServiceServicer()
-                request = linuxcnc_pb2.StreamStatusRequest(interval=0)
+                request = linuxcnc_pb2.StreamStatusRequest(interval_ms=0)
 
                 list(service.StreamStatus(request, mock_grpc_context))
 

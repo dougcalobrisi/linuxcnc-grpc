@@ -22,13 +22,13 @@ import grpc
 
 # Try installed package first, fall back to local src/ directory
 try:
-    from linuxcnc_grpc_server._generated import linuxcnc_pb2
-    from linuxcnc_grpc_server._generated import linuxcnc_pb2_grpc
+    from linuxcnc_grpc._generated import linuxcnc_pb2
+    from linuxcnc_grpc._generated import linuxcnc_pb2_grpc
 except ImportError:
     from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-    from linuxcnc_grpc_server._generated import linuxcnc_pb2
-    from linuxcnc_grpc_server._generated import linuxcnc_pb2_grpc
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+    from linuxcnc_grpc._generated import linuxcnc_pb2
+    from linuxcnc_grpc._generated import linuxcnc_pb2_grpc
 
 
 class LinuxCNCClient:

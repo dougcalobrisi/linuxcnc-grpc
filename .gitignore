@@ -110,14 +110,27 @@ dmypy.json
 # gRPC / Protocol Buffers
 # =============================================================================
 
-# Don't ignore _generated/ - these are committed for users without grpcio-tools
-# src/linuxcnc_grpc_server/_generated/
-
-# Generated Go/Rust code (optional, run ./generate_protos.sh --go --rust)
-gen/
+# Generated code is COMMITTED for all languages so users don't need protoc:
+# - Python: src/linuxcnc_grpc/_generated/
+# - Go: *.pb.go at repo root
+# - Node.js: packages/node/src/*.ts
+# - Rust: packages/rust/src/linuxcnc/, packages/rust/src/hal/
 
 # Temporary proto compilation artifacts
 *_pb2.pyi
+
+# =============================================================================
+# Node.js
+# =============================================================================
+node_modules/
+packages/node/dist/
+packages/node/*.tsbuildinfo
+
+# =============================================================================
+# Rust (packages/rust/)
+# =============================================================================
+packages/rust/target/
+packages/rust/Cargo.lock
 
 # =============================================================================
 # IDEs and Editors

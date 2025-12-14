@@ -1,0 +1,134 @@
+{
+  "_comment": "Expected LinuxCNC status response from mock server",
+  "version": "2.9.0-mock",
+  "debug": 0,
+  "task": {
+    "echo_serial_number": 1234,
+    "state": "RCS_DONE",
+    "task_mode": "MODE_MANUAL",
+    "task_state": "STATE_ON",
+    "exec_state": "EXEC_DONE",
+    "interp_state": "INTERP_IDLE",
+    "call_level": 0,
+    "read_line": 0,
+    "motion_line": 0,
+    "current_line": 0,
+    "file": "",
+    "command": "",
+    "program_units": 1,
+    "interpreter_errcode": 0,
+    "optional_stop": false,
+    "block_delete": false,
+    "task_paused": 0,
+    "input_timeout": false,
+    "rotation_xy": 0.0,
+    "ini_filename": "/home/user/linuxcnc/configs/sim/axis.ini",
+    "delay_left": 0.0,
+    "queued_mdi_commands": 0
+  },
+  "trajectory": {
+    "linear_units": 1.0,
+    "angular_units": 1.0,
+    "cycle_time": 0.001,
+    "joints": 3,
+    "spindles": 1,
+    "axis_mask": 7,
+    "motion_mode": "TRAJ_MODE_FREE",
+    "enabled": true,
+    "inpos": true,
+    "queue": 0,
+    "active_queue": 0,
+    "queue_full": false,
+    "motion_id": 0,
+    "paused": false,
+    "feedrate": 1.0,
+    "rapidrate": 1.0,
+    "velocity": 100.0,
+    "acceleration": 500.0,
+    "max_velocity": 200.0,
+    "max_acceleration": 1000.0,
+    "probe_tripped": false,
+    "probing": false,
+    "probe_val": 0,
+    "kinematics_type": "KINEMATICS_IDENTITY",
+    "motion_type": "MOTION_TYPE_NONE",
+    "distance_to_go": 0.0,
+    "current_vel": 0.0,
+    "feed_override_enabled": true,
+    "adaptive_feed_enabled": false,
+    "feed_hold_enabled": true,
+    "num_extrajoints": 0
+  },
+  "position": {
+    "position": {"x": 0, "y": 0, "z": 0},
+    "actual_position": {"x": 1.0, "y": 2.0, "z": 3.0},
+    "g5x_index": 1
+  },
+  "joints": [
+    {
+      "joint_number": 0,
+      "joint_type": "JOINT_LINEAR",
+      "units": 1.0,
+      "min_position_limit": -100.0,
+      "max_position_limit": 100.0,
+      "homed": true,
+      "enabled": true,
+      "input": 1.0
+    },
+    {
+      "joint_number": 1,
+      "joint_type": "JOINT_LINEAR",
+      "units": 1.0,
+      "min_position_limit": -100.0,
+      "max_position_limit": 100.0,
+      "homed": true,
+      "enabled": true,
+      "input": 2.0
+    },
+    {
+      "joint_number": 2,
+      "joint_type": "JOINT_LINEAR",
+      "units": 1.0,
+      "min_position_limit": -50.0,
+      "max_position_limit": 50.0,
+      "homed": true,
+      "enabled": true,
+      "input": 3.0
+    }
+  ],
+  "spindles": [
+    {
+      "spindle_number": 0,
+      "brake": false,
+      "direction": 0,
+      "enabled": false,
+      "override_enabled": true,
+      "speed": 0.0,
+      "override": 1.0,
+      "homed": false
+    }
+  ],
+  "tool": {
+    "pocket_prepped": 0,
+    "tool_in_spindle": 1,
+    "tool_from_pocket": 0,
+    "tool_table": [
+      {
+        "id": 1,
+        "z_offset": 1.5,
+        "diameter": 6.0
+      }
+    ]
+  },
+  "io": {
+    "estop": false,
+    "mist": "COOLANT_OFF",
+    "flood": "COOLANT_OFF"
+  },
+  "gcode": {
+    "active_gcodes": [100, 170, 400, 540, 800, 940, 980],
+    "active_mcodes": [0, 5, 9],
+    "feed_rate": 100.0,
+    "spindle_speed": 1000.0
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "_comment": "Expected HAL system status response from mock server",
+  "is_sim": true,
+  "is_rt": false,
+  "is_userspace": true,
+  "kernel_version": "mock",
+  "message_level": "MSG_INFO",
+  "pins": [
+    {
+      "name": "axis.x.pos-cmd",
+      "short_name": "pos-cmd",
+      "component": "axis",
+      "type": "HAL_FLOAT",
+      "direction": "HAL_OUT",
+      "value": 123.456,
+      "signal": "x-pos-cmd",
+      "has_writer": true
+    },
+    {
+      "name": "spindle.0.speed-out",
+      "short_name": "speed-out",
+      "component": "spindle",
+      "type": "HAL_FLOAT",
+      "direction": "HAL_OUT",
+      "value": 1000.0,
+      "signal": "spindle-speed",
+      "has_writer": true
+    },
+    {
+      "name": "iocontrol.0.emc-enable-in",
+      "short_name": "emc-enable-in",
+      "component": "iocontrol",
+      "type": "HAL_BIT",
+      "direction": "HAL_IN",
+      "value": true,
+      "signal": "",
+      "has_writer": true
+    }
+  ],
+  "signals": [
+    {
+      "name": "x-pos-cmd",
+      "type": "HAL_FLOAT",
+      "value": 123.456,
+      "driver": "axis.x.pos-cmd",
+      "readers": ["joint.0.motor-pos-cmd"],
+      "reader_count": 1
+    },
+    {
+      "name": "spindle-speed",
+      "type": "HAL_FLOAT",
+      "value": 1000.0,
+      "driver": "spindle.0.speed-out",
+      "readers": [],
+      "reader_count": 0
+    }
+  ],
+  "params": [
+    {
+      "name": "pid.x.Pgain",
+      "short_name": "Pgain",
+      "component": "pid",
+      "type": "HAL_FLOAT",
+      "direction": "HAL_RW",
+      "value": 10.5
+    },
+    {
+      "name": "stepgen.0.maxvel",
+      "short_name": "maxvel",
+      "component": "stepgen",
+      "type": "HAL_FLOAT",
+      "direction": "HAL_RW",
+      "value": 500.0
+    },
+    {
+      "name": "motion.servo.overruns",
+      "short_name": "overruns",
+      "component": "motion",
+      "type": "HAL_S32",
+      "direction": "HAL_RO",
+      "value": 0
+    }
+  ],
+  "components": [
+    {
+      "name": "axis",
+      "id": 1,
+      "ready": true,
+      "type": 1,
+      "pid": 0
+    },
+    {
+      "name": "spindle",
+      "id": 2,
+      "ready": true,
+      "type": 1,
+      "pid": 0
+    },
+    {
+      "name": "iocontrol",
+      "id": 3,
+      "ready": true,
+      "type": 2,
+      "pid": 1234
+    }
+  ]
+}

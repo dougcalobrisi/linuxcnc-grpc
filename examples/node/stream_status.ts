@@ -19,6 +19,7 @@ import {
   taskModeToJSON,
   taskStateToJSON,
   interpStateToJSON,
+  credentials,
 } from "linuxcnc-grpc";
 
 program
@@ -33,7 +34,7 @@ const intervalMs = parseInt(opts.interval);
 
 const client = new LinuxCNCServiceClient(
   address,
-  grpc.credentials.createInsecure()
+  credentials.createInsecure()
 );
 
 function formatPosition(pos: { x: number; y: number; z: number }): string {

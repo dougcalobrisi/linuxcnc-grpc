@@ -23,14 +23,12 @@
 
 /// LinuxCNC machine control types and service definitions
 pub mod linuxcnc {
-    // linuxcnc.rs already includes linuxcnc.tonic.rs at the end
-    include!("linuxcnc/linuxcnc.rs");
+    tonic::include_proto!("linuxcnc");
 }
 
 /// HAL (Hardware Abstraction Layer) types and service definitions
 pub mod hal {
-    // hal.rs already includes hal.tonic.rs at the end
-    include!("hal/hal.rs");
+    tonic::include_proto!("hal");
 }
 
 // Re-export commonly used types at crate root

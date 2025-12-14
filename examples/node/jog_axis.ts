@@ -12,7 +12,6 @@
  *   and understand the jog parameters before running.
  */
 
-import * as grpc from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
@@ -24,6 +23,7 @@ import {
   TaskState,
   JogType,
   RcsStatus,
+  credentials,
 } from "linuxcnc-grpc";
 
 program
@@ -37,7 +37,7 @@ const address = `${opts.host}:${opts.port}`;
 
 const client = new LinuxCNCServiceClient(
   address,
-  grpc.credentials.createInsecure()
+  credentials.createInsecure()
 );
 
 let serial = 0;

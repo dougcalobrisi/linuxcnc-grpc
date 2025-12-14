@@ -192,7 +192,8 @@ class TestLinuxCNCMapperFullStatus:
             from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
             from linuxcnc_pb import linuxcnc_pb2
 
-            mapper = LinuxCNCMapper(mock_linuxcnc_stat)
+            # Pass version from mock module (simulates real linuxcnc.version)
+            mapper = LinuxCNCMapper(mock_linuxcnc_stat, version=mock_linuxcnc_module.version)
             status = mapper.map_to_proto()
 
             # Verify basic fields

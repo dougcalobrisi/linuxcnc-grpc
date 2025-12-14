@@ -13,7 +13,6 @@
  *   each command does before running it.
  */
 
-import * as grpc from "@grpc/grpc-js";
 import * as readline from "readline";
 import { program } from "commander";
 import {
@@ -26,6 +25,7 @@ import {
   TaskMode,
   TaskState,
   RcsStatus,
+  credentials,
 } from "linuxcnc-grpc";
 
 program
@@ -53,7 +53,7 @@ if (!command && !opts.interactive) {
 
 const client = new LinuxCNCServiceClient(
   address,
-  grpc.credentials.createInsecure()
+  credentials.createInsecure()
 );
 
 let serial = 0;

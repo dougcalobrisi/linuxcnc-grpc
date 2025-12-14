@@ -8,7 +8,6 @@
  *   npx tsx get_status.ts [--host HOST] [--port PORT]
  */
 
-import * as grpc from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
@@ -19,6 +18,7 @@ import {
   execStateToJSON,
   interpStateToJSON,
   coolantStateToJSON,
+  credentials,
 } from "linuxcnc-grpc";
 
 program
@@ -31,7 +31,7 @@ const address = `${opts.host}:${opts.port}`;
 
 const client = new LinuxCNCServiceClient(
   address,
-  grpc.credentials.createInsecure()
+  credentials.createInsecure()
 );
 
 function printStatus(status: LinuxCNCStatus): void {
