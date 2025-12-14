@@ -28,6 +28,12 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── build-*.sh             # Build scripts per language
 │   ├── publish-*.sh           # Publish scripts per registry
 │   └── sync-versions.sh       # Version management
+├── docs/                      # Documentation
+│   ├── README.md              # Documentation index
+│   ├── getting-started.md     # Installation and quickstart
+│   ├── server.md              # Server configuration
+│   ├── api-reference.md       # Complete API documentation
+│   └── examples.md            # Examples guide
 └── examples/                  # Multi-language client examples
     ├── python/                # Python examples
     ├── go/                    # Go examples (in cmd/ subdirectories)
@@ -198,3 +204,15 @@ Required secrets for publishing:
 - `NPM_TOKEN`: npm authentication token
 - `CARGO_REGISTRY_TOKEN`: crates.io API token
 - PyPI: Uses trusted publishing (OIDC)
+
+## Documentation
+
+User-facing documentation is in the `docs/` directory:
+
+| Document | Description |
+|----------|-------------|
+| [docs/README.md](docs/README.md) | Documentation index and overview |
+| [docs/getting-started.md](docs/getting-started.md) | Installation and quickstart |
+| [docs/server.md](docs/server.md) | Server configuration and setup |
+| [docs/api-reference.md](docs/api-reference.md) | Complete API documentation |
+| [docs/examples.md](docs/examples.md) | Examples guide and walkthroughs |
