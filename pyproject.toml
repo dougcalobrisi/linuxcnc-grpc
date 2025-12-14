@@ -7,14 +7,14 @@ name = "linuxcnc-grpc"
 version = "0.5.0"
 description = "gRPC server exposing LinuxCNC machine control and HAL functionality"
 readme = "README.md"
-license = {text = "GPL-2.0-or-later"}
+license = {text = "MIT"}
 requires-python = ">=3.8"
 keywords = ["linuxcnc", "cnc", "grpc", "machine-control", "hal"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Manufacturing",
-    "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
+    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",

@@ -1,7 +1,5 @@
 # linuxcnc-grpc
 
-[![CI](https://github.com/dougcalobrisi/linuxcnc-grpc/actions/workflows/ci.yml/badge.svg)](https://github.com/dougcalobrisi/linuxcnc-grpc/actions/workflows/ci.yml)
-
 gRPC interface for LinuxCNC machine control and HAL (Hardware Abstraction Layer).
 
 ## Why gRPC?
@@ -164,4 +162,4 @@ See [CLAUDE.md](CLAUDE.md) for detailed development documentation.
 
 ## License
 
-[GPL-2.0-or-later](https://www.gnu.org/licenses/gpl-2.0.html) (compatible with LinuxCNC)
+[MIT](LICENSE)
