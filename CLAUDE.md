@@ -197,14 +197,26 @@ make sync-version VERSION=0.6.0  # Update all package versions
 GitHub Actions workflows:
 
 - **ci.yml**: Runs on push/PR - tests all languages, checks proto freshness
-- **release-python.yml**: Publishes to PyPI on `v*` tag
-- **release-node.yml**: Publishes to npm on `v*` tag
-- **release-rust.yml**: Publishes to crates.io on `v*` tag
+- **release.yml**: Unified release workflow (manual dispatch) - publishes to PyPI, npm, and crates.io
 
-Required secrets for publishing:
-- `NPM_TOKEN`: npm authentication token
-- `CARGO_REGISTRY_TOKEN`: crates.io API token
-- PyPI: Uses trusted publishing (OIDC)
+### Releasing
+
+1. Update versions: `make sync-version VERSION=x.y.z`
+2. Commit and push to main
+3. Go to GitHub Actions > Release > Run workflow
+   - `dry_run`: Test without publishing
+   - `create_tag`: Create git tag and GitHub Release after publish
+
+The release workflow:
+- Validates version consistency across all packages
+- Runs full CI suite before publishing
+- Publishes Python, Node.js, and Rust in parallel
+- Creates git tag and GitHub Release after all succeed
+
+Required secrets/environments:
+- `pypi` environment: Uses trusted publishing (OIDC)
+- `npm` environment: `NPM_TOKEN` secret
+- `crates` environment: `CARGO_REGISTRY_TOKEN` secret
 
 ## Documentation
 

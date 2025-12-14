@@ -5,6 +5,7 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_call:
 
 jobs:
   # Verify generated proto code is up-to-date

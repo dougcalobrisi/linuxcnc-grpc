@@ -1,0 +1,183 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (validate without publishing)"
+        required: false
+        type: boolean
+        default: false
+      create_tag:
+        description: "Create git tag after successful release"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  # Pre-flight checks: version consistency and tag validation
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version consistency
+        id: version
+        run: |
+          # Extract versions from all package files
+          PY_VER=$(grep -E '^version[[:space:]]*=' pyproject.toml | head -1 | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/')
+          NODE_VER=$(grep -E '"version"' packages/node/package.json | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
+          RUST_VER=$(grep -E '^version[[:space:]]*=' packages/rust/Cargo.toml | head -1 | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/')
+
+          echo "Python version: $PY_VER"
+          echo "Node.js version: $NODE_VER"
+          echo "Rust version: $RUST_VER"
+
+          if [ "$PY_VER" != "$NODE_VER" ] || [ "$NODE_VER" != "$RUST_VER" ]; then
+            echo "::error::Version mismatch! Python=$PY_VER, Node=$NODE_VER, Rust=$RUST_VER"
+            echo "Run 'make sync-version VERSION=x.y.z' to synchronize versions"
+            exit 1
+          fi
+
+          echo "version=$PY_VER" >> "$GITHUB_OUTPUT"
+          echo "All packages at version: $PY_VER"
+
+      - name: Check tag doesn't already exist
+        if: ${{ inputs.create_tag && !inputs.dry_run }}
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists. Bump version before releasing."
+            exit 1
+          fi
+          echo "Tag $TAG is available"
+
+  # Run full CI suite
+  ci:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+
+  # Publish Python to PyPI
+  publish-python:
+    needs: [preflight, ci]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build package
+        run: ./scripts/build-python.sh
+
+      - name: Validate package
+        run: twine check dist/*
+
+      - name: Publish to PyPI
+        if: ${{ !inputs.dry_run }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Dry run summary
+        if: ${{ inputs.dry_run }}
+        run: echo "Dry run - would publish Python ${{ needs.preflight.outputs.version }} to PyPI"
+
+  # Publish Node.js to npm
+  publish-node:
+    needs: [preflight, ci]
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install and build
+        run: cd packages/node && npm ci && npm run build
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        run: cd packages/node && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run validation
+        if: ${{ inputs.dry_run }}
+        run: |
+          cd packages/node && npm publish --dry-run --access public
+          echo "Dry run - would publish Node.js ${{ needs.preflight.outputs.version }} to npm"
+
+  # Publish Rust to crates.io
+  publish-rust:
+    needs: [preflight, ci]
+    runs-on: ubuntu-latest
+    environment: crates
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        run: |
+          PROTOC_VERSION=32.1
+          curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -o "protoc-${PROTOC_VERSION}-linux-x86_64.zip" -d /usr/local
+          rm "protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+
+      - name: Publish to crates.io
+        if: ${{ !inputs.dry_run }}
+        run: cd packages/rust && cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Dry run validation
+        if: ${{ inputs.dry_run }}
+        run: |
+          cd packages/rust && cargo publish --dry-run
+          echo "Dry run - would publish Rust ${{ needs.preflight.outputs.version }} to crates.io"
+
+  # Create git tag and GitHub Release after all publishes succeed
+  create-release:
+    needs: [preflight, publish-python, publish-node, publish-rust]
+    if: ${{ inputs.create_tag && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create and push tag
+        run: |
+          TAG="v${{ needs.preflight.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "v${{ needs.preflight.outputs.version }}"
+          name: "Release v${{ needs.preflight.outputs.version }}"
+          body: |
+            ## Packages Published
+
+            - **PyPI**: [linuxcnc-grpc ${{ needs.preflight.outputs.version }}](https://pypi.org/project/linuxcnc-grpc/${{ needs.preflight.outputs.version }}/)
+            - **npm**: [linuxcnc-grpc ${{ needs.preflight.outputs.version }}](https://www.npmjs.com/package/linuxcnc-grpc/v/${{ needs.preflight.outputs.version }})
+            - **crates.io**: [linuxcnc-grpc ${{ needs.preflight.outputs.version }}](https://crates.io/crates/linuxcnc-grpc/${{ needs.preflight.outputs.version }})
+            - **Go**: `go get github.com/dougcalobrisi/linuxcnc-grpc@v${{ needs.preflight.outputs.version }}`
+          generate_release_notes: true
