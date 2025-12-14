@@ -1394,8 +1394,8 @@ export interface WaitCompleteRequest {
 }
 
 export interface StreamStatusRequest {
-  /** Update interval in seconds */
-  interval: number;
+  /** Update interval in milliseconds (default: 100) */
+  intervalMs: number;
 }
 
 /** Empty - streams all errors */
@@ -7878,13 +7878,13 @@ export const WaitCompleteRequest: MessageFns<WaitCompleteRequest> = {
 };
 
 function createBaseStreamStatusRequest(): StreamStatusRequest {
-  return { interval: 0 };
+  return { intervalMs: 0 };
 }
 
 export const StreamStatusRequest: MessageFns<StreamStatusRequest> = {
   encode(message: StreamStatusRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.interval !== 0) {
-      writer.uint32(9).double(message.interval);
+    if (message.intervalMs !== 0) {
+      writer.uint32(8).int32(message.intervalMs);
     }
     return writer;
   },
@@ -7897,11 +7897,11 @@ export const StreamStatusRequest: MessageFns<StreamStatusRequest> = {
       const tag = reader.uint32();
       switch (tag >>> 3) {
         case 1: {
-          if (tag !== 9) {
+          if (tag !== 8) {
             break;
           }
 
-          message.interval = reader.double();
+          message.intervalMs = reader.int32();
           continue;
         }
       }
@@ -7914,13 +7914,13 @@ export const StreamStatusRequest: MessageFns<StreamStatusRequest> = {
   },
 
   fromJSON(object: any): StreamStatusRequest {
-    return { interval: isSet(object.interval) ? globalThis.Number(object.interval) : 0 };
+    return { intervalMs: isSet(object.intervalMs) ? globalThis.Number(object.intervalMs) : 0 };
   },
 
   toJSON(message: StreamStatusRequest): unknown {
     const obj: any = {};
-    if (message.interval !== 0) {
-      obj.interval = message.interval;
+    if (message.intervalMs !== 0) {
+      obj.intervalMs = Math.round(message.intervalMs);
     }
     return obj;
   },
@@ -7930,7 +7930,7 @@ export const StreamStatusRequest: MessageFns<StreamStatusRequest> = {
   },
   fromPartial<I extends Exact<DeepPartial<StreamStatusRequest>, I>>(object: I): StreamStatusRequest {
     const message = createBaseStreamStatusRequest();
-    message.interval = object.interval ?? 0;
+    message.intervalMs = object.intervalMs ?? 0;
     return message;
   },
 };

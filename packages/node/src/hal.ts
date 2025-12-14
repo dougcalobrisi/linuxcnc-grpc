@@ -640,8 +640,8 @@ export interface QueryComponentsResponse {
 export interface WatchRequest {
   /** Pin/signal/param names to watch */
   names: string[];
-  /** Minimum update interval (seconds) */
-  interval: number;
+  /** Minimum update interval in milliseconds (default: 100) */
+  intervalMs: number;
 }
 
 /** Value change notification */
@@ -669,8 +669,8 @@ export interface GetSystemStatusRequest {
 }
 
 export interface HalStreamStatusRequest {
-  /** Update interval in seconds */
-  interval: number;
+  /** Update interval in milliseconds (default: 100) */
+  intervalMs: number;
   /** Optional: only include these components */
   filter: string[];
 }
@@ -4458,7 +4458,7 @@ export const QueryComponentsResponse: MessageFns<QueryComponentsResponse> = {
 };
 
 function createBaseWatchRequest(): WatchRequest {
-  return { names: [], interval: 0 };
+  return { names: [], intervalMs: 0 };
 }
 
 export const WatchRequest: MessageFns<WatchRequest> = {
@@ -4466,8 +4466,8 @@ export const WatchRequest: MessageFns<WatchRequest> = {
     for (const v of message.names) {
       writer.uint32(10).string(v!);
     }
-    if (message.interval !== 0) {
-      writer.uint32(17).double(message.interval);
+    if (message.intervalMs !== 0) {
+      writer.uint32(16).int32(message.intervalMs);
     }
     return writer;
   },
@@ -4488,11 +4488,11 @@ export const WatchRequest: MessageFns<WatchRequest> = {
           continue;
         }
         case 2: {
-          if (tag !== 17) {
+          if (tag !== 16) {
             break;
           }
 
-          message.interval = reader.double();
+          message.intervalMs = reader.int32();
           continue;
         }
       }
@@ -4507,7 +4507,7 @@ export const WatchRequest: MessageFns<WatchRequest> = {
   fromJSON(object: any): WatchRequest {
     return {
       names: globalThis.Array.isArray(object?.names) ? object.names.map((e: any) => globalThis.String(e)) : [],
-      interval: isSet(object.interval) ? globalThis.Number(object.interval) : 0,
+      intervalMs: isSet(object.intervalMs) ? globalThis.Number(object.intervalMs) : 0,
     };
   },
 
@@ -4516,8 +4516,8 @@ export const WatchRequest: MessageFns<WatchRequest> = {
     if (message.names?.length) {
       obj.names = message.names;
     }
-    if (message.interval !== 0) {
-      obj.interval = message.interval;
+    if (message.intervalMs !== 0) {
+      obj.intervalMs = Math.round(message.intervalMs);
     }
     return obj;
   },
@@ -4528,7 +4528,7 @@ export const WatchRequest: MessageFns<WatchRequest> = {
   fromPartial<I extends Exact<DeepPartial<WatchRequest>, I>>(object: I): WatchRequest {
     const message = createBaseWatchRequest();
     message.names = object.names?.map((e) => e) || [];
-    message.interval = object.interval ?? 0;
+    message.intervalMs = object.intervalMs ?? 0;
     return message;
   },
 };
@@ -4765,13 +4765,13 @@ export const GetSystemStatusRequest: MessageFns<GetSystemStatusRequest> = {
 };
 
 function createBaseHalStreamStatusRequest(): HalStreamStatusRequest {
-  return { interval: 0, filter: [] };
+  return { intervalMs: 0, filter: [] };
 }
 
 export const HalStreamStatusRequest: MessageFns<HalStreamStatusRequest> = {
   encode(message: HalStreamStatusRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.interval !== 0) {
-      writer.uint32(9).double(message.interval);
+    if (message.intervalMs !== 0) {
+      writer.uint32(8).int32(message.intervalMs);
     }
     for (const v of message.filter) {
       writer.uint32(18).string(v!);
@@ -4787,11 +4787,11 @@ export const HalStreamStatusRequest: MessageFns<HalStreamStatusRequest> = {
       const tag = reader.uint32();
       switch (tag >>> 3) {
         case 1: {
-          if (tag !== 9) {
+          if (tag !== 8) {
             break;
           }
 
-          message.interval = reader.double();
+          message.intervalMs = reader.int32();
           continue;
         }
         case 2: {
@@ -4813,15 +4813,15 @@ export const HalStreamStatusRequest: MessageFns<HalStreamStatusRequest> = {
 
   fromJSON(object: any): HalStreamStatusRequest {
     return {
-      interval: isSet(object.interval) ? globalThis.Number(object.interval) : 0,
+      intervalMs: isSet(object.intervalMs) ? globalThis.Number(object.intervalMs) : 0,
       filter: globalThis.Array.isArray(object?.filter) ? object.filter.map((e: any) => globalThis.String(e)) : [],
     };
   },
 
   toJSON(message: HalStreamStatusRequest): unknown {
     const obj: any = {};
-    if (message.interval !== 0) {
-      obj.interval = message.interval;
+    if (message.intervalMs !== 0) {
+      obj.intervalMs = Math.round(message.intervalMs);
     }
     if (message.filter?.length) {
       obj.filter = message.filter;
@@ -4834,7 +4834,7 @@ export const HalStreamStatusRequest: MessageFns<HalStreamStatusRequest> = {
   },
   fromPartial<I extends Exact<DeepPartial<HalStreamStatusRequest>, I>>(object: I): HalStreamStatusRequest {
     const message = createBaseHalStreamStatusRequest();
-    message.interval = object.interval ?? 0;
+    message.intervalMs = object.intervalMs ?? 0;
     message.filter = object.filter?.map((e) => e) || [];
     return message;
   },

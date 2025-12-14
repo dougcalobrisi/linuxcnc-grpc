@@ -647,7 +647,7 @@ message WaitCompleteRequest {
 }
 
 message StreamStatusRequest {
-  double interval = 1;                  // Update interval in seconds
+  int32 interval_ms = 1;                // Update interval in milliseconds (default: 100)
 }
 
 message StreamErrorsRequest {

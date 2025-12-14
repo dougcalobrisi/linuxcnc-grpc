@@ -2889,8 +2889,8 @@ func (x *QueryComponentsResponse) GetComponents() []*HalComponentInfo {
 // Subscribe to value changes
 type WatchRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Names         []string               `protobuf:"bytes,1,rep,name=names,proto3" json:"names,omitempty"`         // Pin/signal/param names to watch
-	Interval      float64                `protobuf:"fixed64,2,opt,name=interval,proto3" json:"interval,omitempty"` // Minimum update interval (seconds)
+	Names         []string               `protobuf:"bytes,1,rep,name=names,proto3" json:"names,omitempty"`                              // Pin/signal/param names to watch
+	IntervalMs    int32                  `protobuf:"varint,2,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"` // Minimum update interval in milliseconds (default: 100)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2932,9 +2932,9 @@ func (x *WatchRequest) GetNames() []string {
 	return nil
 }
 
-func (x *WatchRequest) GetInterval() float64 {
+func (x *WatchRequest) GetIntervalMs() int32 {
 	if x != nil {
-		return x.Interval
+		return x.IntervalMs
 	}
 	return 0
 }
@@ -3099,8 +3099,8 @@ func (*GetSystemStatusRequest) Descriptor() ([]byte, []int) {
 
 type HalStreamStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Interval      float64                `protobuf:"fixed64,1,opt,name=interval,proto3" json:"interval,omitempty"` // Update interval in seconds
-	Filter        []string               `protobuf:"bytes,2,rep,name=filter,proto3" json:"filter,omitempty"`       // Optional: only include these components
+	IntervalMs    int32                  `protobuf:"varint,1,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"` // Update interval in milliseconds (default: 100)
+	Filter        []string               `protobuf:"bytes,2,rep,name=filter,proto3" json:"filter,omitempty"`                            // Optional: only include these components
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3135,9 +3135,9 @@ func (*HalStreamStatusRequest) Descriptor() ([]byte, []int) {
 	return file_hal_proto_rawDescGZIP(), []int{40}
 }
 
-func (x *HalStreamStatusRequest) GetInterval() float64 {
+func (x *HalStreamStatusRequest) GetIntervalMs() int32 {
 	if x != nil {
-		return x.Interval
+		return x.IntervalMs
 	}
 	return 0
 }
@@ -3339,10 +3339,11 @@ const file_hal_proto_rawDesc = "" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x125\n" +
 	"\n" +
 	"components\x18\x04 \x03(\v2\x15.hal.HalComponentInfoR\n" +
-	"components\"@\n" +
+	"components\"E\n" +
 	"\fWatchRequest\x12\x14\n" +
-	"\x05names\x18\x01 \x03(\tR\x05names\x12\x1a\n" +
-	"\binterval\x18\x02 \x01(\x01R\binterval\"\x97\x01\n" +
+	"\x05names\x18\x01 \x03(\tR\x05names\x12\x1f\n" +
+	"\vinterval_ms\x18\x02 \x01(\x05R\n" +
+	"intervalMs\"\x97\x01\n" +
 	"\vValueChange\x12\x1c\n" +
 	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12*\n" +
@@ -3351,9 +3352,10 @@ const file_hal_proto_rawDesc = "" +
 	"\x10ValueChangeBatch\x12\x1c\n" +
 	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\x12*\n" +
 	"\achanges\x18\x02 \x03(\v2\x10.hal.ValueChangeR\achanges\"\x18\n" +
-	"\x16GetSystemStatusRequest\"L\n" +
-	"\x16HalStreamStatusRequest\x12\x1a\n" +
-	"\binterval\x18\x01 \x01(\x01R\binterval\x12\x16\n" +
+	"\x16GetSystemStatusRequest\"Q\n" +
+	"\x16HalStreamStatusRequest\x12\x1f\n" +
+	"\vinterval_ms\x18\x01 \x01(\x05R\n" +
+	"intervalMs\x12\x16\n" +
 	"\x06filter\x18\x02 \x03(\tR\x06filter*\x81\x01\n" +
 	"\aHalType\x12\x18\n" +
 	"\x14HAL_TYPE_UNSPECIFIED\x10\x00\x12\v\n" +

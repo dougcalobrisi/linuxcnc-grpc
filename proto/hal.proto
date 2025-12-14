@@ -362,7 +362,7 @@ message QueryComponentsResponse {
 // Subscribe to value changes
 message WatchRequest {
   repeated string names = 1;    // Pin/signal/param names to watch
-  double interval = 2;          // Minimum update interval (seconds)
+  int32 interval_ms = 2;        // Minimum update interval in milliseconds (default: 100)
 }
 
 // Value change notification
@@ -417,6 +417,6 @@ message GetSystemStatusRequest {
 }
 
 message HalStreamStatusRequest {
-  double interval = 1;          // Update interval in seconds
+  int32 interval_ms = 1;        // Update interval in milliseconds (default: 100)
   repeated string filter = 2;   // Optional: only include these components
 }

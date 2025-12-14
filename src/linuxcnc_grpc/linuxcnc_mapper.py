@@ -13,21 +13,23 @@ from linuxcnc_pb import linuxcnc_pb2
 class LinuxCNCMapper:
     """Maps linuxcnc.stat() to LinuxCNCStatus protobuf messages."""
 
-    def __init__(self, stat: linuxcnc.stat):
+    def __init__(self, stat: linuxcnc.stat, version: str = "unknown"):
         """
         Initialize mapper with a polled stat object.
 
         Args:
             stat: A linuxcnc.stat() object that has been polled
+            version: LinuxCNC version string (from linuxcnc.version)
         """
         self._stat = stat
+        self._version = version
 
     def map_to_proto(self) -> linuxcnc_pb2.LinuxCNCStatus:
         """Map the stat object to a LinuxCNCStatus protobuf message."""
         s = self._stat
         return linuxcnc_pb2.LinuxCNCStatus(
             timestamp=int(time.time() * 1e9),
-            version="2.9",
+            version=self._version,
             debug=s.debug,
             task=self._map_task_status(),
             trajectory=self._map_trajectory_status(),

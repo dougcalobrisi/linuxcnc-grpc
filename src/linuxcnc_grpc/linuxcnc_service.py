@@ -16,6 +16,10 @@ from .linuxcnc_mapper import LinuxCNCMapper
 
 logger = logging.getLogger(__name__)
 
+# Reconnection constants
+INITIAL_RECONNECT_INTERVAL = 1  # seconds
+MAX_RECONNECT_INTERVAL = 30  # seconds
+
 
 class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     """
@@ -33,13 +37,44 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             RuntimeError: If linuxcnc module cannot connect to LinuxCNC.
         """
         self._command_serial = 0
+        self._connected = False
+
+        # Cache version from module attribute
+        self._version = getattr(linuxcnc, 'version', 'unknown')
+
+        # Establish initial connection
+        self._connect()
+        logger.info(f"LinuxCNCService initialized (CONNECTED) - LinuxCNC v{self._version}")
+
+    def _connect(self) -> None:
+        """Establish connection to LinuxCNC."""
         self._stat = linuxcnc.stat()
         self._command = linuxcnc.command()
         self._error_channel = linuxcnc.error_channel()
-
-        # Test the connection by polling
         self._stat.poll()
-        logger.info("LinuxCNCService initialized (CONNECTED)")
+        self._connected = True
+
+    def _reconnect(self) -> bool:
+        """
+        Attempt to reconnect with exponential backoff.
+
+        Returns:
+            True if reconnected successfully, False if all attempts failed.
+        """
+        interval = INITIAL_RECONNECT_INTERVAL
+        while interval <= MAX_RECONNECT_INTERVAL:
+            try:
+                logger.info(f"Attempting to reconnect to LinuxCNC...")
+                self._connect()
+                logger.info("Reconnected to LinuxCNC successfully")
+                return True
+            except Exception as e:
+                logger.warning(f"Reconnect failed, retrying in {interval}s: {e}")
+                time.sleep(interval)
+                interval *= 2
+        self._connected = False
+        logger.error("Failed to reconnect to LinuxCNC after max retries")
+        return False
 
     def _next_serial(self) -> int:
         """Get next command serial number."""
@@ -59,16 +94,25 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         Get current LinuxCNC status.
 
         Polls the LinuxCNC stat channel and returns the current machine status.
+        Attempts to reconnect if the connection is lost.
         """
         logger.debug("GetStatus called")
         try:
             self._stat.poll()
-            mapper = LinuxCNCMapper(self._stat)
+            mapper = LinuxCNCMapper(self._stat, version=self._version)
             return mapper.map_to_proto()
         except linuxcnc.error as e:
             logger.error(f"LinuxCNC error in GetStatus: {e}")
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(f"LinuxCNC error: {e}")
+            # Attempt reconnection
+            if self._reconnect():
+                try:
+                    self._stat.poll()
+                    mapper = LinuxCNCMapper(self._stat, version=self._version)
+                    return mapper.map_to_proto()
+                except Exception as retry_error:
+                    logger.error(f"GetStatus failed after reconnect: {retry_error}")
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(f"LinuxCNC unavailable: {e}")
             return linuxcnc_pb2.LinuxCNCStatus()
 
     # =========================================================================
@@ -415,18 +459,25 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         Stream status updates.
 
         Polls LinuxCNC at the requested interval and streams status updates.
+        Attempts to reconnect if the connection is lost.
         """
-        interval = request.interval if request.interval > 0 else 0.1
-        logger.info(f"StreamStatus started - interval={interval}s")
+        interval_ms = request.interval_ms if request.interval_ms > 0 else 100
+        interval_sec = interval_ms / 1000.0
+        logger.info(f"StreamStatus started - interval={interval_ms}ms")
 
         try:
             while context.is_active():
-                self._stat.poll()
-                mapper = LinuxCNCMapper(self._stat)
-                yield mapper.map_to_proto()
-                time.sleep(interval)
-        except linuxcnc.error as e:
-            logger.error(f"LinuxCNC error in StreamStatus: {e}")
+                try:
+                    self._stat.poll()
+                    mapper = LinuxCNCMapper(self._stat, version=self._version)
+                    yield mapper.map_to_proto()
+                except linuxcnc.error as e:
+                    logger.error(f"LinuxCNC error in StreamStatus: {e}")
+                    if not self._reconnect():
+                        context.set_code(grpc.StatusCode.UNAVAILABLE)
+                        context.set_details(f"LinuxCNC unavailable: {e}")
+                        return
+                time.sleep(interval_sec)
         except Exception as e:
             logger.error(f"StreamStatus error: {e}")
         finally:

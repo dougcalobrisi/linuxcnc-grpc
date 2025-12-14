@@ -5008,7 +5008,7 @@ func (x *WaitCompleteRequest) GetTimeout() float64 {
 
 type StreamStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Interval      float64                `protobuf:"fixed64,1,opt,name=interval,proto3" json:"interval,omitempty"` // Update interval in seconds
+	IntervalMs    int32                  `protobuf:"varint,1,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"` // Update interval in milliseconds (default: 100)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5043,9 +5043,9 @@ func (*StreamStatusRequest) Descriptor() ([]byte, []int) {
 	return file_linuxcnc_proto_rawDescGZIP(), []int{47}
 }
 
-func (x *StreamStatusRequest) GetInterval() float64 {
+func (x *StreamStatusRequest) GetIntervalMs() int32 {
 	if x != nil {
-		return x.Interval
+		return x.IntervalMs
 	}
 	return 0
 }
@@ -5446,9 +5446,10 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\x10GetStatusRequest\"G\n" +
 	"\x13WaitCompleteRequest\x12\x16\n" +
 	"\x06serial\x18\x01 \x01(\x05R\x06serial\x12\x18\n" +
-	"\atimeout\x18\x02 \x01(\x01R\atimeout\"1\n" +
-	"\x13StreamStatusRequest\x12\x1a\n" +
-	"\binterval\x18\x01 \x01(\x01R\binterval\"\x15\n" +
+	"\atimeout\x18\x02 \x01(\x01R\atimeout\"6\n" +
+	"\x13StreamStatusRequest\x12\x1f\n" +
+	"\vinterval_ms\x18\x01 \x01(\x05R\n" +
+	"intervalMs\"\x15\n" +
 	"\x13StreamErrorsRequest*w\n" +
 	"\vInterpState\x12\x1c\n" +
 	"\x18INTERP_STATE_UNSPECIFIED\x10\x00\x12\x0f\n" +

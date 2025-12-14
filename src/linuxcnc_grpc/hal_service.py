@@ -408,8 +408,9 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         context: grpc.ServicerContext
     ) -> Iterator[hal_pb2.HalSystemStatus]:
         """Stream HAL system status updates."""
-        interval = request.interval if request.interval > 0 else 0.1
-        logger.info(f"StreamStatus started - interval={interval}s")
+        interval_ms = request.interval_ms if request.interval_ms > 0 else 100
+        interval = interval_ms / 1000.0
+        logger.info(f"StreamStatus started - interval={interval_ms}ms")
 
         try:
             while context.is_active():
@@ -436,7 +437,8 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         context: grpc.ServicerContext
     ) -> Iterator[hal_pb2.ValueChangeBatch]:
         """Watch for value changes using polling-based change detection."""
-        interval = request.interval if request.interval > 0 else 0.1
+        interval_ms = request.interval_ms if request.interval_ms > 0 else 100
+        interval = interval_ms / 1000.0
         names = list(request.names) if request.names else []
 
         if not names:
@@ -445,7 +447,7 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
             context.set_details("At least one name must be specified")
             return
 
-        logger.info(f"WatchValues started - names={names}, interval={interval}s")
+        logger.info(f"WatchValues started - names={names}, interval={interval_ms}ms")
 
         # Track previous values for change detection
         previous_values: Dict[str, Any] = {}
