@@ -1,0 +1,33 @@
+[package]
+name = "linuxcnc-grpc-examples"
+version = "0.5.0"
+edition = "2021"
+publish = false
+description = "Example applications for the LinuxCNC gRPC client"
+
+[dependencies]
+linuxcnc-grpc = { path = "../../packages/rust" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "io-std", "time"] }
+tonic = "0.12"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+
+[[bin]]
+name = "get_status"
+path = "src/bin/get_status.rs"
+
+[[bin]]
+name = "stream_status"
+path = "src/bin/stream_status.rs"
+
+[[bin]]
+name = "jog_axis"
+path = "src/bin/jog_axis.rs"
+
+[[bin]]
+name = "mdi_command"
+path = "src/bin/mdi_command.rs"
+
+[[bin]]
+name = "hal_query"
+path = "src/bin/hal_query.rs"

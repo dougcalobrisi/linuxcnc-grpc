@@ -229,6 +229,16 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        run: |
+          PROTOC_VERSION=32.1
+          curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -o "protoc-${PROTOC_VERSION}-linux-x86_64.zip" -d /usr/local
+          rm "protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+
       - name: Install Python package
         run: pip install -e ".[dev]"
 
@@ -240,6 +250,9 @@ jobs:
 
       - name: Install Node example dependencies
         run: cd examples/node && npm ci
+
+      - name: Build Rust examples
+        run: cd examples/rust && cargo build --release
 
       - name: Start mock server
         run: |
@@ -272,3 +285,10 @@ jobs:
           npx tsx get_status.ts --port 50051
           timeout 5 npx tsx stream_status.ts --port 50051 || true
           npx tsx hal_query.ts --port 50051 status
+
+      - name: Test Rust examples
+        run: |
+          cd examples/rust
+          ./target/release/get_status --port 50051
+          timeout 5 ./target/release/stream_status --port 50051 || true
+          ./target/release/hal_query --port 50051 status

@@ -120,13 +120,13 @@ println!("Position: X={:.3} Y={:.3}", status.position.unwrap().x, status.positio
 
 Complete examples for all supported languages:
 
-| Example | Description | Python | Go | Node.js |
-|---------|-------------|--------|-----|---------|
-| `get_status` | Poll machine status | [view](examples/python/get_status.py) | [view](examples/go/cmd/get_status/main.go) | [view](examples/node/get_status.ts) |
-| `stream_status` | Real-time status streaming | [view](examples/python/stream_status.py) | [view](examples/go/cmd/stream_status/main.go) | [view](examples/node/stream_status.ts) |
-| `jog_axis` | Jog axes with keyboard | [view](examples/python/jog_axis.py) | [view](examples/go/cmd/jog_axis/main.go) | [view](examples/node/jog_axis.ts) |
-| `mdi_command` | Execute G-code via MDI | [view](examples/python/mdi_command.py) | [view](examples/go/cmd/mdi_command/main.go) | [view](examples/node/mdi_command.ts) |
-| `hal_query` | Query HAL pins/signals | [view](examples/python/hal_query.py) | [view](examples/go/cmd/hal_query/main.go) | [view](examples/node/hal_query.ts) |
+| Example | Description | Python | Go | Node.js | Rust |
+|---------|-------------|--------|-----|---------|------|
+| `get_status` | Poll machine status | [view](examples/python/get_status.py) | [view](examples/go/cmd/get_status/main.go) | [view](examples/node/get_status.ts) | [view](examples/rust/src/bin/get_status.rs) |
+| `stream_status` | Real-time status streaming | [view](examples/python/stream_status.py) | [view](examples/go/cmd/stream_status/main.go) | [view](examples/node/stream_status.ts) | [view](examples/rust/src/bin/stream_status.rs) |
+| `jog_axis` | Jog axes with keyboard | [view](examples/python/jog_axis.py) | [view](examples/go/cmd/jog_axis/main.go) | [view](examples/node/jog_axis.ts) | [view](examples/rust/src/bin/jog_axis.rs) |
+| `mdi_command` | Execute G-code via MDI | [view](examples/python/mdi_command.py) | [view](examples/go/cmd/mdi_command/main.go) | [view](examples/node/mdi_command.ts) | [view](examples/rust/src/bin/mdi_command.rs) |
+| `hal_query` | Query HAL pins/signals | [view](examples/python/hal_query.py) | [view](examples/go/cmd/hal_query/main.go) | [view](examples/node/hal_query.ts) | [view](examples/rust/src/bin/hal_query.rs) |
 
 See [examples/README.md](examples/README.md) for setup instructions.
 

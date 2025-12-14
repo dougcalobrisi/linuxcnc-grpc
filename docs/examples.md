@@ -37,6 +37,14 @@ examples/
 │   ├── jog_axis.ts
 │   ├── mdi_command.ts
 │   └── hal_query.ts
+├── rust/
+│   ├── Cargo.toml
+│   └── src/bin/
+│       ├── get_status.rs
+│       ├── stream_status.rs
+│       ├── jog_axis.rs
+│       ├── mdi_command.rs
+│       └── hal_query.rs
 └── README.md
 ```
 
@@ -82,6 +90,21 @@ npm install
 
 # Run an example
 npx tsx get_status.ts --host localhost --port 50051
+```
+
+### Rust
+
+```bash
+cd examples/rust
+
+# Build all examples
+cargo build --release
+
+# Run an example
+cargo run --bin get_status -- --host localhost --port 50051
+
+# Or run the built binary directly
+./target/release/get_status --host localhost --port 50051
 ```
 
 ---

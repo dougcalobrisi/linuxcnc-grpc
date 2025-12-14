@@ -38,7 +38,8 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 └── examples/                  # Multi-language client examples
     ├── python/                # Python examples
     ├── go/                    # Go examples (in cmd/ subdirectories)
-    └── node/                  # Node.js/TypeScript examples
+    ├── node/                  # Node.js/TypeScript examples
+    └── rust/                  # Rust examples (cargo binaries)
 ```
 
 **`examples/`** - Client examples in all supported languages:
@@ -60,6 +61,9 @@ cd examples/go && go run ./cmd/get_status
 
 # Node.js/TypeScript
 cd examples/node && npm install && npx tsx get_status.ts
+
+# Rust
+cd examples/rust && cargo run --bin get_status
 ```
 
 ## Package Names
