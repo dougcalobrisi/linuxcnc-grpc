@@ -1,46 +1,74 @@
-# LinuxCNC gRPC Server Examples
+# LinuxCNC gRPC Examples
 
-Example Python clients demonstrating how to connect to and use the LinuxCNC gRPC server.
+Example clients demonstrating how to connect to and use the LinuxCNC gRPC server in multiple programming languages.
+
+## Available Languages
+
+| Language | Directory | Package |
+|----------|-----------|---------|
+| Python | [python/](python/) | `linuxcnc-grpc` (PyPI) |
+| Go | [go/](go/) | `github.com/dougcalobrisi/linuxcnc-grpc` |
+| Node.js/TypeScript | [node/](node/) | `linuxcnc-grpc` (npm) |
+
+## Examples
+
+Each language directory contains equivalent implementations of these examples:
+
+| Example | Description |
+|---------|-------------|
+| `get_status` | Connect and poll machine status (simplest example) |
+| `stream_status` | Stream real-time status updates for dashboards |
+| `jog_axis` | Jog an axis (continuous and incremental movements) |
+| `mdi_command` | Execute MDI G-code commands with interactive mode |
+| `hal_query` | Query HAL pins, signals, parameters, and components |
+
+## Quick Start
+
+### Python
+```bash
+pip install linuxcnc-grpc
+cd examples/python
+python get_status.py
+```
+
+### Go
+```bash
+cd examples/go
+go run ./cmd/get_status
+```
+
+### Node.js/TypeScript
+```bash
+cd examples/node
+npm install
+npx tsx get_status.ts
+```
 
 ## Prerequisites
+
+All examples require:
 
 1. LinuxCNC running with the gRPC server started:
    ```bash
    linuxcnc-grpc-server
    ```
 
-2. Install the package (recommended) or just the gRPC libraries:
-   ```bash
-   # Option A: Install the package (includes protobuf stubs)
-   pip install -e /path/to/linuxcnc-grpc-server
+2. Network access to the gRPC server (default: localhost:50051)
 
-   # Option B: Install dependencies only (requires manual stub setup)
-   pip install grpcio protobuf
-   ```
+## Connection Options
 
-## Setting Up the Client
+All examples support connection configuration:
 
-The examples automatically try to import from the installed `linuxcnc-grpc-server` package first, falling back to a local `pb/` directory if not installed.
-
-**If you installed the package (Option A above):** Examples will work immediately.
-
-**If using standalone dependencies (Option B):** Copy the pre-generated stubs:
 ```bash
-# From the examples/ directory
-mkdir -p pb
-cp ../src/linuxcnc_grpc_server/_generated/*.py pb/
-touch pb/__init__.py
+# Python
+python get_status.py --host 192.168.1.100 --port 50051
+
+# Go
+go run ./cmd/get_status -- --host 192.168.1.100 --port 50051
+
+# Node.js
+npx tsx get_status.ts --host 192.168.1.100 --port 50051
 ```
-
-## Examples
-
-| Example | Description |
-|---------|-------------|
-| `get_status.py` | Connect and poll machine status |
-| `jog_axis.py` | Jog an axis with keyboard control |
-| `mdi_command.py` | Execute MDI commands (G-code) |
-| `stream_status.py` | Stream real-time status updates |
-| `hal_query.py` | Query HAL pins, signals, and parameters |
 
 ## Safety Warning
 
@@ -52,3 +80,9 @@ These examples can control real CNC machinery. Always ensure:
 - You're prepared to hit E-stop if something goes wrong
 
 **Never run untested code on a machine with a workpiece or near people.**
+
+## See Also
+
+- [Python README](python/README.md) - Python-specific setup and usage
+- [Go README](go/README.md) - Go-specific setup and usage
+- [Node.js README](node/README.md) - Node.js/TypeScript-specific setup and usage
