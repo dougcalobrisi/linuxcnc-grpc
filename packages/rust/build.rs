@@ -4,19 +4,22 @@ use std::path::PathBuf;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
 
+    // Proto files are included in the crate under proto/
+    let proto_dir = "proto";
+
     // Configure tonic-build for LinuxCNC proto
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
         .out_dir(&out_dir)
-        .compile_protos(&["../../proto/linuxcnc.proto"], &["../../proto"])?;
+        .compile_protos(&[format!("{}/linuxcnc.proto", proto_dir)], &[proto_dir])?;
 
     // Configure tonic-build for HAL proto
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
         .out_dir(&out_dir)
-        .compile_protos(&["../../proto/hal.proto"], &["../../proto"])?;
+        .compile_protos(&[format!("{}/hal.proto", proto_dir)], &[proto_dir])?;
 
     Ok(())
 }

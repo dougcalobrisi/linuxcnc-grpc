@@ -36,12 +36,16 @@ if [ ! -d "dist" ] || [ -z "$(ls -A dist/ 2>/dev/null)" ]; then
     exit 1
 fi
 
-# Check for twine
-require_command "twine" "pip install twine"
+# Check for twine (via python -m)
+if ! python3 -c "import twine" 2>/dev/null; then
+    error "Python 'twine' module not found."
+    echo "  Install with: pip install twine"
+    exit 1
+fi
 
 # Validate packages
 info "Validating packages..."
-twine check dist/*
+python3 -m twine check dist/*
 
 if [ "$DRY_RUN" = true ]; then
     success "Dry run complete - packages validated successfully"
@@ -54,13 +58,13 @@ fi
 # Upload
 if [ "$USE_TEST_PYPI" = true ]; then
     info "Publishing to TestPyPI..."
-    twine upload --repository testpypi dist/*
+    python3 -m twine upload --repository testpypi dist/*
     echo ""
     success "Published to TestPyPI!"
     echo "  View at: https://test.pypi.org/project/linuxcnc-grpc/"
 else
     info "Publishing to PyPI..."
-    twine upload dist/*
+    python3 -m twine upload dist/*
     echo ""
     success "Published to PyPI!"
     echo "  View at: https://pypi.org/project/linuxcnc-grpc/"

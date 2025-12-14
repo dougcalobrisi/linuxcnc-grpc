@@ -46,6 +46,13 @@ if [ "$DRY_RUN" = true ]; then
     echo ""
 fi
 
+# Build all packages first
+echo "=========================================="
+echo "Building packages..."
+echo "=========================================="
+"$SCRIPT_DIR/build-all.sh" || { error "Build failed"; exit 1; }
+echo ""
+
 # Confirmation
 if [ "$SKIP_CONFIRM" = false ] && [ "$DRY_RUN" = false ]; then
     echo "This will publish the following packages:"

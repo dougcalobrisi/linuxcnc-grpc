@@ -80,17 +80,17 @@ require_command() {
 
 # Get version from pyproject.toml
 get_python_version() {
-    grep -E '^version\s*=' "$PYPROJECT" | head -1 | sed 's/.*=\s*"\([^"]*\)".*/\1/'
+    grep -E '^version[[:space:]]*=' "$PYPROJECT" | head -1 | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/'
 }
 
 # Get version from package.json
 get_node_version() {
-    grep -E '"version"' "$PACKAGE_JSON" | head -1 | sed 's/.*:\s*"\([^"]*\)".*/\1/'
+    grep -E '"version"' "$PACKAGE_JSON" | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/'
 }
 
 # Get version from Cargo.toml
 get_rust_version() {
-    grep -E '^version\s*=' "$CARGO_TOML" | head -1 | sed 's/.*=\s*"\([^"]*\)".*/\1/'
+    grep -E '^version[[:space:]]*=' "$CARGO_TOML" | head -1 | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/'
 }
 
 # Check if all package versions match
@@ -113,7 +113,13 @@ check_version_consistency() {
 }
 
 # Parse common arguments
-DRY_RUN="${DRY_RUN:-false}"
+# Normalize DRY_RUN to "true" or "false" (accepts 1, true, yes)
+_dry_run_val="${DRY_RUN:-false}"
+if [ "$_dry_run_val" = "1" ] || [ "$_dry_run_val" = "true" ] || [ "$_dry_run_val" = "yes" ]; then
+    DRY_RUN=true
+else
+    DRY_RUN=false
+fi
 
 parse_common_args() {
     for arg in "$@"; do

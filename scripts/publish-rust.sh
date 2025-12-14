@@ -25,15 +25,19 @@ done
 
 cd "$RUST_DIR"
 
-# Always do a dry-run first to validate
-info "Validating package..."
-cargo publish --dry-run
-
+# For actual publishing, we validate strictly (no dirty files)
+# For dry-run mode, allow dirty to enable testing during development
 if [ "$DRY_RUN" = true ]; then
+    info "Validating package (dry-run, allowing uncommitted changes)..."
+    cargo publish --dry-run --allow-dirty
     echo ""
     success "Dry run complete - package validated successfully"
     exit 0
 fi
+
+# Always do a strict dry-run first to validate before actual publish
+info "Validating package..."
+cargo publish --dry-run
 
 # Publish
 info "Publishing to crates.io..."

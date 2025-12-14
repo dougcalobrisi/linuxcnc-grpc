@@ -22,7 +22,8 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   │   └── src/*.ts           # Generated TypeScript
 │   └── rust/                  # Rust crate (linuxcnc-grpc)
 │       ├── Cargo.toml
-│       └── src/               # Generated Rust code
+│       ├── proto/             # Proto files (copied for crate packaging)
+│       └── src/               # Rust source (uses tonic for codegen)
 ├── scripts/                   # Build, publish, and utility scripts
 │   ├── generate-protos.sh     # Generate proto code for all languages
 │   ├── build-*.sh             # Build scripts per language
@@ -113,7 +114,7 @@ All generated code is **committed** so users don't need protoc:
 
 - **Python**: `src/linuxcnc_grpc/_generated/`
 - **Go**: `*.pb.go` at repo root
-- **Rust**: `packages/rust/src/linuxcnc/`, `packages/rust/src/hal/`
+- **Rust**: Generated at build time via `build.rs` (proto files in `packages/rust/proto/`)
 - **Node.js**: `packages/node/src/linuxcnc.ts`, `packages/node/src/hal.ts`
 
 ## Client Installation
