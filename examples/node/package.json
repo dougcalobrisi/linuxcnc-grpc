@@ -1,0 +1,24 @@
+{
+  "name": "linuxcnc-grpc-examples",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "get-status": "npx tsx get_status.ts",
+    "stream-status": "npx tsx stream_status.ts",
+    "jog-axis": "npx tsx jog_axis.ts",
+    "mdi-command": "npx tsx mdi_command.ts",
+    "hal-query": "npx tsx hal_query.ts"
+  },
+  "dependencies": {
+    "linuxcnc-grpc": "file:../../packages/node",
+    "@grpc/grpc-js": "^1.9.0",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

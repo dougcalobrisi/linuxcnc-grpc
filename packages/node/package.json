@@ -1,0 +1,54 @@
+{
+  "name": "linuxcnc-grpc",
+  "version": "0.5.0",
+  "description": "TypeScript/JavaScript gRPC client for LinuxCNC machine control and HAL",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "linuxcnc",
+    "cnc",
+    "grpc",
+    "machine-control",
+    "hal",
+    "typescript"
+  ],
+  "author": "",
+  "license": "GPL-2.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dougcalobrisi/linuxcnc-grpc.git",
+    "directory": "packages/node"
+  },
+  "bugs": {
+    "url": "https://github.com/dougcalobrisi/linuxcnc-grpc/issues"
+  },
+  "homepage": "https://github.com/dougcalobrisi/linuxcnc-grpc#readme",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.9.0",
+    "protobufjs": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-proto": "^2.8.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  }
+}
