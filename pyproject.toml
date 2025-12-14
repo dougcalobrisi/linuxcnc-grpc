@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "linuxcnc-grpc-server"
+name = "linuxcnc-grpc"
 version = "0.5.0"
 description = "gRPC server exposing LinuxCNC machine control and HAL functionality"
 readme = "README.md"
@@ -33,16 +33,17 @@ dependencies = [
 dev = ["grpcio-tools>=1.60.0", "pytest>=7.0", "pytest-cov>=4.0"]
 
 [project.scripts]
-linuxcnc-grpc-server = "linuxcnc_grpc_server.server:main"
+linuxcnc-grpc = "linuxcnc_grpc.server:main"
 
 [project.urls]
-Repository = "https://github.com/dougcalobrisi/linuxcnc-grpc-server"
+Repository = "https://github.com/dougcalobrisi/linuxcnc-grpc"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "packages/python"]
 
-[tool.setuptools.package-data]
-"linuxcnc_grpc_server.proto" = ["*.proto"]
+# Proto files are now at repo root in proto/ directory
+# [tool.setuptools.package-data]
+# "linuxcnc_grpc.proto" = ["*.proto"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -52,7 +53,7 @@ python_functions = "test_*"
 addopts = "-v --tb=short"
 
 [tool.coverage.run]
-source = ["src/linuxcnc_grpc_server"]
+source = ["src/linuxcnc_grpc"]
 omit = ["*/_generated/*"]
 
 [tool.coverage.report]

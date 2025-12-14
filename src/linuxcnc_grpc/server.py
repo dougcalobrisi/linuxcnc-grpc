@@ -5,11 +5,11 @@ LinuxCNC + HAL gRPC Server
 A combined gRPC server implementing both LinuxCNCService and HalService.
 
 Usage:
-    python -m linuxcnc_grpc_server.server [--port PORT] [--host HOST]
-    linuxcnc-grpc-server [--port PORT] [--host HOST]
+    python -m linuxcnc_grpc.server [--port PORT] [--host HOST]
+    linuxcnc-grpc [--port PORT] [--host HOST]
 
 Example:
-    linuxcnc-grpc-server --port 50051 --host 0.0.0.0
+    linuxcnc-grpc --port 50051 --host 0.0.0.0
 """
 
 import argparse
@@ -20,7 +20,7 @@ from concurrent import futures
 
 import grpc
 
-from ._generated import linuxcnc_pb2_grpc, hal_pb2_grpc
+from linuxcnc_pb import linuxcnc_pb2_grpc, hal_pb2_grpc
 from .linuxcnc_service import LinuxCNCServiceServicer
 from .hal_service import HalServiceServicer
 
@@ -98,8 +98,6 @@ def serve(host: str = "0.0.0.0", port: int = 50051):
     logger.info("Services available:")
     logger.info("  - LinuxCNCService (linuxcnc.proto)")
     logger.info("  - HalService (hal.proto)")
-    logger.info("")
-    logger.info("MODE: CONNECTED (real LinuxCNC/HAL)")
     logger.info("")
     logger.info("Press Ctrl+C to stop")
     logger.info("=" * 60)

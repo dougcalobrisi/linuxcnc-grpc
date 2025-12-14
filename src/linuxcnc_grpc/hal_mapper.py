@@ -12,7 +12,7 @@ Note: The HAL Python API returns dicts with UPPERCASE keys:
 import time
 from typing import List, Dict, Any, Optional
 
-from ._generated import hal_pb2
+from linuxcnc_pb import hal_pb2
 
 
 class HalMapper:

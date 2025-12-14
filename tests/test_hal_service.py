@@ -17,7 +17,7 @@ class TestHalServiceInit:
     def test_init_success(self, mock_hal_module):
         """Service initializes with valid HAL connection."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
+            from linuxcnc_grpc.hal_service import HalServiceServicer
             service = HalServiceServicer()
             assert service._component is not None
             mock_hal_module.component.assert_called_once_with("grpc-hal-service")
@@ -26,7 +26,7 @@ class TestHalServiceInit:
         """Service raises RuntimeError when HAL fails."""
         mock_hal_module.component.side_effect = Exception("HAL not running")
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
+            from linuxcnc_grpc.hal_service import HalServiceServicer
             with pytest.raises(RuntimeError, match="Failed to access HAL"):
                 HalServiceServicer()
 
@@ -37,8 +37,8 @@ class TestGetSystemStatus:
     def test_success(self, mock_hal_module, mock_grpc_context):
         """Returns complete HAL system status."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.GetSystemStatusRequest()
@@ -52,8 +52,8 @@ class TestGetSystemStatus:
     def test_exception_handling(self, mock_hal_module, mock_grpc_context):
         """Sets error code on exception."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             mock_hal_module.get_info_pins.side_effect = Exception("HAL error")
@@ -69,8 +69,8 @@ class TestSendCommand:
     def test_rejects_modification_command(self, mock_hal_module, mock_grpc_context):
         """Rejects commands not in READ_ONLY_COMMANDS."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -86,8 +86,8 @@ class TestSendCommand:
         """Returns success when component exists."""
         mock_hal_module.component_exists.return_value = True
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -102,8 +102,8 @@ class TestSendCommand:
         """Returns error message when component doesn't exist."""
         mock_hal_module.component_exists.return_value = False
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -119,8 +119,8 @@ class TestSendCommand:
         mock_hal_module.component_exists.return_value = True
         mock_hal_module.component_is_ready.return_value = True
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -136,8 +136,8 @@ class TestSendCommand:
         mock_hal_module.component_exists.return_value = True
         mock_hal_module.component_is_ready.return_value = False
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -152,8 +152,8 @@ class TestSendCommand:
         """Returns failure when component doesn't exist."""
         mock_hal_module.component_exists.return_value = False
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -168,8 +168,8 @@ class TestSendCommand:
         """Returns success when pin has writer."""
         mock_hal_module.pin_has_writer.return_value = True
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -184,8 +184,8 @@ class TestSendCommand:
         """Returns error message when pin has no writer."""
         mock_hal_module.pin_has_writer.return_value = False
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -199,8 +199,8 @@ class TestSendCommand:
     def test_uses_provided_serial(self, mock_hal_module, mock_grpc_context):
         """Uses serial from request."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -214,8 +214,8 @@ class TestSendCommand:
     def test_auto_increments_serial(self, mock_hal_module, mock_grpc_context):
         """Auto-increments serial when not provided."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request1 = hal_pb2.HalCommand(
@@ -233,8 +233,8 @@ class TestSendCommand:
         """Returns error when command raises exception."""
         mock_hal_module.component_exists.side_effect = Exception("HAL error")
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.HalCommand(
@@ -253,8 +253,8 @@ class TestGetValue:
         """Returns float value correctly."""
         mock_hal_module.get_value.return_value = 123.456
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.GetValueCommand(name="axis.x.pos-cmd")
@@ -267,8 +267,8 @@ class TestGetValue:
         """Returns bit value correctly."""
         mock_hal_module.get_value.return_value = True
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.GetValueCommand(name="iocontrol.0.emc-enable-in")
@@ -281,8 +281,8 @@ class TestGetValue:
         """Returns error when value lookup fails."""
         mock_hal_module.get_value.side_effect = Exception("Pin not found")
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.GetValueCommand(name="nonexistent")
@@ -298,8 +298,8 @@ class TestQueryPins:
     def test_returns_all_pins(self, mock_hal_module, mock_grpc_context):
         """Returns all pins with wildcard pattern."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QueryPinsCommand(pattern="*")
@@ -311,8 +311,8 @@ class TestQueryPins:
     def test_filters_by_pattern(self, mock_hal_module, mock_grpc_context):
         """Filters pins by glob pattern."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QueryPinsCommand(pattern="axis.*")
@@ -325,8 +325,8 @@ class TestQueryPins:
     def test_returns_empty_for_no_match(self, mock_hal_module, mock_grpc_context):
         """Returns empty list when no pins match."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QueryPinsCommand(pattern="nonexistent.*")
@@ -338,8 +338,8 @@ class TestQueryPins:
     def test_error_handling(self, mock_hal_module, mock_grpc_context):
         """Returns error on exception."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             mock_hal_module.get_info_pins.side_effect = Exception("HAL error")
@@ -352,8 +352,8 @@ class TestQueryPins:
     def test_default_pattern(self, mock_hal_module, mock_grpc_context):
         """Uses wildcard pattern when not specified."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QueryPinsCommand()
@@ -369,8 +369,8 @@ class TestQuerySignals:
     def test_returns_all_signals(self, mock_hal_module, mock_grpc_context):
         """Returns all signals with wildcard pattern."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QuerySignalsCommand(pattern="*")
@@ -382,8 +382,8 @@ class TestQuerySignals:
     def test_filters_by_pattern(self, mock_hal_module, mock_grpc_context):
         """Filters signals by glob pattern."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QuerySignalsCommand(pattern="x-*")
@@ -395,8 +395,8 @@ class TestQuerySignals:
     def test_error_handling(self, mock_hal_module, mock_grpc_context):
         """Returns error on exception."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             mock_hal_module.get_info_signals.side_effect = Exception("HAL error")
@@ -413,8 +413,8 @@ class TestQueryParams:
     def test_returns_all_params(self, mock_hal_module, mock_grpc_context):
         """Returns all parameters with wildcard pattern."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QueryParamsCommand(pattern="*")
@@ -426,8 +426,8 @@ class TestQueryParams:
     def test_filters_by_pattern(self, mock_hal_module, mock_grpc_context):
         """Filters params by glob pattern."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QueryParamsCommand(pattern="pid.*")
@@ -439,8 +439,8 @@ class TestQueryParams:
     def test_error_handling(self, mock_hal_module, mock_grpc_context):
         """Returns error on exception."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             mock_hal_module.get_info_params.side_effect = Exception("HAL error")
@@ -457,8 +457,8 @@ class TestQueryComponents:
     def test_returns_all_components(self, mock_hal_module, mock_grpc_context):
         """Returns all derived components."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QueryComponentsCommand(pattern="*")
@@ -470,8 +470,8 @@ class TestQueryComponents:
     def test_filters_by_pattern(self, mock_hal_module, mock_grpc_context):
         """Filters components by glob pattern."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.QueryComponentsCommand(pattern="axis.*")
@@ -485,8 +485,8 @@ class TestQueryComponents:
     def test_error_handling(self, mock_hal_module, mock_grpc_context):
         """Returns error on exception."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             mock_hal_module.get_info_pins.side_effect = Exception("HAL error")
@@ -507,11 +507,11 @@ class TestStreamStatus:
 
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
             with patch("time.sleep"):
-                from linuxcnc_grpc_server.hal_service import HalServiceServicer
-                from linuxcnc_grpc_server._generated import hal_pb2
+                from linuxcnc_grpc.hal_service import HalServiceServicer
+                from linuxcnc_pb import hal_pb2
 
                 service = HalServiceServicer()
-                request = hal_pb2.StreamStatusRequest(interval=0.001)
+                request = hal_pb2.HalStreamStatusRequest(interval=0.001)
 
                 results = list(service.StreamStatus(request, mock_grpc_context))
 
@@ -524,11 +524,11 @@ class TestStreamStatus:
 
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
             with patch("time.sleep") as mock_sleep:
-                from linuxcnc_grpc_server.hal_service import HalServiceServicer
-                from linuxcnc_grpc_server._generated import hal_pb2
+                from linuxcnc_grpc.hal_service import HalServiceServicer
+                from linuxcnc_pb import hal_pb2
 
                 service = HalServiceServicer()
-                request = hal_pb2.StreamStatusRequest(interval=0)
+                request = hal_pb2.HalStreamStatusRequest(interval=0)
 
                 list(service.StreamStatus(request, mock_grpc_context))
 
@@ -540,11 +540,11 @@ class TestStreamStatus:
 
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
             with patch("time.sleep") as mock_sleep:
-                from linuxcnc_grpc_server.hal_service import HalServiceServicer
-                from linuxcnc_grpc_server._generated import hal_pb2
+                from linuxcnc_grpc.hal_service import HalServiceServicer
+                from linuxcnc_pb import hal_pb2
 
                 service = HalServiceServicer()
-                request = hal_pb2.StreamStatusRequest(interval=0.5)
+                request = hal_pb2.HalStreamStatusRequest(interval=0.5)
 
                 list(service.StreamStatus(request, mock_grpc_context))
 
@@ -557,8 +557,8 @@ class TestWatchValues:
     def test_rejects_empty_names(self, mock_hal_module, mock_grpc_context):
         """Sets error when names list is empty."""
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
-            from linuxcnc_grpc_server.hal_service import HalServiceServicer
-            from linuxcnc_grpc_server._generated import hal_pb2
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
 
             service = HalServiceServicer()
             request = hal_pb2.WatchRequest(names=[], interval=0.1)
@@ -576,8 +576,8 @@ class TestWatchValues:
 
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
             with patch("time.sleep"):
-                from linuxcnc_grpc_server.hal_service import HalServiceServicer
-                from linuxcnc_grpc_server._generated import hal_pb2
+                from linuxcnc_grpc.hal_service import HalServiceServicer
+                from linuxcnc_pb import hal_pb2
 
                 service = HalServiceServicer()
                 request = hal_pb2.WatchRequest(
@@ -598,8 +598,8 @@ class TestWatchValues:
 
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
             with patch("time.sleep"):
-                from linuxcnc_grpc_server.hal_service import HalServiceServicer
-                from linuxcnc_grpc_server._generated import hal_pb2
+                from linuxcnc_grpc.hal_service import HalServiceServicer
+                from linuxcnc_pb import hal_pb2
 
                 service = HalServiceServicer()
                 request = hal_pb2.WatchRequest(
@@ -619,8 +619,8 @@ class TestWatchValues:
 
         with patch.dict(sys.modules, {"hal": mock_hal_module}):
             with patch("time.sleep") as mock_sleep:
-                from linuxcnc_grpc_server.hal_service import HalServiceServicer
-                from linuxcnc_grpc_server._generated import hal_pb2
+                from linuxcnc_grpc.hal_service import HalServiceServicer
+                from linuxcnc_pb import hal_pb2
 
                 service = HalServiceServicer()
                 request = hal_pb2.WatchRequest(

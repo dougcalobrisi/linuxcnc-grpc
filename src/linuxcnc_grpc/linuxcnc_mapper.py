@@ -7,7 +7,7 @@ Maps linuxcnc.stat() object attributes to LinuxCNCStatus protobuf messages.
 import time
 import linuxcnc
 
-from ._generated import linuxcnc_pb2
+from linuxcnc_pb import linuxcnc_pb2
 
 
 class LinuxCNCMapper:

@@ -75,7 +75,7 @@ class HalServiceStub(object):
                 _registered_method=True)
         self.StreamStatus = channel.unary_stream(
                 '/hal.HalService/StreamStatus',
-                request_serializer=hal__pb2.StreamStatusRequest.SerializeToString,
+                request_serializer=hal__pb2.HalStreamStatusRequest.SerializeToString,
                 response_deserializer=hal__pb2.HalSystemStatus.FromString,
                 _registered_method=True)
         self.WatchValues = channel.unary_stream(
@@ -195,7 +195,7 @@ def add_HalServiceServicer_to_server(servicer, server):
             ),
             'StreamStatus': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamStatus,
-                    request_deserializer=hal__pb2.StreamStatusRequest.FromString,
+                    request_deserializer=hal__pb2.HalStreamStatusRequest.FromString,
                     response_serializer=hal__pb2.HalSystemStatus.SerializeToString,
             ),
             'WatchValues': grpc.unary_stream_rpc_method_handler(
@@ -422,7 +422,7 @@ class HalService(object):
             request,
             target,
             '/hal.HalService/StreamStatus',
-            hal__pb2.StreamStatusRequest.SerializeToString,
+            hal__pb2.HalStreamStatusRequest.SerializeToString,
             hal__pb2.HalSystemStatus.FromString,
             options,
             channel_credentials,

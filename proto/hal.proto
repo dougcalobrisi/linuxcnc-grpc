@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package hal;
 
-option go_package = "linuxcnc/pb/hal";
+option go_package = "github.com/dougcalobrisi/linuxcnc-grpc/packages/go;pb";
 
 // ============================================================================
 // ENUMS
@@ -406,7 +406,7 @@ service HalService {
   rpc QueryComponents(QueryComponentsCommand) returns (QueryComponentsResponse);
 
   // Stream system status updates
-  rpc StreamStatus(StreamStatusRequest) returns (stream HalSystemStatus);
+  rpc StreamStatus(HalStreamStatusRequest) returns (stream HalSystemStatus);
 
   // Watch for value changes
   rpc WatchValues(WatchRequest) returns (stream ValueChangeBatch);
@@ -416,7 +416,7 @@ message GetSystemStatusRequest {
   // Empty - returns complete status
 }
 
-message StreamStatusRequest {
+message HalStreamStatusRequest {
   double interval = 1;          // Update interval in seconds
   repeated string filter = 2;   // Optional: only include these components
 }

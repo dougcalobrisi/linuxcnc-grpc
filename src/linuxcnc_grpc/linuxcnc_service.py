@@ -11,7 +11,7 @@ from typing import Iterator
 
 import grpc
 import linuxcnc
-from ._generated import linuxcnc_pb2, linuxcnc_pb2_grpc
+from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 from .linuxcnc_mapper import LinuxCNCMapper
 
 logger = logging.getLogger(__name__)

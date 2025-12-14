@@ -24,7 +24,7 @@ class TestLinuxCNCMapperImport:
     def test_import_mapper(self, mock_linuxcnc_module):
         """Mapper imports successfully with mocked linuxcnc."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
             assert LinuxCNCMapper is not None
 
 
@@ -34,7 +34,7 @@ class TestLinuxCNCMapperPosition:
     def test_map_position_basic(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map a 9-element position tuple."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             pos = mapper._map_position((1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
@@ -52,7 +52,7 @@ class TestLinuxCNCMapperPosition:
     def test_map_position_with_rotary(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map position with rotary axes."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             pos = mapper._map_position((10.0, 20.0, 30.0, 45.0, 90.0, 180.0, 0.0, 0.0, 0.0))
@@ -71,8 +71,8 @@ class TestLinuxCNCMapperEnums:
     def test_map_task_mode_manual(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map MODE_MANUAL."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_task_mode(mock_linuxcnc_module.MODE_MANUAL)
@@ -81,8 +81,8 @@ class TestLinuxCNCMapperEnums:
     def test_map_task_mode_auto(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map MODE_AUTO."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_task_mode(mock_linuxcnc_module.MODE_AUTO)
@@ -91,8 +91,8 @@ class TestLinuxCNCMapperEnums:
     def test_map_task_mode_mdi(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map MODE_MDI."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_task_mode(mock_linuxcnc_module.MODE_MDI)
@@ -101,8 +101,8 @@ class TestLinuxCNCMapperEnums:
     def test_map_task_state_estop(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map STATE_ESTOP."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_task_state(mock_linuxcnc_module.STATE_ESTOP)
@@ -111,8 +111,8 @@ class TestLinuxCNCMapperEnums:
     def test_map_task_state_on(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map STATE_ON."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_task_state(mock_linuxcnc_module.STATE_ON)
@@ -121,8 +121,8 @@ class TestLinuxCNCMapperEnums:
     def test_map_rcs_status_done(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map RCS_DONE."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_rcs_status(mock_linuxcnc_module.RCS_DONE)
@@ -131,8 +131,8 @@ class TestLinuxCNCMapperEnums:
     def test_map_interp_state_idle(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map INTERP_IDLE."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_interp_state(mock_linuxcnc_module.INTERP_IDLE)
@@ -141,8 +141,8 @@ class TestLinuxCNCMapperEnums:
     def test_map_joint_type_linear(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map LINEAR joint type."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_joint_type(mock_linuxcnc_module.LINEAR)
@@ -151,8 +151,8 @@ class TestLinuxCNCMapperEnums:
     def test_map_joint_type_angular(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map ANGULAR joint type."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_joint_type(mock_linuxcnc_module.ANGULAR)
@@ -165,8 +165,8 @@ class TestLinuxCNCMapperCoolant:
     def test_map_coolant_on(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map coolant ON state."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_coolant_state(1)
@@ -175,8 +175,8 @@ class TestLinuxCNCMapperCoolant:
     def test_map_coolant_off(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map coolant OFF state."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             result = mapper._map_coolant_state(0)
@@ -189,8 +189,8 @@ class TestLinuxCNCMapperFullStatus:
     def test_map_to_proto(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Map full LinuxCNC status to protobuf."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             status = mapper.map_to_proto()
@@ -223,8 +223,8 @@ class TestLinuxCNCMapperFullStatus:
     def test_map_to_proto_joints(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Verify joint mapping details."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             status = mapper.map_to_proto()
@@ -239,7 +239,7 @@ class TestLinuxCNCMapperFullStatus:
     def test_map_to_proto_spindles(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Verify spindle mapping."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             status = mapper.map_to_proto()
@@ -253,8 +253,8 @@ class TestLinuxCNCMapperFullStatus:
     def test_map_to_proto_io(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Verify IO mapping."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_pb import linuxcnc_pb2
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             status = mapper.map_to_proto()
@@ -268,7 +268,7 @@ class TestLinuxCNCMapperFullStatus:
     def test_map_to_proto_gcodes(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Verify G-code status mapping."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             status = mapper.map_to_proto()
@@ -285,7 +285,7 @@ class TestLinuxCNCMapperLimits:
     def test_map_limit_status(self, mock_linuxcnc_module, mock_linuxcnc_stat):
         """Verify limit status mapping."""
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_mapper import LinuxCNCMapper
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
 
             mapper = LinuxCNCMapper(mock_linuxcnc_stat)
             status = mapper.map_to_proto()

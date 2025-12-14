@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package linuxcnc;
 
-option go_package = "linuxcnc/pb";
+option go_package = "github.com/dougcalobrisi/linuxcnc-grpc/packages/go;pb";
 
 // ============================================================================
 // ENUMS

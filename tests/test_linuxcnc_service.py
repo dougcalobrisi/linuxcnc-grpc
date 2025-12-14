@@ -21,7 +21,7 @@ class TestLinuxCNCServiceInit:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
 
             service = LinuxCNCServiceServicer()
             assert service._stat is not None
@@ -32,7 +32,7 @@ class TestLinuxCNCServiceInit:
         mock_linuxcnc_module.stat.side_effect = Exception("LinuxCNC not running")
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
 
             with pytest.raises(Exception, match="LinuxCNC not running"):
                 LinuxCNCServiceServicer()
@@ -48,8 +48,8 @@ class TestGetStatus:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.GetStatusRequest()
@@ -67,8 +67,8 @@ class TestGetStatus:
         mock_linuxcnc_module.error = Exception
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             mock_linuxcnc_stat.poll.side_effect = mock_linuxcnc_module.error(
@@ -92,8 +92,8 @@ class TestSendCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             # Empty command - WhichOneof returns None
@@ -113,8 +113,8 @@ class TestSendCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -134,8 +134,8 @@ class TestSendCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request1 = linuxcnc_pb2.LinuxCNCCommand(
@@ -172,8 +172,8 @@ class TestStateCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             state_enum = getattr(linuxcnc_pb2, state)
@@ -200,8 +200,8 @@ class TestModeCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             mode_enum = getattr(linuxcnc_pb2, mode)
@@ -227,8 +227,8 @@ class TestMdiCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -249,8 +249,8 @@ class TestMdiCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -274,8 +274,8 @@ class TestJogCommand:
         mock_linuxcnc_module.JOG_STOP = 0
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -298,8 +298,8 @@ class TestJogCommand:
         mock_linuxcnc_module.JOG_CONTINUOUS = 1
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -325,8 +325,8 @@ class TestJogCommand:
         mock_linuxcnc_module.JOG_INCREMENT = 2
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -356,8 +356,8 @@ class TestHomeCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -376,8 +376,8 @@ class TestHomeCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -402,8 +402,8 @@ class TestUnhomeCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -429,8 +429,8 @@ class TestSpindleCommand:
         mock_linuxcnc_module.SPINDLE_FORWARD = 1
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -453,8 +453,8 @@ class TestSpindleCommand:
         mock_linuxcnc_module.SPINDLE_REVERSE = -1
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -477,8 +477,8 @@ class TestSpindleCommand:
         mock_linuxcnc_module.SPINDLE_OFF = 0
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -501,8 +501,8 @@ class TestSpindleCommand:
         mock_linuxcnc_module.SPINDLE_INCREASE = 2
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -529,8 +529,8 @@ class TestBrakeCommand:
         mock_linuxcnc_module.BRAKE_ENGAGE = 1
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -556,8 +556,8 @@ class TestFeedrateCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -578,8 +578,8 @@ class TestFeedrateCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -604,8 +604,8 @@ class TestSpindleOverrideCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -632,8 +632,8 @@ class TestCoolantCommand:
         mock_linuxcnc_module.FLOOD_OFF = 0
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -656,8 +656,8 @@ class TestCoolantCommand:
         mock_linuxcnc_module.FLOOD_OFF = 0
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -679,8 +679,8 @@ class TestCoolantCommand:
         mock_linuxcnc_module.FLOOD_ON = 1
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -706,8 +706,8 @@ class TestProgramCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -729,8 +729,8 @@ class TestProgramCommand:
         mock_linuxcnc_module.AUTO_RUN = 0
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -751,8 +751,8 @@ class TestProgramCommand:
         mock_linuxcnc_module.AUTO_PAUSE = 1
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -773,8 +773,8 @@ class TestProgramCommand:
         mock_linuxcnc_module.AUTO_RESUME = 2
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -795,8 +795,8 @@ class TestProgramCommand:
         mock_linuxcnc_module.AUTO_STEP = 3
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -816,8 +816,8 @@ class TestProgramCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -844,8 +844,8 @@ class TestWaitComplete:
         mock_linuxcnc_module.RCS_DONE = 1
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.WaitCompleteRequest(serial=1, timeout=5.0)
@@ -867,8 +867,8 @@ class TestWaitComplete:
         mock_linuxcnc_module.RCS_ERROR = 3
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.WaitCompleteRequest(serial=1, timeout=5.0)
@@ -888,8 +888,8 @@ class TestWaitComplete:
         mock_linuxcnc_module.RCS_DONE = 1
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.WaitCompleteRequest(serial=1, timeout=0)
@@ -911,8 +911,8 @@ class TestStreamStatus:
         mock_grpc_context.is_active.side_effect = [True, True, False]
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.StreamStatusRequest(interval=0.001)
@@ -933,8 +933,8 @@ class TestStreamStatus:
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
             with patch("time.sleep") as mock_sleep:
-                from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-                from linuxcnc_grpc_server._generated import linuxcnc_pb2
+                from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+                from linuxcnc_pb import linuxcnc_pb2
 
                 service = LinuxCNCServiceServicer()
                 request = linuxcnc_pb2.StreamStatusRequest(interval=0)
@@ -961,8 +961,8 @@ class TestStreamErrors:
         mock_grpc_context.is_active.side_effect = [True, True, False]
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.StreamErrorsRequest()
@@ -984,8 +984,8 @@ class TestStreamErrors:
         mock_grpc_context.is_active.side_effect = [True, False]
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.StreamErrorsRequest()
@@ -1012,8 +1012,8 @@ class TestStreamErrors:
         mock_grpc_context.is_active.side_effect = [True, True, True, False]
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.StreamErrorsRequest()
@@ -1038,8 +1038,8 @@ class TestOverrideLimitsCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -1064,8 +1064,8 @@ class TestProgramOptionsCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
@@ -1087,8 +1087,8 @@ class TestProgramOptionsCommand:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc_server.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_grpc_server._generated import linuxcnc_pb2
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(

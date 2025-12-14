@@ -6,8 +6,8 @@ HalMapper is pure Python and can be fully tested without LinuxCNC.
 
 import pytest
 
-from linuxcnc_grpc_server.hal_mapper import HalMapper
-from linuxcnc_grpc_server._generated import hal_pb2
+from linuxcnc_grpc.hal_mapper import HalMapper
+from linuxcnc_pb import hal_pb2
 
 
 class TestHalMapperInit:

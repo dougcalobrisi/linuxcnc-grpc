@@ -21,7 +21,7 @@ except ImportError as e:
         "LinuxCNC/HAL environment."
     ) from e
 
-from ._generated import hal_pb2, hal_pb2_grpc
+from linuxcnc_pb import hal_pb2, hal_pb2_grpc
 from .hal_mapper import HalMapper
 
 logger = logging.getLogger(__name__)
@@ -404,7 +404,7 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
 
     def StreamStatus(
         self,
-        request: hal_pb2.StreamStatusRequest,
+        request: hal_pb2.HalStreamStatusRequest,
         context: grpc.ServicerContext
     ) -> Iterator[hal_pb2.HalSystemStatus]:
         """Stream HAL system status updates."""
