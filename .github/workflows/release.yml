@@ -65,6 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +74,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: 'pip'
 
       - name: Install build tools
         run: pip install build twine
@@ -104,6 +106,8 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+          cache: 'npm'
+          cache-dependency-path: 'packages/node/package-lock.json'
 
       - name: Install and build
         run: cd packages/node && npm ci && npm run build
@@ -125,18 +129,37 @@ jobs:
     needs: [preflight, ci]
     runs-on: ubuntu-latest
     environment: crates
+    env:
+      PROTOC_VERSION: "32.1"
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache protoc binary
+        id: cache-protoc
+        uses: actions/cache@v4
+        with:
+          path: ~/protoc
+          key: protoc-${{ env.PROTOC_VERSION }}-linux
+
+      - name: Download protoc
+        if: steps.cache-protoc.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/protoc
+          curl -L "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o ~/protoc/protoc.zip
+          unzip ~/protoc/protoc.zip -d ~/protoc
+
       - name: Install protoc
         run: |
-          PROTOC_VERSION=32.1
-          curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          sudo unzip -o "protoc-${PROTOC_VERSION}-linux-x86_64.zip" -d /usr/local
-          rm "protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo cp ~/protoc/bin/protoc /usr/local/bin/
+          sudo cp -r ~/protoc/include/* /usr/local/include/
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/rust -> target
 
       - name: Publish to crates.io
         if: ${{ !inputs.dry_run }}

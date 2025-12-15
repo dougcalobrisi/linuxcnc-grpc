@@ -203,6 +203,29 @@ GitHub Actions workflows:
 - **ci.yml**: Runs on push/PR - tests all languages, checks proto freshness
 - **release.yml**: Unified release workflow (manual dispatch) - publishes to PyPI, npm, and crates.io
 
+### CI Job Structure
+
+```
+proto-check ─────────────────────────────────────────────────────┐
+lint ──► test-python ──► test-node ──► examples-node            │
+                     ├──► test-rust ──► examples-rust           │
+                     └──► test-go ───► examples-go              │
+                     └──► examples-python                       │
+```
+
+### CI Caching Strategy
+
+The CI workflow uses aggressive caching to minimize build times:
+
+| Cache | Key | Jobs |
+|-------|-----|------|
+| protoc binary | `protoc-{VERSION}-linux` | proto-check, test-rust, examples-rust |
+| pip packages | `pyproject.toml` hash | All jobs with Python |
+| npm packages | `package-lock.json` hash | test-node, examples-node |
+| Go modules | Built-in (setup-go@v5) | test-go, examples-go |
+| Cargo (Rust) | `Swatinem/rust-cache` with `shared-key: rust-ci` | test-rust, examples-rust |
+| Cargo bin plugins | `cargo-bin-proto-plugins-{OS}-v1` | proto-check |
+
 ### Releasing
 
 1. Update versions: `make sync-version VERSION=x.y.z`
