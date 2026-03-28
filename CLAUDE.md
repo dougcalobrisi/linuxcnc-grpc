@@ -96,7 +96,7 @@ command type strings to handler methods (no dynamic `getattr` dispatch).
 - MDI commands reject empty strings and null bytes, and log the full command at WARNING level for audit.
 
 **File Management RPCs**: `UploadFile`, `ListFiles`, and `DeleteFile` provide remote file
-management for the NC files directory (`/home/cnc/linuxcnc/nc_files` or `LINUXCNC_NC_FILES` env var).
+management for the NC files directory (`/home/linuxcnc/linuxcnc/nc_files` or `LINUXCNC_NC_FILES` env var).
 These RPCs do not require the LinuxCNC lock (no stat/command access) and use `_validate_nc_path`
 for security. Upload max size is 10 MB.
 

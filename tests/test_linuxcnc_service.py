@@ -433,7 +433,7 @@ class TestProgramPathValidation:
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
 
         with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}), \
-             patch.dict(os.environ, {"LINUXCNC_NC_FILES": "/home/cnc/nc_files"}):
+             patch.dict(os.environ, {"LINUXCNC_NC_FILES": "/home/linuxcnc/nc_files"}):
             from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
             from linuxcnc_pb import linuxcnc_pb2
 

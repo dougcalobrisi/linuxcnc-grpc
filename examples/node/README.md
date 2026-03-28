@@ -7,7 +7,7 @@ Example TypeScript clients demonstrating how to connect to and use the LinuxCNC 
 1. Node.js 18 or later installed
 2. LinuxCNC running with the gRPC server started:
    ```bash
-   linuxcnc-grpc-server
+   linuxcnc-grpc
    ```
 
 ## Examples

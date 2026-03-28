@@ -50,7 +50,7 @@ All examples require:
 
 1. LinuxCNC running with the gRPC server started:
    ```bash
-   linuxcnc-grpc-server
+   linuxcnc-grpc
    ```
 
 2. Network access to the gRPC server (default: localhost:50051)

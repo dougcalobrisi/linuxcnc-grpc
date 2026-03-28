@@ -7,7 +7,7 @@ Example Go clients demonstrating how to connect to and use the LinuxCNC gRPC ser
 1. Go 1.24 or later installed
 2. LinuxCNC running with the gRPC server started:
    ```bash
-   linuxcnc-grpc-server
+   linuxcnc-grpc
    ```
 
 ## Examples

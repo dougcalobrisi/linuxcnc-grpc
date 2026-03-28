@@ -19,7 +19,7 @@ pip install linuxcnc-grpc
 Start the server (LinuxCNC must already be running):
 
 ```bash
-linuxcnc-grpc-server --host 0.0.0.0 --port 50051
+linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 See [Server Configuration](server.md) for auto-start setup and advanced options.

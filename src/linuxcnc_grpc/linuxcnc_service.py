@@ -28,7 +28,7 @@ MAX_MDI_COMMAND_LENGTH = 10000  # characters
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # Default allowed NC file directory (override with LINUXCNC_NC_FILES env var)
-DEFAULT_NC_FILES_DIR = "/home/cnc/linuxcnc/nc_files"
+DEFAULT_NC_FILES_DIR = "/home/linuxcnc/linuxcnc/nc_files"
 
 
 class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
@@ -39,9 +39,13 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     Raises RuntimeError if LinuxCNC is not available.
     """
 
-    def __init__(self):
+    def __init__(self, nc_files_dir: str | None = None):
         """
         Initialize the service with real LinuxCNC connection.
+
+        Args:
+            nc_files_dir: Override directory for NC files. If None, falls back
+                to LINUXCNC_NC_FILES env var, then DEFAULT_NC_FILES_DIR.
 
         Raises:
             RuntimeError: If linuxcnc module cannot connect to LinuxCNC.
@@ -49,6 +53,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         self._lock = threading.RLock()
         self._command_serial = 0
         self._connected = False
+        self._nc_files_dir = nc_files_dir
 
         self._command_handlers = {
             "state": self._handle_state_cmd,
@@ -159,7 +164,8 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         if "\x00" in filename:
             raise ValueError("Filename must not contain null bytes")
         allowed_dir = Path(
-            os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
+            self._nc_files_dir
+            or os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
         ).resolve()
         resolved = (allowed_dir / filename).resolve()
         if not resolved.is_relative_to(allowed_dir):
@@ -653,7 +659,8 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         logger.debug(f"ListFiles called: subdirectory={request.subdirectory!r}")
         try:
             allowed_dir = Path(
-                os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
+                self._nc_files_dir
+                or os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
             ).resolve()
 
             if request.subdirectory:

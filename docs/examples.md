@@ -447,11 +447,11 @@ python upload_file.py --cleanup
 
 ```
 Uploading 'grpc_example.ngc'...
-  Written to: /home/cnc/linuxcnc/nc_files/grpc_example.ngc
+  Written to: /home/linuxcnc/linuxcnc/nc_files/grpc_example.ngc
   Size: 142 bytes
 
 Listing files...
-  Directory: /home/cnc/linuxcnc/nc_files
+  Directory: /home/linuxcnc/linuxcnc/nc_files
   Name                               Size  Type
   ------------------------------ --------  ----
   grpc_example.ngc                    142  FILE

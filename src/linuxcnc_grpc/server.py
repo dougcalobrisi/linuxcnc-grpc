@@ -42,7 +42,12 @@ class _RequestLoggingInterceptor(grpc.ServerInterceptor):
         return continuation(handler_call_details)
 
 
-def create_server(host: str = "0.0.0.0", port: int = 50051, max_workers: int = 10) -> grpc.Server:
+def create_server(
+    host: str = "0.0.0.0",
+    port: int = 50051,
+    max_workers: int = 10,
+    nc_files_dir: str | None = None,
+) -> grpc.Server:
     """
     Create and configure the gRPC server.
 
@@ -50,6 +55,7 @@ def create_server(host: str = "0.0.0.0", port: int = 50051, max_workers: int = 1
         host: Host address to bind to
         port: Port number to listen on
         max_workers: Maximum number of worker threads
+        nc_files_dir: Override directory for NC files
 
     Returns:
         Configured gRPC server (not yet started)
@@ -66,7 +72,7 @@ def create_server(host: str = "0.0.0.0", port: int = 50051, max_workers: int = 1
 
     # Register services
     linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(
-        LinuxCNCServiceServicer(),
+        LinuxCNCServiceServicer(nc_files_dir=nc_files_dir),
         server
     )
     hal_pb2_grpc.add_HalServiceServicer_to_server(
@@ -89,15 +95,16 @@ def create_server(host: str = "0.0.0.0", port: int = 50051, max_workers: int = 1
     return server
 
 
-def serve(host: str = "0.0.0.0", port: int = 50051):
+def serve(host: str = "0.0.0.0", port: int = 50051, nc_files_dir: str | None = None):
     """
     Start the gRPC server and run until interrupted.
 
     Args:
         host: Host address to bind to
         port: Port number to listen on
+        nc_files_dir: Override directory for NC files
     """
-    server = create_server(host, port)
+    server = create_server(host, port, nc_files_dir=nc_files_dir)
 
     # Handle shutdown signals gracefully
     shutdown_event = False
@@ -150,6 +157,11 @@ def main():
         help="Port number to listen on"
     )
     parser.add_argument(
+        "--nc-files",
+        default=None,
+        help="Directory for NC files (default: $LINUXCNC_NC_FILES or /home/linuxcnc/linuxcnc/nc_files)"
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging"
@@ -162,7 +174,7 @@ def main():
         logger.debug("Debug logging enabled")
 
     try:
-        serve(host=args.host, port=args.port)
+        serve(host=args.host, port=args.port, nc_files_dir=args.nc_files)
     except Exception as e:
         logger.error(f"Server error: {e}")
         sys.exit(1)

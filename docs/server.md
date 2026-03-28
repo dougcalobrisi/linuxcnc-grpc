@@ -21,7 +21,7 @@ uv pip install linuxcnc-grpc
 Start LinuxCNC first, then start the gRPC server:
 
 ```bash
-linuxcnc-grpc-server --host 0.0.0.0 --port 50051
+linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 Or run as a Python module:
@@ -36,6 +36,7 @@ python -m linuxcnc_grpc.server --host 0.0.0.0 --port 50051
 |--------|---------|-------------|
 | `--host` | `0.0.0.0` | Address to bind to. Use `127.0.0.1` for local-only access |
 | `--port` | `50051` | Port number to listen on |
+| `--nc-files` | `/home/linuxcnc/linuxcnc/nc_files` | Directory for G-code file operations |
 | `--debug` | off | Enable debug logging |
 
 ## Auto-Start with LinuxCNC
@@ -47,7 +48,7 @@ Add to your machine's HAL file (e.g., `your_machine.hal`):
 ```hal
 # Start gRPC server
 # -W makes LinuxCNC wait for the server to be ready
-loadusr -W linuxcnc-grpc-server --host 0.0.0.0 --port 50051
+loadusr -W linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 ### Method 2: Dedicated HAL File
@@ -56,7 +57,7 @@ Create a separate `grpc-server.hal` file:
 
 ```hal
 # grpc-server.hal
-loadusr -W linuxcnc-grpc-server --host 0.0.0.0 --port 50051
+loadusr -W linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 Reference it in your INI file:
@@ -79,7 +80,7 @@ After=linuxcnc.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/linuxcnc-grpc-server --host 0.0.0.0 --port 50051
+ExecStart=/usr/local/bin/linuxcnc-grpc --host 0.0.0.0 --port 50051
 Restart=on-failure
 User=your-username
 
@@ -119,35 +120,43 @@ To bind to a specific network interface:
 
 ```bash
 # Bind to localhost only (no remote access)
-linuxcnc-grpc-server --host 127.0.0.1
+linuxcnc-grpc --host 127.0.0.1
 
 # Bind to specific IP
-linuxcnc-grpc-server --host 192.168.1.100
+linuxcnc-grpc --host 192.168.1.100
 ```
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LINUXCNC_NC_FILES` | `/home/cnc/linuxcnc/nc_files` | Directory for G-code file operations (UploadFile, ListFiles, DeleteFile, program open) |
+| `LINUXCNC_NC_FILES` | `/home/linuxcnc/linuxcnc/nc_files` | Directory for G-code file operations (UploadFile, ListFiles, DeleteFile, program open) |
 
 ### NC Files Directory
 
-All file management RPCs (`UploadFile`, `ListFiles`, `DeleteFile`) and the `program open` command operate within a single allowed directory. By default this is `/home/cnc/linuxcnc/nc_files`.
+All file management RPCs (`UploadFile`, `ListFiles`, `DeleteFile`) and the `program open` command operate within a single allowed directory. By default this is `/home/linuxcnc/linuxcnc/nc_files`.
 
-To change it, set the `LINUXCNC_NC_FILES` environment variable:
+To change it, use the `--nc-files` flag:
+
+```bash
+linuxcnc-grpc --host 0.0.0.0 --nc-files /home/user/nc_programs
+```
+
+Or set the `LINUXCNC_NC_FILES` environment variable:
 
 ```bash
 export LINUXCNC_NC_FILES=/home/user/nc_programs
-linuxcnc-grpc-server --host 0.0.0.0
+linuxcnc-grpc --host 0.0.0.0
 ```
+
+Priority: `--nc-files` flag > `LINUXCNC_NC_FILES` env var > default.
 
 Or in a systemd service file:
 
 ```ini
 [Service]
 Environment=LINUXCNC_NC_FILES=/home/user/nc_programs
-ExecStart=/usr/local/bin/linuxcnc-grpc-server --host 0.0.0.0 --port 50051
+ExecStart=/usr/local/bin/linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 Path traversal outside this directory is rejected — filenames like `../../etc/passwd` will return `INVALID_ARGUMENT`. The server resolves symlinks and validates the canonical path stays within the allowed directory.
@@ -198,7 +207,7 @@ server.add_secure_port('[::]:50051', server_credentials)
 Enable debug logging:
 
 ```bash
-linuxcnc-grpc-server --debug
+linuxcnc-grpc --debug
 ```
 
 ### Log Format
@@ -237,7 +246,7 @@ The server requires LinuxCNC to be running first:
 linuxcnc /path/to/your/machine.ini
 
 # Then start the gRPC server
-linuxcnc-grpc-server
+linuxcnc-grpc
 ```
 
 ### "Address already in use"
@@ -249,7 +258,7 @@ Another process is using the port:
 sudo lsof -i :50051
 
 # Use a different port
-linuxcnc-grpc-server --port 50052
+linuxcnc-grpc --port 50052
 ```
 
 ### "Connection refused" from client
@@ -264,7 +273,7 @@ linuxcnc-grpc-server --port 50052
 Enable debug logging to see detailed information:
 
 ```bash
-linuxcnc-grpc-server --debug
+linuxcnc-grpc --debug
 ```
 
 This shows:

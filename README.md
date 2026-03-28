@@ -19,7 +19,12 @@ The server runs on your LinuxCNC machine and exposes the gRPC interface.
 
 ```bash
 pip install linuxcnc-grpc
-linuxcnc-grpc-server --host 0.0.0.0 --port 50051
+# or with uv
+uv pip install linuxcnc-grpc
+```
+
+```bash
+linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 LinuxCNC must already be running before starting the server.
@@ -30,7 +35,7 @@ To start the gRPC server automatically when LinuxCNC launches, add to your machi
 
 ```hal
 # Start gRPC server (runs until LinuxCNC exits)
-loadusr -W linuxcnc-grpc-server --host 0.0.0.0 --port 50051
+loadusr -W linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 Or use a dedicated HAL file via your INI:
@@ -127,13 +132,24 @@ Complete examples for all supported languages:
 | `jog_axis` | Jog axes with keyboard | [view](examples/python/jog_axis.py) | [view](examples/go/cmd/jog_axis/main.go) | [view](examples/node/jog_axis.ts) | [view](examples/rust/src/bin/jog_axis.rs) |
 | `mdi_command` | Execute G-code via MDI | [view](examples/python/mdi_command.py) | [view](examples/go/cmd/mdi_command/main.go) | [view](examples/node/mdi_command.ts) | [view](examples/rust/src/bin/mdi_command.rs) |
 | `hal_query` | Query HAL pins/signals | [view](examples/python/hal_query.py) | [view](examples/go/cmd/hal_query/main.go) | [view](examples/node/hal_query.ts) | [view](examples/rust/src/bin/hal_query.rs) |
+| `upload_file` | Upload, list, delete G-code files | [view](examples/python/upload_file.py) | [view](examples/go/cmd/upload_file/main.go) | [view](examples/node/upload_file.ts) | [view](examples/rust/src/bin/upload_file.rs) |
 
 See [examples/README.md](examples/README.md) for setup instructions.
 
 ## Services
 
-- **LinuxCNCService** - Machine control: status, jogging, MDI, program execution
+- **LinuxCNCService** - Machine control: status, jogging, MDI, program execution, file management
 - **HalService** - HAL introspection: query pins, signals, parameters (read-only)
+
+### File Management
+
+The server provides `UploadFile`, `ListFiles`, and `DeleteFile` RPCs for remote G-code file management. Files are stored in the NC files directory (default: `/home/linuxcnc/linuxcnc/nc_files`).
+
+Configure the directory with `--nc-files` or the `LINUXCNC_NC_FILES` environment variable:
+
+```bash
+linuxcnc-grpc --host 0.0.0.0 --nc-files /path/to/nc_files
+```
 
 ## Safety Warning
 
@@ -164,9 +180,11 @@ See [Server Configuration](docs/server.md#security-considerations) for complete 
 
 ## Development
 
+Requires [uv](https://docs.astral.sh/uv/) for Python dependency management:
+
 ```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
+# Install dev dependencies
+make setup
 
 # Run tests
 make test          # Python tests

@@ -6,7 +6,7 @@ Example Python clients demonstrating how to connect to and use the LinuxCNC gRPC
 
 1. LinuxCNC running with the gRPC server started:
    ```bash
-   linuxcnc-grpc-server
+   linuxcnc-grpc
    ```
 
 2. Install the package (recommended) or just the gRPC libraries:
