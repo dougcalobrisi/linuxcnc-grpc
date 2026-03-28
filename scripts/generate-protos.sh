@@ -195,6 +195,20 @@ if [ "$GENERATE_NODE" = true ]; then
     echo "Generated Node.js/TypeScript code in $NODE_OUT_DIR"
 fi
 
+# --- Post-process Node.js: fix longToNumber for int64 nanosecond timestamps ---
+echo ""
+echo "=== Post-processing Node.js generated code ==="
+for TS_FILE in "$NODE_OUT_DIR/linuxcnc.ts" "$NODE_OUT_DIR/hal.ts"; do
+    if [ -f "$TS_FILE" ]; then
+        sed -i.bak \
+            -e 's/throw new globalThis.Error("Value is larger than Number.MAX_SAFE_INTEGER");/return Math.floor(num \/ 1e6);/' \
+            -e 's/throw new globalThis.Error("Value is smaller than Number.MIN_SAFE_INTEGER");/return Math.ceil(num \/ 1e6);/' \
+            "$TS_FILE"
+        rm -f "${TS_FILE}.bak"
+        echo "Patched longToNumber in $(basename "$TS_FILE")"
+    fi
+done
+
 # --- Sync proto files to Rust package (build.rs reads from there) ---
 echo ""
 echo "=== Syncing proto files to Rust package ==="

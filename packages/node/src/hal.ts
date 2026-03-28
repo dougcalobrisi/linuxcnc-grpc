@@ -5130,7 +5130,6 @@ type Exact<P, I extends P> = P extends Builtin ? P
 
 function longToNumber(int64: { toString(): string }): number {
   const num = globalThis.Number(int64.toString());
-  // Nanosecond timestamps exceed MAX_SAFE_INTEGER — convert to ms instead of throwing
   if (num > globalThis.Number.MAX_SAFE_INTEGER) {
     return Math.floor(num / 1e6);
   }

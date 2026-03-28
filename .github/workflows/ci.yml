@@ -15,25 +15,25 @@ jobs:
   proto-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: 'pip'
           cache-dependency-path: 'pyproject.toml'
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.24"
           cache: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: 'npm'
           cache-dependency-path: 'packages/node/package-lock.json'
 
@@ -42,7 +42,7 @@ jobs:
 
       - name: Cache protoc binary
         id: cache-protoc
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/protoc
           key: protoc-${{ env.PROTOC_VERSION }}-linux
@@ -61,15 +61,15 @@ jobs:
           protoc --version
 
       - name: Cache Cargo bin (protoc plugins)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin
           key: cargo-bin-proto-plugins-${{ runner.os }}-v1
 
       - name: Install proto plugins
         run: |
-          # Python
-          pip install grpcio-tools
+          # Python (pin to match local development)
+          pip install grpcio-tools==1.76.0
 
           # Go (pin versions to match local development)
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.9
@@ -107,10 +107,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -129,10 +129,10 @@ jobs:
         python-version: ["3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -149,21 +149,21 @@ jobs:
 
   # Node.js tests
   test-node:
-    name: test-node (20)
+    name: test-node (22)
     runs-on: ubuntu-latest
     needs: [test-python]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: 'npm'
           cache-dependency-path: 'packages/node/package-lock.json'
 
       - name: Set up Python (for mock server)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: 'pip'
@@ -184,13 +184,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-python]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Set up Python (for mock server)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: 'pip'
@@ -201,7 +201,7 @@ jobs:
 
       - name: Cache protoc binary
         id: cache-protoc
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/protoc
           key: protoc-${{ env.PROTOC_VERSION }}-linux
@@ -234,16 +234,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-python]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.24"
           cache: true
 
       - name: Set up Python (for mock server)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: 'pip'
@@ -260,10 +260,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-python]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: 'pip'
@@ -305,16 +305,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-go]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.24"
           cache: true
 
       - name: Set up Python (for mock server)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: 'pip'
@@ -357,19 +357,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-node]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: 'npm'
           cache-dependency-path: |
             packages/node/package-lock.json
             examples/node/package-lock.json
 
       - name: Set up Python (for mock server)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: 'pip'
@@ -418,13 +418,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-rust]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Set up Python (for mock server)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: 'pip'
@@ -435,7 +435,7 @@ jobs:
 
       - name: Cache protoc binary
         id: cache-protoc
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/protoc
           key: protoc-${{ env.PROTOC_VERSION }}-linux
