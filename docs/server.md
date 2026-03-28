@@ -5,16 +5,16 @@ The linuxcnc-grpc server runs on your LinuxCNC machine and exposes both LinuxCNC
 ## Requirements
 
 - Linux with LinuxCNC installed and running
-- Python 3.8+
+- Python 3.9+
 - Network access to the machine (for remote clients)
 
 ## Installation
 
 ```bash
 pip install linuxcnc-grpc
+# or with uv
+uv pip install linuxcnc-grpc
 ```
-
-This installs the `linuxcnc-grpc-server` command-line tool.
 
 ## Basic Usage
 
@@ -124,6 +124,33 @@ linuxcnc-grpc-server --host 127.0.0.1
 # Bind to specific IP
 linuxcnc-grpc-server --host 192.168.1.100
 ```
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LINUXCNC_NC_FILES` | `/home/cnc/linuxcnc/nc_files` | Directory for G-code file operations (UploadFile, ListFiles, DeleteFile, program open) |
+
+### NC Files Directory
+
+All file management RPCs (`UploadFile`, `ListFiles`, `DeleteFile`) and the `program open` command operate within a single allowed directory. By default this is `/home/cnc/linuxcnc/nc_files`.
+
+To change it, set the `LINUXCNC_NC_FILES` environment variable:
+
+```bash
+export LINUXCNC_NC_FILES=/home/user/nc_programs
+linuxcnc-grpc-server --host 0.0.0.0
+```
+
+Or in a systemd service file:
+
+```ini
+[Service]
+Environment=LINUXCNC_NC_FILES=/home/user/nc_programs
+ExecStart=/usr/local/bin/linuxcnc-grpc-server --host 0.0.0.0 --port 50051
+```
+
+Path traversal outside this directory is rejected — filenames like `../../etc/passwd` will return `INVALID_ARGUMENT`. The server resolves symlinks and validates the canonical path stays within the allowed directory.
 
 ## Security Considerations
 

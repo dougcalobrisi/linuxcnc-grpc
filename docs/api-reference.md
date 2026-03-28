@@ -206,6 +206,12 @@ rpc StreamErrors(StreamErrorsRequest) returns (stream ErrorMessage)
 
 ---
 
+### File Management
+
+The following RPCs manage G-code files in the NC files directory (default: `/home/cnc/linuxcnc/nc_files`, configurable via `LINUXCNC_NC_FILES` environment variable). See [Server Configuration](server.md#nc-files-directory) for details.
+
+All filenames are relative to this directory. Path traversal outside it is rejected. Maximum upload size is 10 MB.
+
 ### UploadFile
 
 Upload a G-code file to the nc_files directory.
