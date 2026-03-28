@@ -2,42 +2,41 @@
 
 .PHONY: all setup install install-dev proto proto-go proto-rust proto-node proto-all clean lint test test-cov test-go test-node test-all run run-debug dist help build build-python build-node build-rust build-all publish publish-python publish-node publish-rust publish-all publish-dry-run sync-version
 
-PYTHON ?= python3
-PIP ?= pip
-
 all: proto
 
-# Install all development and build dependencies
+# Install all development and build dependencies (creates .venv automatically)
 setup:
-	$(PIP) install -e ".[dev,build]"
+	uv sync --extra dev --extra build
 
-# Install package
+# Install for production on a LinuxCNC machine (includes system site-packages
+# so the linuxcnc Python module is accessible inside the venv)
 install:
-	$(PIP) install .
+	uv venv --system-site-packages --allow-existing
+	uv sync --no-dev
 
 # Install in editable/development mode
 install-dev:
-	$(PIP) install -e ".[dev]"
+	uv sync --extra dev
 
-# Generate protobuf code (Python only)
+# Generate protobuf code (Python only — needs dev extras for grpcio-tools)
 proto:
-	./scripts/generate-protos.sh
+	uv run ./scripts/generate-protos.sh
 
 # Generate protobuf code (Python + Go)
 proto-go:
-	./scripts/generate-protos.sh --go
+	uv run ./scripts/generate-protos.sh --go
 
 # Generate protobuf code (Python + Rust)
 proto-rust:
-	./scripts/generate-protos.sh --rust
+	uv run ./scripts/generate-protos.sh --rust
 
 # Generate protobuf code (Python + Node.js/TypeScript)
 proto-node:
-	./scripts/generate-protos.sh --node
+	uv run ./scripts/generate-protos.sh --node
 
 # Generate protobuf code (all languages)
 proto-all:
-	./scripts/generate-protos.sh --all
+	uv run ./scripts/generate-protos.sh --all
 
 # Clean generated and build artifacts
 clean:
@@ -56,18 +55,18 @@ clean:
 
 # Check Python syntax
 lint:
-	$(PYTHON) -m py_compile src/linuxcnc_grpc/*.py
-	$(PYTHON) -m py_compile examples/python/*.py
-	$(PYTHON) -m py_compile tests/*.py
+	uv run python -m py_compile src/linuxcnc_grpc/*.py
+	uv run python -m py_compile examples/python/*.py
+	uv run python -m py_compile tests/*.py
 	@echo "Syntax check passed"
 
 # Run Python tests
 test:
-	$(PYTHON) -m pytest tests/ -v
+	uv run python -m pytest tests/ -v
 
 # Run Python tests with coverage
 test-cov:
-	$(PYTHON) -m pytest tests/ -v --cov=src/linuxcnc_grpc --cov-report=term-missing
+	uv run python -m pytest tests/ -v --cov=src/linuxcnc_grpc --cov-report=term-missing
 
 # Run Go tests (requires mock server)
 test-go:
@@ -84,16 +83,15 @@ test-all: test test-go test-node
 
 # Run server (requires LinuxCNC environment)
 run:
-	$(PYTHON) -m linuxcnc_grpc.server
+	uv run python -m linuxcnc_grpc.server
 
 # Run server with debug logging
 run-debug:
-	$(PYTHON) -m linuxcnc_grpc.server --debug
+	uv run python -m linuxcnc_grpc.server --debug
 
 # Build distribution packages
 dist: clean proto
-	$(PIP) install build
-	$(PYTHON) -m build
+	uv run python -m build
 
 # Show help
 help:
@@ -101,7 +99,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all          Generate protobuf code (default)"
-	@echo "  setup        Install all dev + build dependencies"
+	@echo "  setup        Install all dev + build dependencies (creates .venv)"
 	@echo "  install      Install package"
 	@echo "  install-dev  Install in editable mode with dev dependencies"
 	@echo "  proto        Generate protobuf/gRPC code (Python only)"
@@ -140,7 +138,7 @@ help:
 build: build-python
 
 build-python:
-	./scripts/build-python.sh
+	uv run ./scripts/build-python.sh
 
 build-node:
 	./scripts/build-node.sh
@@ -149,14 +147,14 @@ build-rust:
 	./scripts/build-rust.sh
 
 build-all:
-	./scripts/build-all.sh
+	uv run ./scripts/build-all.sh
 
 # --- Publish targets ---
 
 publish: publish-python
 
 publish-python:
-	./scripts/publish-python.sh
+	uv run ./scripts/publish-python.sh
 
 publish-node:
 	./scripts/publish-node.sh
@@ -165,10 +163,10 @@ publish-rust:
 	./scripts/publish-rust.sh
 
 publish-all:
-	./scripts/publish-all.sh
+	uv run ./scripts/publish-all.sh
 
 publish-dry-run:
-	DRY_RUN=1 ./scripts/publish-all.sh
+	DRY_RUN=1 uv run ./scripts/publish-all.sh
 
 # --- Version management ---
 

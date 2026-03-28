@@ -100,13 +100,20 @@ management for the NC files directory (`/home/cnc/linuxcnc/nc_files` or `LINUXCN
 These RPCs do not require the LinuxCNC lock (no stat/command access) and use `_validate_nc_path`
 for security. Upload max size is 10 MB.
 
-## Running Tests
+## Development Setup
+
+Requires [uv](https://docs.astral.sh/uv/) for Python dependency management:
 
 ```bash
+make setup       # Install all dev + build deps (creates .venv)
 make test        # Run tests
 make test-cov    # Run tests with coverage report
 make lint        # Check Python syntax
 ```
+
+All Python commands use `uv run` to execute within the managed `.venv`.
+On a LinuxCNC machine, use `make install` which creates the venv with
+`--system-site-packages` so the `linuxcnc` Python module is accessible.
 
 ## Generating Protos
 

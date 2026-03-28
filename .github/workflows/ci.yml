@@ -17,12 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -68,8 +69,8 @@ jobs:
 
       - name: Install proto plugins
         run: |
-          # Python (pin to match local development)
-          pip install grpcio-tools==1.76.0
+          # Python (managed by uv from lockfile)
+          uv sync --extra dev
 
           # Go (pin versions to match local development)
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.9
@@ -83,7 +84,7 @@ jobs:
           command -v protoc-gen-tonic || cargo install protoc-gen-tonic
 
       - name: Regenerate protos
-        run: ./scripts/generate-protos.sh --all
+        run: uv run ./scripts/generate-protos.sh --all
 
       - name: Check Rust proto sync
         run: |
@@ -109,15 +110,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
 
       - name: Check syntax
         run: |
-          python -m py_compile src/linuxcnc_grpc/*.py
-          python -m py_compile examples/python/*.py
+          uv run python -m py_compile src/linuxcnc_grpc/*.py
+          uv run python -m py_compile examples/python/*.py
 
   # Python tests
   test-python:
@@ -131,21 +135,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
 
       - name: Run tests
-        run: |
-          python -m pytest tests/ -v --tb=short
+        run: uv run python -m pytest tests/ -v --tb=short
 
   # Node.js tests
   test-node:
@@ -162,15 +164,16 @@ jobs:
           cache: 'npm'
           cache-dependency-path: 'packages/node/package-lock.json'
 
-      - name: Set up Python (for mock server)
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          enable-cache: true
+
+      - name: Set up Python (for mock server)
+        run: uv python install 3.12
 
       - name: Install Python dependencies
-        run: pip install -e ".[dev]"
+        run: uv sync --extra dev
 
       - name: Install dependencies
         run: cd packages/node && npm ci
@@ -189,15 +192,16 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Python (for mock server)
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          enable-cache: true
+
+      - name: Set up Python (for mock server)
+        run: uv python install 3.12
 
       - name: Install Python dependencies
-        run: pip install -e ".[dev]"
+        run: uv sync --extra dev
 
       - name: Cache protoc binary
         id: cache-protoc
@@ -242,15 +246,16 @@ jobs:
           go-version: "1.24"
           cache: true
 
-      - name: Set up Python (for mock server)
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          enable-cache: true
+
+      - name: Set up Python (for mock server)
+        run: uv python install 3.12
 
       - name: Install Python dependencies
-        run: pip install -e ".[dev]"
+        run: uv sync --extra dev
 
       - name: Run tests
         run: go test -v ./...
@@ -262,19 +267,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
 
       - name: Install Python package
-        run: pip install -e ".[dev]"
+        run: uv sync --extra dev
 
       - name: Start mock server
         run: |
-          python tests/mock_server.py &
+          uv run python tests/mock_server.py &
           MOCK_PID=$!
           READY=false
           for i in {1..30}; do
@@ -296,9 +302,9 @@ jobs:
 
       - name: Test Python examples
         run: |
-          python examples/python/get_status.py --port 50051
-          timeout 5 python examples/python/stream_status.py --port 50051 || true
-          python examples/python/hal_query.py --port 50051 status
+          uv run python examples/python/get_status.py --port 50051
+          timeout 5 uv run python examples/python/stream_status.py --port 50051 || true
+          uv run python examples/python/hal_query.py --port 50051 status
 
   # Integration tests - Go examples against mock server
   examples-go:
@@ -313,19 +319,20 @@ jobs:
           go-version: "1.24"
           cache: true
 
-      - name: Set up Python (for mock server)
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          enable-cache: true
+
+      - name: Set up Python (for mock server)
+        run: uv python install 3.12
 
       - name: Install Python package
-        run: pip install -e ".[dev]"
+        run: uv sync --extra dev
 
       - name: Start mock server
         run: |
-          python tests/mock_server.py &
+          uv run python tests/mock_server.py &
           MOCK_PID=$!
           READY=false
           for i in {1..30}; do
@@ -368,15 +375,16 @@ jobs:
             packages/node/package-lock.json
             examples/node/package-lock.json
 
-      - name: Set up Python (for mock server)
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          enable-cache: true
+
+      - name: Set up Python (for mock server)
+        run: uv python install 3.12
 
       - name: Install Python package
-        run: pip install -e ".[dev]"
+        run: uv sync --extra dev
 
       - name: Build Node package
         run: cd packages/node && npm ci && npm run build
@@ -386,7 +394,7 @@ jobs:
 
       - name: Start mock server
         run: |
-          python tests/mock_server.py &
+          uv run python tests/mock_server.py &
           MOCK_PID=$!
           READY=false
           for i in {1..30}; do
@@ -423,15 +431,16 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Python (for mock server)
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          enable-cache: true
+
+      - name: Set up Python (for mock server)
+        run: uv python install 3.12
 
       - name: Install Python package
-        run: pip install -e ".[dev]"
+        run: uv sync --extra dev
 
       - name: Cache protoc binary
         id: cache-protoc
@@ -466,7 +475,7 @@ jobs:
 
       - name: Start mock server
         run: |
-          python tests/mock_server.py &
+          uv run python tests/mock_server.py &
           MOCK_PID=$!
           READY=false
           for i in {1..30}; do

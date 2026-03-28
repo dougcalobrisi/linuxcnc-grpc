@@ -70,20 +70,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
-          cache: 'pip'
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
 
       - name: Install build tools
-        run: pip install build twine
+        run: uv sync --extra build
 
       - name: Build package
-        run: ./scripts/build-python.sh
+        run: uv run ./scripts/build-python.sh
 
       - name: Validate package
-        run: twine check dist/*
+        run: uv run twine check dist/*
 
       - name: Publish to PyPI
         if: ${{ !inputs.dry_run }}
