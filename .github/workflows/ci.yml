@@ -175,6 +175,9 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --extra dev
 
+      - name: Add Python to PATH
+        run: echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
       - name: Install dependencies
         run: cd packages/node && npm ci
 
@@ -229,6 +232,9 @@ jobs:
           shared-key: rust-ci
           cache-on-failure: true
 
+      - name: Add Python to PATH
+        run: echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
       - name: Run tests
         run: cd packages/rust && cargo test
 
@@ -256,6 +262,9 @@ jobs:
 
       - name: Install Python dependencies
         run: uv sync --extra dev
+
+      - name: Add Python to PATH
+        run: echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Run tests
         run: go test -v ./...
