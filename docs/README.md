@@ -6,6 +6,7 @@ API documentation and guides for the LinuxCNC gRPC interface.
 
 | Document | Description |
 |----------|-------------|
+| [Tutorial](tutorial.md) | Step-by-step guide to connect from a remote machine |
 | [Getting Started](getting-started.md) | Installation, quickstart, and first steps |
 | [Server Configuration](server.md) | Running and configuring the gRPC server |
 | [API Reference](api-reference.md) | Complete API documentation for both services |
