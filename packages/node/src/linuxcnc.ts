@@ -918,7 +918,7 @@ export interface AxisStatus {
 export interface SpindleStatus {
   spindleNumber: number;
   brake: boolean;
-  /** -1=reverse, 0=stopped, 1=forward */
+  /** 0=stopped, 1=forward, 2=reverse */
   direction: number;
   enabled: boolean;
   overrideEnabled: boolean;
@@ -1404,6 +1404,60 @@ export interface StreamStatusRequest {
 
 /** Empty - streams all errors */
 export interface StreamErrorsRequest {
+}
+
+/** Upload a G-code file */
+export interface UploadFileRequest {
+  /** Relative path within nc_files dir (e.g. "part1.ngc") */
+  filename: string;
+  /** G-code text content */
+  content: string;
+  /** If true, fail when file already exists */
+  failIfExists: boolean;
+}
+
+export interface UploadFileResponse {
+  /** Absolute path where file was written */
+  path: string;
+  /** True if an existing file was replaced */
+  overwritten: boolean;
+}
+
+/** List files in the nc_files directory */
+export interface ListFilesRequest {
+  /** Optional subdirectory (relative to nc_files) */
+  subdirectory: string;
+}
+
+export interface FileInfo {
+  /** Filename */
+  name: string;
+  /** Relative path from nc_files root */
+  path: string;
+  /** File size in bytes */
+  sizeBytes: number;
+  /** Last modified time (unix timestamp in nanoseconds) */
+  modifiedTimestamp: number;
+  /** True if this entry is a directory */
+  isDirectory: boolean;
+}
+
+export interface ListFilesResponse {
+  /** Files in the directory */
+  files: FileInfo[];
+  /** Absolute path of listed directory */
+  directory: string;
+}
+
+/** Delete a file from the nc_files directory */
+export interface DeleteFileRequest {
+  /** Relative path within nc_files dir */
+  filename: string;
+}
+
+export interface DeleteFileResponse {
+  /** Absolute path of deleted file */
+  path: string;
 }
 
 function createBasePosition(): Position {
@@ -7982,6 +8036,548 @@ export const StreamErrorsRequest: MessageFns<StreamErrorsRequest> = {
   },
 };
 
+function createBaseUploadFileRequest(): UploadFileRequest {
+  return { filename: "", content: "", failIfExists: false };
+}
+
+export const UploadFileRequest: MessageFns<UploadFileRequest> = {
+  encode(message: UploadFileRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.filename !== "") {
+      writer.uint32(10).string(message.filename);
+    }
+    if (message.content !== "") {
+      writer.uint32(18).string(message.content);
+    }
+    if (message.failIfExists !== false) {
+      writer.uint32(24).bool(message.failIfExists);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UploadFileRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUploadFileRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.filename = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.content = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.failIfExists = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UploadFileRequest {
+    return {
+      filename: isSet(object.filename) ? globalThis.String(object.filename) : "",
+      content: isSet(object.content) ? globalThis.String(object.content) : "",
+      failIfExists: isSet(object.failIfExists) ? globalThis.Boolean(object.failIfExists) : false,
+    };
+  },
+
+  toJSON(message: UploadFileRequest): unknown {
+    const obj: any = {};
+    if (message.filename !== "") {
+      obj.filename = message.filename;
+    }
+    if (message.content !== "") {
+      obj.content = message.content;
+    }
+    if (message.failIfExists !== false) {
+      obj.failIfExists = message.failIfExists;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UploadFileRequest>, I>>(base?: I): UploadFileRequest {
+    return UploadFileRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UploadFileRequest>, I>>(object: I): UploadFileRequest {
+    const message = createBaseUploadFileRequest();
+    message.filename = object.filename ?? "";
+    message.content = object.content ?? "";
+    message.failIfExists = object.failIfExists ?? false;
+    return message;
+  },
+};
+
+function createBaseUploadFileResponse(): UploadFileResponse {
+  return { path: "", overwritten: false };
+}
+
+export const UploadFileResponse: MessageFns<UploadFileResponse> = {
+  encode(message: UploadFileResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.path !== "") {
+      writer.uint32(10).string(message.path);
+    }
+    if (message.overwritten !== false) {
+      writer.uint32(16).bool(message.overwritten);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UploadFileResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUploadFileResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.path = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.overwritten = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UploadFileResponse {
+    return {
+      path: isSet(object.path) ? globalThis.String(object.path) : "",
+      overwritten: isSet(object.overwritten) ? globalThis.Boolean(object.overwritten) : false,
+    };
+  },
+
+  toJSON(message: UploadFileResponse): unknown {
+    const obj: any = {};
+    if (message.path !== "") {
+      obj.path = message.path;
+    }
+    if (message.overwritten !== false) {
+      obj.overwritten = message.overwritten;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UploadFileResponse>, I>>(base?: I): UploadFileResponse {
+    return UploadFileResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UploadFileResponse>, I>>(object: I): UploadFileResponse {
+    const message = createBaseUploadFileResponse();
+    message.path = object.path ?? "";
+    message.overwritten = object.overwritten ?? false;
+    return message;
+  },
+};
+
+function createBaseListFilesRequest(): ListFilesRequest {
+  return { subdirectory: "" };
+}
+
+export const ListFilesRequest: MessageFns<ListFilesRequest> = {
+  encode(message: ListFilesRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.subdirectory !== "") {
+      writer.uint32(10).string(message.subdirectory);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListFilesRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListFilesRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.subdirectory = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListFilesRequest {
+    return { subdirectory: isSet(object.subdirectory) ? globalThis.String(object.subdirectory) : "" };
+  },
+
+  toJSON(message: ListFilesRequest): unknown {
+    const obj: any = {};
+    if (message.subdirectory !== "") {
+      obj.subdirectory = message.subdirectory;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ListFilesRequest>, I>>(base?: I): ListFilesRequest {
+    return ListFilesRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ListFilesRequest>, I>>(object: I): ListFilesRequest {
+    const message = createBaseListFilesRequest();
+    message.subdirectory = object.subdirectory ?? "";
+    return message;
+  },
+};
+
+function createBaseFileInfo(): FileInfo {
+  return { name: "", path: "", sizeBytes: 0, modifiedTimestamp: 0, isDirectory: false };
+}
+
+export const FileInfo: MessageFns<FileInfo> = {
+  encode(message: FileInfo, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.name !== "") {
+      writer.uint32(10).string(message.name);
+    }
+    if (message.path !== "") {
+      writer.uint32(18).string(message.path);
+    }
+    if (message.sizeBytes !== 0) {
+      writer.uint32(24).int64(message.sizeBytes);
+    }
+    if (message.modifiedTimestamp !== 0) {
+      writer.uint32(32).int64(message.modifiedTimestamp);
+    }
+    if (message.isDirectory !== false) {
+      writer.uint32(40).bool(message.isDirectory);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): FileInfo {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseFileInfo();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.path = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.sizeBytes = longToNumber(reader.int64());
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.modifiedTimestamp = longToNumber(reader.int64());
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.isDirectory = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): FileInfo {
+    return {
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      path: isSet(object.path) ? globalThis.String(object.path) : "",
+      sizeBytes: isSet(object.sizeBytes) ? globalThis.Number(object.sizeBytes) : 0,
+      modifiedTimestamp: isSet(object.modifiedTimestamp) ? globalThis.Number(object.modifiedTimestamp) : 0,
+      isDirectory: isSet(object.isDirectory) ? globalThis.Boolean(object.isDirectory) : false,
+    };
+  },
+
+  toJSON(message: FileInfo): unknown {
+    const obj: any = {};
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.path !== "") {
+      obj.path = message.path;
+    }
+    if (message.sizeBytes !== 0) {
+      obj.sizeBytes = Math.round(message.sizeBytes);
+    }
+    if (message.modifiedTimestamp !== 0) {
+      obj.modifiedTimestamp = Math.round(message.modifiedTimestamp);
+    }
+    if (message.isDirectory !== false) {
+      obj.isDirectory = message.isDirectory;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<FileInfo>, I>>(base?: I): FileInfo {
+    return FileInfo.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<FileInfo>, I>>(object: I): FileInfo {
+    const message = createBaseFileInfo();
+    message.name = object.name ?? "";
+    message.path = object.path ?? "";
+    message.sizeBytes = object.sizeBytes ?? 0;
+    message.modifiedTimestamp = object.modifiedTimestamp ?? 0;
+    message.isDirectory = object.isDirectory ?? false;
+    return message;
+  },
+};
+
+function createBaseListFilesResponse(): ListFilesResponse {
+  return { files: [], directory: "" };
+}
+
+export const ListFilesResponse: MessageFns<ListFilesResponse> = {
+  encode(message: ListFilesResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.files) {
+      FileInfo.encode(v!, writer.uint32(10).fork()).join();
+    }
+    if (message.directory !== "") {
+      writer.uint32(18).string(message.directory);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListFilesResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListFilesResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.files.push(FileInfo.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.directory = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListFilesResponse {
+    return {
+      files: globalThis.Array.isArray(object?.files) ? object.files.map((e: any) => FileInfo.fromJSON(e)) : [],
+      directory: isSet(object.directory) ? globalThis.String(object.directory) : "",
+    };
+  },
+
+  toJSON(message: ListFilesResponse): unknown {
+    const obj: any = {};
+    if (message.files?.length) {
+      obj.files = message.files.map((e) => FileInfo.toJSON(e));
+    }
+    if (message.directory !== "") {
+      obj.directory = message.directory;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ListFilesResponse>, I>>(base?: I): ListFilesResponse {
+    return ListFilesResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ListFilesResponse>, I>>(object: I): ListFilesResponse {
+    const message = createBaseListFilesResponse();
+    message.files = object.files?.map((e) => FileInfo.fromPartial(e)) || [];
+    message.directory = object.directory ?? "";
+    return message;
+  },
+};
+
+function createBaseDeleteFileRequest(): DeleteFileRequest {
+  return { filename: "" };
+}
+
+export const DeleteFileRequest: MessageFns<DeleteFileRequest> = {
+  encode(message: DeleteFileRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.filename !== "") {
+      writer.uint32(10).string(message.filename);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeleteFileRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeleteFileRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.filename = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeleteFileRequest {
+    return { filename: isSet(object.filename) ? globalThis.String(object.filename) : "" };
+  },
+
+  toJSON(message: DeleteFileRequest): unknown {
+    const obj: any = {};
+    if (message.filename !== "") {
+      obj.filename = message.filename;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DeleteFileRequest>, I>>(base?: I): DeleteFileRequest {
+    return DeleteFileRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DeleteFileRequest>, I>>(object: I): DeleteFileRequest {
+    const message = createBaseDeleteFileRequest();
+    message.filename = object.filename ?? "";
+    return message;
+  },
+};
+
+function createBaseDeleteFileResponse(): DeleteFileResponse {
+  return { path: "" };
+}
+
+export const DeleteFileResponse: MessageFns<DeleteFileResponse> = {
+  encode(message: DeleteFileResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.path !== "") {
+      writer.uint32(10).string(message.path);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeleteFileResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeleteFileResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.path = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeleteFileResponse {
+    return { path: isSet(object.path) ? globalThis.String(object.path) : "" };
+  },
+
+  toJSON(message: DeleteFileResponse): unknown {
+    const obj: any = {};
+    if (message.path !== "") {
+      obj.path = message.path;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DeleteFileResponse>, I>>(base?: I): DeleteFileResponse {
+    return DeleteFileResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DeleteFileResponse>, I>>(object: I): DeleteFileResponse {
+    const message = createBaseDeleteFileResponse();
+    message.path = object.path ?? "";
+    return message;
+  },
+};
+
 export type LinuxCNCServiceService = typeof LinuxCNCServiceService;
 export const LinuxCNCServiceService = {
   /** Get current status (poll equivalent) */
@@ -8034,6 +8630,36 @@ export const LinuxCNCServiceService = {
     responseSerialize: (value: ErrorMessage): Buffer => Buffer.from(ErrorMessage.encode(value).finish()),
     responseDeserialize: (value: Buffer): ErrorMessage => ErrorMessage.decode(value),
   },
+  /** Upload a G-code file to the nc_files directory */
+  uploadFile: {
+    path: "/linuxcnc.LinuxCNCService/UploadFile",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: UploadFileRequest): Buffer => Buffer.from(UploadFileRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): UploadFileRequest => UploadFileRequest.decode(value),
+    responseSerialize: (value: UploadFileResponse): Buffer => Buffer.from(UploadFileResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): UploadFileResponse => UploadFileResponse.decode(value),
+  },
+  /** List files in the nc_files directory */
+  listFiles: {
+    path: "/linuxcnc.LinuxCNCService/ListFiles",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: ListFilesRequest): Buffer => Buffer.from(ListFilesRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): ListFilesRequest => ListFilesRequest.decode(value),
+    responseSerialize: (value: ListFilesResponse): Buffer => Buffer.from(ListFilesResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): ListFilesResponse => ListFilesResponse.decode(value),
+  },
+  /** Delete a file from the nc_files directory */
+  deleteFile: {
+    path: "/linuxcnc.LinuxCNCService/DeleteFile",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: DeleteFileRequest): Buffer => Buffer.from(DeleteFileRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): DeleteFileRequest => DeleteFileRequest.decode(value),
+    responseSerialize: (value: DeleteFileResponse): Buffer => Buffer.from(DeleteFileResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): DeleteFileResponse => DeleteFileResponse.decode(value),
+  },
 } as const;
 
 export interface LinuxCNCServiceServer extends UntypedServiceImplementation {
@@ -8047,6 +8673,12 @@ export interface LinuxCNCServiceServer extends UntypedServiceImplementation {
   streamStatus: handleServerStreamingCall<StreamStatusRequest, LinuxCNCStatus>;
   /** Stream errors */
   streamErrors: handleServerStreamingCall<StreamErrorsRequest, ErrorMessage>;
+  /** Upload a G-code file to the nc_files directory */
+  uploadFile: handleUnaryCall<UploadFileRequest, UploadFileResponse>;
+  /** List files in the nc_files directory */
+  listFiles: handleUnaryCall<ListFilesRequest, ListFilesResponse>;
+  /** Delete a file from the nc_files directory */
+  deleteFile: handleUnaryCall<DeleteFileRequest, DeleteFileResponse>;
 }
 
 export interface LinuxCNCServiceClient extends Client {
@@ -8112,6 +8744,54 @@ export interface LinuxCNCServiceClient extends Client {
     metadata?: Metadata,
     options?: Partial<CallOptions>,
   ): ClientReadableStream<ErrorMessage>;
+  /** Upload a G-code file to the nc_files directory */
+  uploadFile(
+    request: UploadFileRequest,
+    callback: (error: ServiceError | null, response: UploadFileResponse) => void,
+  ): ClientUnaryCall;
+  uploadFile(
+    request: UploadFileRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: UploadFileResponse) => void,
+  ): ClientUnaryCall;
+  uploadFile(
+    request: UploadFileRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: UploadFileResponse) => void,
+  ): ClientUnaryCall;
+  /** List files in the nc_files directory */
+  listFiles(
+    request: ListFilesRequest,
+    callback: (error: ServiceError | null, response: ListFilesResponse) => void,
+  ): ClientUnaryCall;
+  listFiles(
+    request: ListFilesRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: ListFilesResponse) => void,
+  ): ClientUnaryCall;
+  listFiles(
+    request: ListFilesRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: ListFilesResponse) => void,
+  ): ClientUnaryCall;
+  /** Delete a file from the nc_files directory */
+  deleteFile(
+    request: DeleteFileRequest,
+    callback: (error: ServiceError | null, response: DeleteFileResponse) => void,
+  ): ClientUnaryCall;
+  deleteFile(
+    request: DeleteFileRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: DeleteFileResponse) => void,
+  ): ClientUnaryCall;
+  deleteFile(
+    request: DeleteFileRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: DeleteFileResponse) => void,
+  ): ClientUnaryCall;
 }
 
 export const LinuxCNCServiceClient = makeGenericClientConstructor(

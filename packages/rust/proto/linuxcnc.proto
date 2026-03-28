@@ -635,6 +635,15 @@ service LinuxCNCService {
 
   // Stream errors
   rpc StreamErrors(StreamErrorsRequest) returns (stream ErrorMessage);
+
+  // Upload a G-code file to the nc_files directory
+  rpc UploadFile(UploadFileRequest) returns (UploadFileResponse);
+
+  // List files in the nc_files directory
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+
+  // Delete a file from the nc_files directory
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
 }
 
 message GetStatusRequest {
@@ -652,4 +661,47 @@ message StreamStatusRequest {
 
 message StreamErrorsRequest {
   // Empty - streams all errors
+}
+
+// ============================================================================
+// FILE MANAGEMENT MESSAGES
+// ============================================================================
+
+// Upload a G-code file
+message UploadFileRequest {
+  string filename = 1;                  // Relative path within nc_files dir (e.g. "part1.ngc")
+  string content = 2;                   // G-code text content
+  bool fail_if_exists = 3;              // If true, fail when file already exists
+}
+
+message UploadFileResponse {
+  string path = 1;                      // Absolute path where file was written
+  bool overwritten = 2;                 // True if an existing file was replaced
+}
+
+// List files in the nc_files directory
+message ListFilesRequest {
+  string subdirectory = 1;              // Optional subdirectory (relative to nc_files)
+}
+
+message FileInfo {
+  string name = 1;                      // Filename
+  string path = 2;                      // Relative path from nc_files root
+  int64 size_bytes = 3;                 // File size in bytes
+  int64 modified_timestamp = 4;         // Last modified time (unix timestamp in nanoseconds)
+  bool is_directory = 5;                // True if this entry is a directory
+}
+
+message ListFilesResponse {
+  repeated FileInfo files = 1;          // Files in the directory
+  string directory = 2;                 // Absolute path of listed directory
+}
+
+// Delete a file from the nc_files directory
+message DeleteFileRequest {
+  string filename = 1;                  // Relative path within nc_files dir
+}
+
+message DeleteFileResponse {
+  string path = 1;                      // Absolute path of deleted file
 }

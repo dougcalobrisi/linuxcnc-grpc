@@ -51,6 +51,7 @@ Each language directory contains equivalent implementations:
 - `jog_axis` - Continuous and incremental jogging
 - `mdi_command` - MDI G-code execution with interactive mode
 - `hal_query` - HAL pin/signal/parameter querying
+- `upload_file` - Upload, list, and delete G-code files
 
 Run examples:
 ```bash
@@ -91,7 +92,13 @@ command type strings to handler methods (no dynamic `getattr` dispatch).
 **Input Validation**: Handler methods validate indices before dispatching to LinuxCNC:
 - `_validate_joint_index(index, is_joint)` checks bounds against `stat.joint`/`stat.axis`; index -1 is only valid for joint operations (home/unhome all).
 - `_validate_spindle_index(index)` checks bounds against `stat.spindle`.
+- `_validate_nc_path(filename)` resolves paths relative to the NC files directory and rejects path traversal, null bytes, and empty filenames. Used by both `_handle_program_cmd` and the file management RPCs.
 - MDI commands reject empty strings and null bytes, and log the full command at WARNING level for audit.
+
+**File Management RPCs**: `UploadFile`, `ListFiles`, and `DeleteFile` provide remote file
+management for the NC files directory (`/home/cnc/linuxcnc/nc_files` or `LINUXCNC_NC_FILES` env var).
+These RPCs do not require the LinuxCNC lock (no stat/command access) and use `_validate_nc_path`
+for security. Upload max size is 10 MB.
 
 ## Running Tests
 

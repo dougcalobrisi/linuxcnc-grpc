@@ -63,6 +63,21 @@ class LinuxCNCServiceStub(object):
                 request_serializer=linuxcnc__pb2.StreamErrorsRequest.SerializeToString,
                 response_deserializer=linuxcnc__pb2.ErrorMessage.FromString,
                 _registered_method=True)
+        self.UploadFile = channel.unary_unary(
+                '/linuxcnc.LinuxCNCService/UploadFile',
+                request_serializer=linuxcnc__pb2.UploadFileRequest.SerializeToString,
+                response_deserializer=linuxcnc__pb2.UploadFileResponse.FromString,
+                _registered_method=True)
+        self.ListFiles = channel.unary_unary(
+                '/linuxcnc.LinuxCNCService/ListFiles',
+                request_serializer=linuxcnc__pb2.ListFilesRequest.SerializeToString,
+                response_deserializer=linuxcnc__pb2.ListFilesResponse.FromString,
+                _registered_method=True)
+        self.DeleteFile = channel.unary_unary(
+                '/linuxcnc.LinuxCNCService/DeleteFile',
+                request_serializer=linuxcnc__pb2.DeleteFileRequest.SerializeToString,
+                response_deserializer=linuxcnc__pb2.DeleteFileResponse.FromString,
+                _registered_method=True)
 
 
 class LinuxCNCServiceServicer(object):
@@ -107,6 +122,27 @@ class LinuxCNCServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def UploadFile(self, request, context):
+        """Upload a G-code file to the nc_files directory
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListFiles(self, request, context):
+        """List files in the nc_files directory
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteFile(self, request, context):
+        """Delete a file from the nc_files directory
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LinuxCNCServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -134,6 +170,21 @@ def add_LinuxCNCServiceServicer_to_server(servicer, server):
                     servicer.StreamErrors,
                     request_deserializer=linuxcnc__pb2.StreamErrorsRequest.FromString,
                     response_serializer=linuxcnc__pb2.ErrorMessage.SerializeToString,
+            ),
+            'UploadFile': grpc.unary_unary_rpc_method_handler(
+                    servicer.UploadFile,
+                    request_deserializer=linuxcnc__pb2.UploadFileRequest.FromString,
+                    response_serializer=linuxcnc__pb2.UploadFileResponse.SerializeToString,
+            ),
+            'ListFiles': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListFiles,
+                    request_deserializer=linuxcnc__pb2.ListFilesRequest.FromString,
+                    response_serializer=linuxcnc__pb2.ListFilesResponse.SerializeToString,
+            ),
+            'DeleteFile': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteFile,
+                    request_deserializer=linuxcnc__pb2.DeleteFileRequest.FromString,
+                    response_serializer=linuxcnc__pb2.DeleteFileResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -275,6 +326,87 @@ class LinuxCNCService(object):
             '/linuxcnc.LinuxCNCService/StreamErrors',
             linuxcnc__pb2.StreamErrorsRequest.SerializeToString,
             linuxcnc__pb2.ErrorMessage.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UploadFile(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/linuxcnc.LinuxCNCService/UploadFile',
+            linuxcnc__pb2.UploadFileRequest.SerializeToString,
+            linuxcnc__pb2.UploadFileResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListFiles(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/linuxcnc.LinuxCNCService/ListFiles',
+            linuxcnc__pb2.ListFilesRequest.SerializeToString,
+            linuxcnc__pb2.ListFilesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteFile(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/linuxcnc.LinuxCNCService/DeleteFile',
+            linuxcnc__pb2.DeleteFileRequest.SerializeToString,
+            linuxcnc__pb2.DeleteFileResponse.FromString,
             options,
             channel_credentials,
             insecure,

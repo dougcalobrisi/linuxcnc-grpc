@@ -31,3 +31,7 @@ path = "src/bin/mdi_command.rs"
 [[bin]]
 name = "hal_query"
 path = "src/bin/hal_query.rs"
+
+[[bin]]
+name = "upload_file"
+path = "src/bin/upload_file.rs"

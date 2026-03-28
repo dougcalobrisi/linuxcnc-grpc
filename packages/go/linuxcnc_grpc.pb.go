@@ -24,6 +24,9 @@ const (
 	LinuxCNCService_WaitComplete_FullMethodName = "/linuxcnc.LinuxCNCService/WaitComplete"
 	LinuxCNCService_StreamStatus_FullMethodName = "/linuxcnc.LinuxCNCService/StreamStatus"
 	LinuxCNCService_StreamErrors_FullMethodName = "/linuxcnc.LinuxCNCService/StreamErrors"
+	LinuxCNCService_UploadFile_FullMethodName   = "/linuxcnc.LinuxCNCService/UploadFile"
+	LinuxCNCService_ListFiles_FullMethodName    = "/linuxcnc.LinuxCNCService/ListFiles"
+	LinuxCNCService_DeleteFile_FullMethodName   = "/linuxcnc.LinuxCNCService/DeleteFile"
 )
 
 // LinuxCNCServiceClient is the client API for LinuxCNCService service.
@@ -40,6 +43,12 @@ type LinuxCNCServiceClient interface {
 	StreamStatus(ctx context.Context, in *StreamStatusRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LinuxCNCStatus], error)
 	// Stream errors
 	StreamErrors(ctx context.Context, in *StreamErrorsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ErrorMessage], error)
+	// Upload a G-code file to the nc_files directory
+	UploadFile(ctx context.Context, in *UploadFileRequest, opts ...grpc.CallOption) (*UploadFileResponse, error)
+	// List files in the nc_files directory
+	ListFiles(ctx context.Context, in *ListFilesRequest, opts ...grpc.CallOption) (*ListFilesResponse, error)
+	// Delete a file from the nc_files directory
+	DeleteFile(ctx context.Context, in *DeleteFileRequest, opts ...grpc.CallOption) (*DeleteFileResponse, error)
 }
 
 type linuxCNCServiceClient struct {
@@ -118,6 +127,36 @@ func (c *linuxCNCServiceClient) StreamErrors(ctx context.Context, in *StreamErro
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LinuxCNCService_StreamErrorsClient = grpc.ServerStreamingClient[ErrorMessage]
 
+func (c *linuxCNCServiceClient) UploadFile(ctx context.Context, in *UploadFileRequest, opts ...grpc.CallOption) (*UploadFileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UploadFileResponse)
+	err := c.cc.Invoke(ctx, LinuxCNCService_UploadFile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *linuxCNCServiceClient) ListFiles(ctx context.Context, in *ListFilesRequest, opts ...grpc.CallOption) (*ListFilesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFilesResponse)
+	err := c.cc.Invoke(ctx, LinuxCNCService_ListFiles_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *linuxCNCServiceClient) DeleteFile(ctx context.Context, in *DeleteFileRequest, opts ...grpc.CallOption) (*DeleteFileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteFileResponse)
+	err := c.cc.Invoke(ctx, LinuxCNCService_DeleteFile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LinuxCNCServiceServer is the server API for LinuxCNCService service.
 // All implementations must embed UnimplementedLinuxCNCServiceServer
 // for forward compatibility.
@@ -132,6 +171,12 @@ type LinuxCNCServiceServer interface {
 	StreamStatus(*StreamStatusRequest, grpc.ServerStreamingServer[LinuxCNCStatus]) error
 	// Stream errors
 	StreamErrors(*StreamErrorsRequest, grpc.ServerStreamingServer[ErrorMessage]) error
+	// Upload a G-code file to the nc_files directory
+	UploadFile(context.Context, *UploadFileRequest) (*UploadFileResponse, error)
+	// List files in the nc_files directory
+	ListFiles(context.Context, *ListFilesRequest) (*ListFilesResponse, error)
+	// Delete a file from the nc_files directory
+	DeleteFile(context.Context, *DeleteFileRequest) (*DeleteFileResponse, error)
 	mustEmbedUnimplementedLinuxCNCServiceServer()
 }
 
@@ -156,6 +201,15 @@ func (UnimplementedLinuxCNCServiceServer) StreamStatus(*StreamStatusRequest, grp
 }
 func (UnimplementedLinuxCNCServiceServer) StreamErrors(*StreamErrorsRequest, grpc.ServerStreamingServer[ErrorMessage]) error {
 	return status.Errorf(codes.Unimplemented, "method StreamErrors not implemented")
+}
+func (UnimplementedLinuxCNCServiceServer) UploadFile(context.Context, *UploadFileRequest) (*UploadFileResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UploadFile not implemented")
+}
+func (UnimplementedLinuxCNCServiceServer) ListFiles(context.Context, *ListFilesRequest) (*ListFilesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListFiles not implemented")
+}
+func (UnimplementedLinuxCNCServiceServer) DeleteFile(context.Context, *DeleteFileRequest) (*DeleteFileResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteFile not implemented")
 }
 func (UnimplementedLinuxCNCServiceServer) mustEmbedUnimplementedLinuxCNCServiceServer() {}
 func (UnimplementedLinuxCNCServiceServer) testEmbeddedByValue()                         {}
@@ -254,6 +308,60 @@ func _LinuxCNCService_StreamErrors_Handler(srv interface{}, stream grpc.ServerSt
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LinuxCNCService_StreamErrorsServer = grpc.ServerStreamingServer[ErrorMessage]
 
+func _LinuxCNCService_UploadFile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UploadFileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LinuxCNCServiceServer).UploadFile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LinuxCNCService_UploadFile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LinuxCNCServiceServer).UploadFile(ctx, req.(*UploadFileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LinuxCNCService_ListFiles_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFilesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LinuxCNCServiceServer).ListFiles(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LinuxCNCService_ListFiles_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LinuxCNCServiceServer).ListFiles(ctx, req.(*ListFilesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LinuxCNCService_DeleteFile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteFileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LinuxCNCServiceServer).DeleteFile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LinuxCNCService_DeleteFile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LinuxCNCServiceServer).DeleteFile(ctx, req.(*DeleteFileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LinuxCNCService_ServiceDesc is the grpc.ServiceDesc for LinuxCNCService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -272,6 +380,18 @@ var LinuxCNCService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "WaitComplete",
 			Handler:    _LinuxCNCService_WaitComplete_Handler,
+		},
+		{
+			MethodName: "UploadFile",
+			Handler:    _LinuxCNCService_UploadFile_Handler,
+		},
+		{
+			MethodName: "ListFiles",
+			Handler:    _LinuxCNCService_ListFiles_Handler,
+		},
+		{
+			MethodName: "DeleteFile",
+			Handler:    _LinuxCNCService_DeleteFile_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

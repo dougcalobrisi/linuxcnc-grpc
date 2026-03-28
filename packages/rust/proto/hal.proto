@@ -85,8 +85,8 @@ message HalSignalInfo {
   HalType type = 2;             // Data type
   HalValue value = 3;           // Current value
   string driver = 4;            // Driving pin name (empty if none)
-  repeated string readers = 5;  // List of reading pin names
-  int32 reader_count = 6;       // Number of readers
+  repeated string readers = 5;  // List of reading pin names (currently unavailable via HAL API, always empty)
+  int32 reader_count = 6;       // Number of readers (currently always 0 due to HAL API limitation)
 }
 
 // Information about a HAL parameter

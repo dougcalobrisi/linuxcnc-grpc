@@ -25,6 +25,7 @@ MAX_RECONNECT_INTERVAL = 30  # seconds
 
 # Input validation limits
 MAX_MDI_COMMAND_LENGTH = 10000  # characters
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # Default allowed NC file directory (override with LINUXCNC_NC_FILES env var)
 DEFAULT_NC_FILES_DIR = "/home/cnc/linuxcnc/nc_files"
@@ -146,6 +147,26 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             max_index = len(self._stat.spindle)
         if index < 0 or index >= max_index:
             raise ValueError(f"spindle index {index} out of range (0..{max_index - 1})")
+
+    def _validate_nc_path(self, filename: str) -> Path:
+        """Validate and resolve a filename relative to the NC files directory.
+
+        Returns the resolved absolute Path.
+        Raises ValueError on any validation failure.
+        """
+        if not filename or not filename.strip():
+            raise ValueError("Filename must not be empty")
+        if "\x00" in filename:
+            raise ValueError("Filename must not contain null bytes")
+        allowed_dir = Path(
+            os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
+        ).resolve()
+        resolved = (allowed_dir / filename).resolve()
+        if not resolved.is_relative_to(allowed_dir):
+            raise ValueError(
+                f"Path must be within allowed directory: {allowed_dir}"
+            )
+        return resolved
 
     # =========================================================================
     # GetStatus RPC
@@ -377,20 +398,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         p = request.program
         cmd_type = p.WhichOneof("command")
         if cmd_type == "open":
-            path = p.open
-            if not path or not path.strip():
-                raise ValueError("Program path must not be empty")
-            if "\x00" in path:
-                raise ValueError("Program path must not contain null bytes")
-            # Resolve to absolute path and validate against allowed directory
-            resolved = Path(path).resolve()
-            allowed_dir = Path(
-                os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
-            ).resolve()
-            if not resolved.is_relative_to(allowed_dir):
-                raise ValueError(
-                    f"Program path must be within allowed directory: {allowed_dir}"
-                )
+            resolved = self._validate_nc_path(p.open)
             self._command.program_open(str(resolved))
         elif cmd_type == "run_from_line":
             self._command.auto(linuxcnc.AUTO_RUN, p.run_from_line)
@@ -584,6 +592,137 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             context.abort(grpc.StatusCode.INTERNAL, f"Stream failed: {e}")
         finally:
             logger.info("StreamStatus ended")
+
+    # =========================================================================
+    # UploadFile RPC
+    # =========================================================================
+
+    def UploadFile(
+        self,
+        request: linuxcnc_pb2.UploadFileRequest,
+        context: grpc.ServicerContext
+    ) -> linuxcnc_pb2.UploadFileResponse:
+        """Upload a G-code file to the nc_files directory."""
+        logger.debug(f"UploadFile called: filename={request.filename!r}")
+        try:
+            if not request.content:
+                context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT, "File content must not be empty"
+                )
+                return
+            if len(request.content) > MAX_UPLOAD_SIZE:
+                context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    f"File content too large ({len(request.content)} bytes, max {MAX_UPLOAD_SIZE})"
+                )
+                return
+
+            resolved = self._validate_nc_path(request.filename)
+            overwritten = resolved.exists()
+
+            if overwritten and request.fail_if_exists:
+                context.abort(
+                    grpc.StatusCode.ALREADY_EXISTS,
+                    f"File already exists: {request.filename}"
+                )
+                return
+
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_text(request.content)
+            logger.info(f"UploadFile: wrote {len(request.content)} bytes to {resolved}")
+
+            return linuxcnc_pb2.UploadFileResponse(
+                path=str(resolved),
+                overwritten=overwritten
+            )
+        except ValueError as e:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+        except OSError as e:
+            context.abort(grpc.StatusCode.INTERNAL, f"Failed to write file: {e}")
+
+    # =========================================================================
+    # ListFiles RPC
+    # =========================================================================
+
+    def ListFiles(
+        self,
+        request: linuxcnc_pb2.ListFilesRequest,
+        context: grpc.ServicerContext
+    ) -> linuxcnc_pb2.ListFilesResponse:
+        """List files in the nc_files directory."""
+        logger.debug(f"ListFiles called: subdirectory={request.subdirectory!r}")
+        try:
+            allowed_dir = Path(
+                os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
+            ).resolve()
+
+            if request.subdirectory:
+                target_dir = self._validate_nc_path(request.subdirectory)
+            else:
+                target_dir = allowed_dir
+
+            if not target_dir.is_dir():
+                context.abort(
+                    grpc.StatusCode.NOT_FOUND,
+                    f"Directory not found: {request.subdirectory}"
+                )
+                return
+
+            files = []
+            for entry in sorted(target_dir.iterdir()):
+                stat = entry.stat()
+                files.append(linuxcnc_pb2.FileInfo(
+                    name=entry.name,
+                    path=str(entry.relative_to(allowed_dir)),
+                    size_bytes=stat.st_size,
+                    modified_timestamp=int(stat.st_mtime * 1e9),
+                    is_directory=entry.is_dir()
+                ))
+
+            return linuxcnc_pb2.ListFilesResponse(
+                files=files,
+                directory=str(target_dir)
+            )
+        except ValueError as e:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+        except OSError as e:
+            context.abort(grpc.StatusCode.INTERNAL, f"Failed to list files: {e}")
+
+    # =========================================================================
+    # DeleteFile RPC
+    # =========================================================================
+
+    def DeleteFile(
+        self,
+        request: linuxcnc_pb2.DeleteFileRequest,
+        context: grpc.ServicerContext
+    ) -> linuxcnc_pb2.DeleteFileResponse:
+        """Delete a file from the nc_files directory."""
+        logger.debug(f"DeleteFile called: filename={request.filename!r}")
+        try:
+            resolved = self._validate_nc_path(request.filename)
+
+            if not resolved.exists():
+                context.abort(
+                    grpc.StatusCode.NOT_FOUND,
+                    f"File not found: {request.filename}"
+                )
+                return
+            if resolved.is_dir():
+                context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    "Cannot delete directories"
+                )
+                return
+
+            resolved.unlink()
+            logger.info(f"DeleteFile: removed {resolved}")
+
+            return linuxcnc_pb2.DeleteFileResponse(path=str(resolved))
+        except ValueError as e:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+        except OSError as e:
+            context.abort(grpc.StatusCode.INTERNAL, f"Failed to delete file: {e}")
 
     # =========================================================================
     # StreamErrors RPC

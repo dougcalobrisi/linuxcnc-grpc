@@ -1340,3 +1340,425 @@ class TestProgramOptionsCommand:
             response = service.SendCommand(request, mock_grpc_context)
 
             assert response.status == linuxcnc_pb2.RCS_DONE
+
+
+class TestUploadFile:
+    """Test UploadFile RPC."""
+
+    def test_upload_new_file(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Uploads a new file and verifies content on disk."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.UploadFileRequest(
+                        filename="test.ngc",
+                        content="G0 X10 Y10\n"
+                    )
+                    response = service.UploadFile(request, mock_grpc_context)
+
+                    assert response.path == os.path.join(tmpdir, "test.ngc")
+                    assert response.overwritten is False
+                    with open(os.path.join(tmpdir, "test.ngc")) as f:
+                        assert f.read() == "G0 X10 Y10\n"
+
+    def test_upload_overwrites_by_default(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Overwrites existing file when fail_if_exists is not set."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                # Create existing file
+                existing = os.path.join(tmpdir, "test.ngc")
+                with open(existing, 'w') as f:
+                    f.write("old content")
+
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.UploadFileRequest(
+                        filename="test.ngc",
+                        content="new content"
+                    )
+                    response = service.UploadFile(request, mock_grpc_context)
+
+                    assert response.overwritten is True
+                    with open(existing) as f:
+                        assert f.read() == "new content"
+
+    def test_upload_fail_if_exists(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Rejects upload when file exists and fail_if_exists is set."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                existing = os.path.join(tmpdir, "test.ngc")
+                with open(existing, 'w') as f:
+                    f.write("existing")
+
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.UploadFileRequest(
+                        filename="test.ngc",
+                        content="new content",
+                        fail_if_exists=True
+                    )
+                    service.UploadFile(request, mock_grpc_context)
+
+                    mock_grpc_context.abort.assert_called_once()
+                    args = mock_grpc_context.abort.call_args
+                    assert args[0][0] == grpc.StatusCode.ALREADY_EXISTS
+
+    def test_upload_creates_subdirectory(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Creates subdirectories as needed."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.UploadFileRequest(
+                        filename="subdir/nested/test.ngc",
+                        content="G0 X0\n"
+                    )
+                    response = service.UploadFile(request, mock_grpc_context)
+
+                    expected = os.path.join(tmpdir, "subdir", "nested", "test.ngc")
+                    assert response.path == expected
+                    assert os.path.exists(expected)
+
+    def test_upload_rejects_path_traversal(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Rejects path traversal attempts."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.UploadFileRequest(
+                        filename="../../etc/evil.ngc",
+                        content="bad content"
+                    )
+                    service.UploadFile(request, mock_grpc_context)
+
+                    mock_grpc_context.abort.assert_called_once()
+                    args = mock_grpc_context.abort.call_args
+                    assert args[0][0] == grpc.StatusCode.INVALID_ARGUMENT
+
+    def test_upload_rejects_empty_content(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Rejects empty content."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.UploadFileRequest(
+                        filename="test.ngc",
+                        content=""
+                    )
+                    service.UploadFile(request, mock_grpc_context)
+
+                    mock_grpc_context.abort.assert_called_once()
+                    args = mock_grpc_context.abort.call_args
+                    assert args[0][0] == grpc.StatusCode.INVALID_ARGUMENT
+
+    def test_upload_rejects_empty_filename(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Rejects empty filename."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.UploadFileRequest(
+                        filename="",
+                        content="G0 X0\n"
+                    )
+                    service.UploadFile(request, mock_grpc_context)
+
+                    mock_grpc_context.abort.assert_called_once()
+                    args = mock_grpc_context.abort.call_args
+                    assert args[0][0] == grpc.StatusCode.INVALID_ARGUMENT
+
+
+class TestListFiles:
+    """Test ListFiles RPC."""
+
+    def test_list_root_directory(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Lists files in the root nc_files directory."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                # Create test files
+                with open(os.path.join(tmpdir, "file1.ngc"), 'w') as f:
+                    f.write("G0 X0\n")
+                with open(os.path.join(tmpdir, "file2.ngc"), 'w') as f:
+                    f.write("G0 X10\n")
+                os.mkdir(os.path.join(tmpdir, "subdir"))
+
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.ListFilesRequest()
+                    response = service.ListFiles(request, mock_grpc_context)
+
+                    assert response.directory == tmpdir
+                    assert len(response.files) == 3
+                    names = [f.name for f in response.files]
+                    assert "file1.ngc" in names
+                    assert "file2.ngc" in names
+                    assert "subdir" in names
+
+    def test_list_subdirectory(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Lists files in a subdirectory."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                subdir = os.path.join(tmpdir, "subdir")
+                os.mkdir(subdir)
+                with open(os.path.join(subdir, "nested.ngc"), 'w') as f:
+                    f.write("G0 X0\n")
+
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.ListFilesRequest(subdirectory="subdir")
+                    response = service.ListFiles(request, mock_grpc_context)
+
+                    assert len(response.files) == 1
+                    assert response.files[0].name == "nested.ngc"
+                    assert response.files[0].path == "subdir/nested.ngc"
+
+    def test_list_nonexistent_directory(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns NOT_FOUND for nonexistent directory."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.ListFilesRequest(subdirectory="nonexistent")
+                    service.ListFiles(request, mock_grpc_context)
+
+                    mock_grpc_context.abort.assert_called_once()
+                    args = mock_grpc_context.abort.call_args
+                    assert args[0][0] == grpc.StatusCode.NOT_FOUND
+
+    def test_list_returns_file_info(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Verifies FileInfo fields are populated correctly."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                test_content = "G0 X10 Y20\nG1 Z-5 F100\n"
+                with open(os.path.join(tmpdir, "part.ngc"), 'w') as f:
+                    f.write(test_content)
+                os.mkdir(os.path.join(tmpdir, "projects"))
+
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.ListFilesRequest()
+                    response = service.ListFiles(request, mock_grpc_context)
+
+                    # Find the file entry
+                    file_entry = next(f for f in response.files if f.name == "part.ngc")
+                    assert file_entry.size_bytes == len(test_content)
+                    assert file_entry.modified_timestamp > 0
+                    assert file_entry.is_directory is False
+
+                    # Find the directory entry
+                    dir_entry = next(f for f in response.files if f.name == "projects")
+                    assert dir_entry.is_directory is True
+
+
+class TestDeleteFile:
+    """Test DeleteFile RPC."""
+
+    def test_delete_existing_file(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Deletes an existing file."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                target = os.path.join(tmpdir, "delete_me.ngc")
+                with open(target, 'w') as f:
+                    f.write("G0 X0\n")
+
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.DeleteFileRequest(filename="delete_me.ngc")
+                    response = service.DeleteFile(request, mock_grpc_context)
+
+                    assert response.path == target
+                    assert not os.path.exists(target)
+
+    def test_delete_nonexistent_file(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns NOT_FOUND for nonexistent file."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.DeleteFileRequest(filename="nonexistent.ngc")
+                    service.DeleteFile(request, mock_grpc_context)
+
+                    mock_grpc_context.abort.assert_called_once()
+                    args = mock_grpc_context.abort.call_args
+                    assert args[0][0] == grpc.StatusCode.NOT_FOUND
+
+    def test_delete_rejects_path_traversal(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Rejects path traversal attempts."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.DeleteFileRequest(
+                        filename="../../etc/passwd"
+                    )
+                    service.DeleteFile(request, mock_grpc_context)
+
+                    mock_grpc_context.abort.assert_called_once()
+                    args = mock_grpc_context.abort.call_args
+                    assert args[0][0] == grpc.StatusCode.INVALID_ARGUMENT
+
+    def test_delete_rejects_directory(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Rejects attempts to delete directories."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = str(os.path.realpath(tmpdir))
+                os.mkdir(os.path.join(tmpdir, "subdir"))
+
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.DeleteFileRequest(filename="subdir")
+                    service.DeleteFile(request, mock_grpc_context)
+
+                    mock_grpc_context.abort.assert_called_once()
+                    args = mock_grpc_context.abort.call_args
+                    assert args[0][0] == grpc.StatusCode.INVALID_ARGUMENT

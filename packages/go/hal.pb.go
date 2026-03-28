@@ -522,8 +522,8 @@ type HalSignalInfo struct {
 	Type          HalType                `protobuf:"varint,2,opt,name=type,proto3,enum=hal.HalType" json:"type,omitempty"`                 // Data type
 	Value         *HalValue              `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`                                 // Current value
 	Driver        string                 `protobuf:"bytes,4,opt,name=driver,proto3" json:"driver,omitempty"`                               // Driving pin name (empty if none)
-	Readers       []string               `protobuf:"bytes,5,rep,name=readers,proto3" json:"readers,omitempty"`                             // List of reading pin names
-	ReaderCount   int32                  `protobuf:"varint,6,opt,name=reader_count,json=readerCount,proto3" json:"reader_count,omitempty"` // Number of readers
+	Readers       []string               `protobuf:"bytes,5,rep,name=readers,proto3" json:"readers,omitempty"`                             // List of reading pin names (currently unavailable via HAL API, always empty)
+	ReaderCount   int32                  `protobuf:"varint,6,opt,name=reader_count,json=readerCount,proto3" json:"reader_count,omitempty"` // Number of readers (currently always 0 due to HAL API limitation)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

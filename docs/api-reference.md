@@ -10,6 +10,9 @@ Complete API documentation for LinuxCNC gRPC services.
   - [WaitComplete](#waitcomplete)
   - [StreamStatus](#streamstatus)
   - [StreamErrors](#streamerrors)
+  - [UploadFile](#uploadfile)
+  - [ListFiles](#listfiles)
+  - [DeleteFile](#deletefile)
 - [HalService](#halservice)
   - [GetSystemStatus](#getsystemstatus)
   - [GetValue](#getvalue)
@@ -200,6 +203,135 @@ rpc StreamErrors(StreamErrorsRequest) returns (stream ErrorMessage)
 | `type` | ErrorType | OPERATOR_ERROR, NML_ERROR, etc. |
 | `message` | string | Error message text |
 | `timestamp` | int64 | Unix timestamp in nanoseconds |
+
+---
+
+### UploadFile
+
+Upload a G-code file to the nc_files directory.
+
+```protobuf
+rpc UploadFile(UploadFileRequest) returns (UploadFileResponse)
+```
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `filename` | string | Relative path within nc_files dir (e.g. `"part1.ngc"` or `"subdir/part1.ngc"`) |
+| `content` | string | G-code text content |
+| `fail_if_exists` | bool | If true, fail when file already exists (default: false = overwrite) |
+
+**Response:** `UploadFileResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Absolute path where file was written |
+| `overwritten` | bool | True if an existing file was replaced |
+
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_ARGUMENT` | Empty filename, empty content, null bytes, path traversal, or content too large (>10MB) |
+| `ALREADY_EXISTS` | File exists and `fail_if_exists` is true |
+
+**Example (Python):**
+
+```python
+request = linuxcnc_pb2.UploadFileRequest(
+    filename="my_part.ngc",
+    content="G0 X10 Y10\nG1 Z-5 F100\nM2\n"
+)
+response = stub.UploadFile(request)
+print(f"Written to: {response.path}")
+```
+
+---
+
+### ListFiles
+
+List files in the nc_files directory.
+
+```protobuf
+rpc ListFiles(ListFilesRequest) returns (ListFilesResponse)
+```
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `subdirectory` | string | Optional subdirectory relative to nc_files (empty = root) |
+
+**Response:** `ListFilesResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `files` | FileInfo[] | Files in the directory |
+| `directory` | string | Absolute path of listed directory |
+
+**FileInfo:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Filename |
+| `path` | string | Relative path from nc_files root |
+| `size_bytes` | int64 | File size in bytes |
+| `modified_timestamp` | int64 | Last modified time (unix nanos) |
+| `is_directory` | bool | True if directory |
+
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `NOT_FOUND` | Subdirectory does not exist |
+| `INVALID_ARGUMENT` | Path traversal attempt |
+
+**Example (Python):**
+
+```python
+response = stub.ListFiles(linuxcnc_pb2.ListFilesRequest())
+for f in response.files:
+    print(f"{f.name}: {f.size_bytes} bytes")
+```
+
+---
+
+### DeleteFile
+
+Delete a file from the nc_files directory.
+
+```protobuf
+rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse)
+```
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `filename` | string | Relative path within nc_files dir |
+
+**Response:** `DeleteFileResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Absolute path of deleted file |
+
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `NOT_FOUND` | File does not exist |
+| `INVALID_ARGUMENT` | Path traversal attempt or target is a directory |
+
+**Example (Python):**
+
+```python
+response = stub.DeleteFile(
+    linuxcnc_pb2.DeleteFileRequest(filename="my_part.ngc")
+)
+print(f"Deleted: {response.path}")
+```
 
 ---
 

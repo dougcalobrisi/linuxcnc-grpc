@@ -13,6 +13,7 @@ Examples are provided in four languages, each implementing the same functionalit
 | `jog_axis` | Interactive jogging with keyboard |
 | `mdi_command` | Execute G-code via MDI |
 | `hal_query` | Query HAL pins, signals, parameters |
+| `upload_file` | Upload, list, and delete G-code files |
 
 ## Directory Structure
 
@@ -23,20 +24,23 @@ examples/
 │   ├── stream_status.py
 │   ├── jog_axis.py
 │   ├── mdi_command.py
-│   └── hal_query.py
+│   ├── hal_query.py
+│   └── upload_file.py
 ├── go/
 │   └── cmd/
 │       ├── get_status/
 │       ├── stream_status/
 │       ├── jog_axis/
 │       ├── mdi_command/
-│       └── hal_query/
+│       ├── hal_query/
+│       └── upload_file/
 ├── node/
 │   ├── get_status.ts
 │   ├── stream_status.ts
 │   ├── jog_axis.ts
 │   ├── mdi_command.ts
-│   └── hal_query.ts
+│   ├── hal_query.ts
+│   └── upload_file.ts
 ├── rust/
 │   ├── Cargo.toml
 │   └── src/bin/
@@ -44,7 +48,8 @@ examples/
 │       ├── stream_status.rs
 │       ├── jog_axis.rs
 │       ├── mdi_command.rs
-│       └── hal_query.rs
+│       ├── hal_query.rs
+│       └── upload_file.rs
 └── README.md
 ```
 
@@ -393,6 +398,65 @@ axis.x.homed: True (HAL_OUT)
 spindle-speed-out: 1200.000000
 spindle-at-speed: True
 spindle-on: True
+```
+
+---
+
+## upload_file
+
+Upload, list, and delete G-code files on the LinuxCNC machine.
+
+### What it demonstrates
+
+- Using `UploadFile` to write G-code files remotely
+- Using `ListFiles` to browse the nc_files directory
+- Using `DeleteFile` to clean up uploaded files
+- File management error handling
+
+### Key code (Python)
+
+```python
+# Upload a G-code file
+request = linuxcnc_pb2.UploadFileRequest(
+    filename="my_part.ngc",
+    content="G0 X10 Y10\nG1 Z-5 F100\nM2\n"
+)
+response = stub.UploadFile(request)
+print(f"Written to: {response.path}")
+
+# List files
+list_response = stub.ListFiles(linuxcnc_pb2.ListFilesRequest())
+for f in list_response.files:
+    print(f"{f.name}: {f.size_bytes} bytes")
+
+# Delete file
+stub.DeleteFile(linuxcnc_pb2.DeleteFileRequest(filename="my_part.ngc"))
+```
+
+### Usage
+
+```bash
+# Upload a sample file
+python upload_file.py --host localhost --port 50051
+
+# Upload and then delete (cleanup)
+python upload_file.py --cleanup
+```
+
+### Output
+
+```
+Uploading 'grpc_example.ngc'...
+  Written to: /home/cnc/linuxcnc/nc_files/grpc_example.ngc
+  Size: 142 bytes
+
+Listing files...
+  Directory: /home/cnc/linuxcnc/nc_files
+  Name                               Size  Type
+  ------------------------------ --------  ----
+  grpc_example.ngc                    142  FILE
+  other_program.ngc                   523  FILE
+  projects                           4096  DIR
 ```
 
 ---

@@ -412,6 +412,15 @@ type (
 	StreamStatusRequest = pb.StreamStatusRequest
 	StreamErrorsRequest = pb.StreamErrorsRequest
 
+	// File management types
+	UploadFileRequest  = pb.UploadFileRequest
+	UploadFileResponse = pb.UploadFileResponse
+	ListFilesRequest   = pb.ListFilesRequest
+	ListFilesResponse  = pb.ListFilesResponse
+	FileInfo           = pb.FileInfo
+	DeleteFileRequest  = pb.DeleteFileRequest
+	DeleteFileResponse = pb.DeleteFileResponse
+
 	// HAL request/response types
 	GetSystemStatusRequest  = pb.GetSystemStatusRequest
 	HalStreamStatusRequest  = pb.HalStreamStatusRequest
@@ -517,4 +526,23 @@ func (c *Client) SendCommand(ctx context.Context, cmd *LinuxCNCCommand) (*Comman
 // GetHALStatus retrieves the current HAL system status.
 func (c *Client) GetHALStatus(ctx context.Context) (*HalSystemStatus, error) {
 	return c.HAL.GetSystemStatus(ctx, &GetSystemStatusRequest{})
+}
+
+// UploadFile uploads a G-code file to the nc_files directory.
+func (c *Client) UploadFile(ctx context.Context, filename, content string, failIfExists bool) (*UploadFileResponse, error) {
+	return c.LinuxCNC.UploadFile(ctx, &UploadFileRequest{
+		Filename:     filename,
+		Content:      content,
+		FailIfExists: failIfExists,
+	})
+}
+
+// ListFiles lists files in the nc_files directory.
+func (c *Client) ListFiles(ctx context.Context, subdirectory string) (*ListFilesResponse, error) {
+	return c.LinuxCNC.ListFiles(ctx, &ListFilesRequest{Subdirectory: subdirectory})
+}
+
+// DeleteFile deletes a file from the nc_files directory.
+func (c *Client) DeleteFile(ctx context.Context, filename string) (*DeleteFileResponse, error) {
+	return c.LinuxCNC.DeleteFile(ctx, &DeleteFileRequest{Filename: filename})
 }

@@ -307,9 +307,9 @@ export interface HalSignalInfo {
     | undefined;
   /** Driving pin name (empty if none) */
   driver: string;
-  /** List of reading pin names */
+  /** List of reading pin names (currently unavailable via HAL API, always empty) */
   readers: string[];
-  /** Number of readers */
+  /** Number of readers (currently always 0 due to HAL API limitation) */
   readerCount: number;
 }
 
