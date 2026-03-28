@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "linuxcnc-grpc": "file:../../packages/node",
-    "@grpc/grpc-js": "^1.9.0",
+    "@grpc/grpc-js": "~1.12.0",
     "commander": "^12.0.0"
   },
   "devDependencies": {
