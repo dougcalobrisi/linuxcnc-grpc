@@ -52,7 +52,7 @@ pip install linuxcnc-grpc
 
 ```python
 import grpc
-from linuxcnc_grpc._generated import linuxcnc_pb2, linuxcnc_pb2_grpc
+from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 
 channel = grpc.insecure_channel("localhost:50051")
 stub = linuxcnc_pb2_grpc.LinuxCNCServiceStub(channel)

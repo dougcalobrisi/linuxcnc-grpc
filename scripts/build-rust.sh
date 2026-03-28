@@ -21,9 +21,9 @@ cargo build --release
 info "Running cargo test..."
 cargo test
 
-# Preview publishable files (allow dirty for development builds)
+# Preview publishable files
 info "Package contents:"
-cargo package --list --allow-dirty
+cargo package --list
 
 echo ""
 success "Build complete!"

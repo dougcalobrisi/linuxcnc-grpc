@@ -18,15 +18,13 @@ import time
 
 import grpc
 
-# Try installed package first, fall back to local src/ directory
+# Try installed package first, fall back to local packages/ directory
 try:
-    from linuxcnc_grpc._generated import hal_pb2
-    from linuxcnc_grpc._generated import hal_pb2_grpc
+    from linuxcnc_pb import hal_pb2, hal_pb2_grpc
 except ImportError:
     from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
-    from linuxcnc_grpc._generated import hal_pb2
-    from linuxcnc_grpc._generated import hal_pb2_grpc
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "packages" / "python"))
+    from linuxcnc_pb import hal_pb2, hal_pb2_grpc
 
 
 def format_value(value: hal_pb2.HalValue) -> str:

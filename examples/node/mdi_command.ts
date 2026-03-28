@@ -14,6 +14,7 @@
  */
 
 import * as readline from "readline";
+import { Metadata } from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
@@ -51,10 +52,17 @@ if (!command && !opts.interactive) {
   process.exit(1);
 }
 
+console.error(`Connecting to ${address}...`);
 const client = new LinuxCNCServiceClient(
   address,
-  credentials.createInsecure()
+  credentials.createInsecure(),
+  {
+    'grpc.initial_reconnect_backoff_ms': 1000,
+    'grpc.max_reconnect_backoff_ms': 5000,
+  }
 );
+
+const RPC_DEADLINE = 5000;
 
 let serial = 0;
 
@@ -64,7 +72,7 @@ function nextSerial(): number {
 
 function getStatus(): Promise<LinuxCNCStatus> {
   return new Promise((resolve, reject) => {
-    client.getStatus(GetStatusRequest.create(), (err, status) => {
+    client.getStatus(GetStatusRequest.create(), new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, status) => {
       if (err) reject(err);
       else resolve(status);
     });
@@ -75,7 +83,7 @@ function sendCommand(cmd: LinuxCNCCommand): Promise<CommandResponse> {
   cmd.serial = nextSerial();
   cmd.timestamp = Date.now() * 1000000;
   return new Promise((resolve, reject) => {
-    client.sendCommand(cmd, (err, response) => {
+    client.sendCommand(cmd, new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
       if (err) reject(err);
       else resolve(response);
     });
@@ -86,8 +94,9 @@ function waitComplete(cmdSerial: number, timeout: number): Promise<CommandRespon
   const request = WaitCompleteRequest.create();
   request.serial = cmdSerial;
   request.timeout = timeout;
+  const waitDeadline = new Date(Date.now() + (timeout * 1000) + 5000);
   return new Promise((resolve, reject) => {
-    client.waitComplete(request, (err, response) => {
+    client.waitComplete(request, new Metadata(), { deadline: waitDeadline }, (err, response) => {
       if (err) reject(err);
       else resolve(response);
     });
@@ -121,7 +130,12 @@ async function ensureMDIReady(): Promise<boolean> {
   let status = await getStatus();
 
   // Check E-stop
-  if (status.task!.taskState === TaskState.STATE_ESTOP) {
+  let task = status.task;
+  if (!task) {
+    console.log("No task status available");
+    return false;
+  }
+  if (task.taskState === TaskState.STATE_ESTOP) {
     console.log("Machine is in E-stop. Resetting...");
     const resp = await setState(TaskState.STATE_ESTOP_RESET);
     if (resp.status !== RcsStatus.RCS_DONE) {
@@ -133,7 +147,12 @@ async function ensureMDIReady(): Promise<boolean> {
 
   // Power on
   status = await getStatus();
-  if (status.task!.taskState !== TaskState.STATE_ON) {
+  task = status.task;
+  if (!task) {
+    console.log("No task status available");
+    return false;
+  }
+  if (task.taskState !== TaskState.STATE_ON) {
     console.log("Powering on machine...");
     const resp = await setState(TaskState.STATE_ON);
     if (resp.status !== RcsStatus.RCS_DONE) {
@@ -145,7 +164,12 @@ async function ensureMDIReady(): Promise<boolean> {
 
   // Set MDI mode
   status = await getStatus();
-  if (status.task!.taskMode !== TaskMode.MODE_MDI) {
+  task = status.task;
+  if (!task) {
+    console.log("No task status available");
+    return false;
+  }
+  if (task.taskMode !== TaskMode.MODE_MDI) {
     console.log("Setting MDI mode...");
     const resp = await setMode(TaskMode.MODE_MDI);
     if (resp.status !== RcsStatus.RCS_DONE) {
@@ -207,7 +231,13 @@ async function interactiveMode(): Promise<void> {
 
       if (lower === "status") {
         const status = await getStatus();
-        const pos = status.position!.actualPosition!;
+        const position = status.position;
+        if (!position || !position.actualPosition) {
+          console.log("No position data available");
+          prompt();
+          return;
+        }
+        const pos = position.actualPosition;
         console.log(`Position: X=${pos.x.toFixed(4)} Y=${pos.y.toFixed(4)} Z=${pos.z.toFixed(4)}`);
         prompt();
         return;
@@ -225,7 +255,8 @@ async function interactiveMode(): Promise<void> {
       try {
         // Ensure we're still in MDI mode
         const status = await getStatus();
-        if (status.task!.taskMode !== TaskMode.MODE_MDI) {
+        const task = status.task;
+        if (task && task.taskMode !== TaskMode.MODE_MDI) {
           if (!(await ensureMDIReady())) {
             console.log("Failed to re-enter MDI mode");
             prompt();
@@ -269,12 +300,18 @@ async function main(): Promise<void> {
 
       // Show final position
       const status = await getStatus();
-      const pos = status.position!.actualPosition!;
-      console.log(`Position: X=${pos.x.toFixed(4)} Y=${pos.y.toFixed(4)} Z=${pos.z.toFixed(4)}`);
+      const position = status.position;
+      if (!position || !position.actualPosition) {
+        console.error("No position data available");
+      } else {
+        const pos = position.actualPosition;
+        console.log(`Position: X=${pos.x.toFixed(4)} Y=${pos.y.toFixed(4)} Z=${pos.z.toFixed(4)}`);
+      }
       client.close();
     }
   } catch (err) {
     console.error(`Error: ${err}`);
+    client.close();
     process.exit(1);
   }
 }

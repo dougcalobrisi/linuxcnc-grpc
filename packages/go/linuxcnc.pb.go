@@ -537,20 +537,20 @@ type SpindleDirection int32
 const (
 	SpindleDirection_SPINDLE_STOPPED SpindleDirection = 0
 	SpindleDirection_SPINDLE_FORWARD SpindleDirection = 1
-	SpindleDirection_SPINDLE_REVERSE SpindleDirection = -1
+	SpindleDirection_SPINDLE_REVERSE SpindleDirection = 2
 )
 
 // Enum value maps for SpindleDirection.
 var (
 	SpindleDirection_name = map[int32]string{
-		0:  "SPINDLE_STOPPED",
-		1:  "SPINDLE_FORWARD",
-		-1: "SPINDLE_REVERSE",
+		0: "SPINDLE_STOPPED",
+		1: "SPINDLE_FORWARD",
+		2: "SPINDLE_REVERSE",
 	}
 	SpindleDirection_value = map[string]int32{
 		"SPINDLE_STOPPED": 0,
 		"SPINDLE_FORWARD": 1,
-		"SPINDLE_REVERSE": -1,
+		"SPINDLE_REVERSE": 2,
 	}
 )
 
@@ -3056,7 +3056,7 @@ func (x *UnhomeCommand) GetJoint() int32 {
 }
 
 // Spindle command
-type SpindleCmd struct {
+type SpindleControlCommand struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Command        SpindleCommand         `protobuf:"varint,1,opt,name=command,proto3,enum=linuxcnc.SpindleCommand" json:"command,omitempty"`
 	Speed          float64                `protobuf:"fixed64,2,opt,name=speed,proto3" json:"speed,omitempty"`                                            // For FORWARD/REVERSE
@@ -3066,20 +3066,20 @@ type SpindleCmd struct {
 	sizeCache      protoimpl.SizeCache
 }
 
-func (x *SpindleCmd) Reset() {
-	*x = SpindleCmd{}
+func (x *SpindleControlCommand) Reset() {
+	*x = SpindleControlCommand{}
 	mi := &file_linuxcnc_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SpindleCmd) String() string {
+func (x *SpindleControlCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SpindleCmd) ProtoMessage() {}
+func (*SpindleControlCommand) ProtoMessage() {}
 
-func (x *SpindleCmd) ProtoReflect() protoreflect.Message {
+func (x *SpindleControlCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_linuxcnc_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -3091,33 +3091,33 @@ func (x *SpindleCmd) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SpindleCmd.ProtoReflect.Descriptor instead.
-func (*SpindleCmd) Descriptor() ([]byte, []int) {
+// Deprecated: Use SpindleControlCommand.ProtoReflect.Descriptor instead.
+func (*SpindleControlCommand) Descriptor() ([]byte, []int) {
 	return file_linuxcnc_proto_rawDescGZIP(), []int{20}
 }
 
-func (x *SpindleCmd) GetCommand() SpindleCommand {
+func (x *SpindleControlCommand) GetCommand() SpindleCommand {
 	if x != nil {
 		return x.Command
 	}
 	return SpindleCommand_SPINDLE_CMD_OFF
 }
 
-func (x *SpindleCmd) GetSpeed() float64 {
+func (x *SpindleControlCommand) GetSpeed() float64 {
 	if x != nil {
 		return x.Speed
 	}
 	return 0
 }
 
-func (x *SpindleCmd) GetSpindle() int32 {
+func (x *SpindleControlCommand) GetSpindle() int32 {
 	if x != nil {
 		return x.Spindle
 	}
 	return 0
 }
 
-func (x *SpindleCmd) GetWaitForAtSpeed() bool {
+func (x *SpindleControlCommand) GetWaitForAtSpeed() bool {
 	if x != nil {
 		return x.WaitForAtSpeed
 	}
@@ -4488,7 +4488,7 @@ func (x *LinuxCNCCommand) GetUnhome() *UnhomeCommand {
 	return nil
 }
 
-func (x *LinuxCNCCommand) GetSpindle() *SpindleCmd {
+func (x *LinuxCNCCommand) GetSpindle() *SpindleControlCommand {
 	if x != nil {
 		if x, ok := x.Command.(*LinuxCNCCommand_Spindle); ok {
 			return x.Spindle
@@ -4715,7 +4715,7 @@ type LinuxCNCCommand_Unhome struct {
 }
 
 type LinuxCNCCommand_Spindle struct {
-	Spindle *SpindleCmd `protobuf:"bytes,16,opt,name=spindle,proto3,oneof"`
+	Spindle *SpindleControlCommand `protobuf:"bytes,16,opt,name=spindle,proto3,oneof"`
 }
 
 type LinuxCNCCommand_SpindleOverride struct {
@@ -5325,9 +5325,8 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\vHomeCommand\x12\x14\n" +
 	"\x05joint\x18\x01 \x01(\x05R\x05joint\"%\n" +
 	"\rUnhomeCommand\x12\x14\n" +
-	"\x05joint\x18\x01 \x01(\x05R\x05joint\"\x9b\x01\n" +
-	"\n" +
-	"SpindleCmd\x122\n" +
+	"\x05joint\x18\x01 \x01(\x05R\x05joint\"\xa6\x01\n" +
+	"\x15SpindleControlCommand\x122\n" +
 	"\acommand\x18\x01 \x01(\x0e2\x18.linuxcnc.SpindleCommandR\acommand\x12\x14\n" +
 	"\x05speed\x18\x02 \x01(\x01R\x05speed\x12\x18\n" +
 	"\aspindle\x18\x03 \x01(\x05R\aspindle\x12)\n" +
@@ -5404,7 +5403,7 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\vMessageType\x12\t\n" +
 	"\x05ERROR\x10\x00\x12\b\n" +
 	"\x04TEXT\x10\x01\x12\v\n" +
-	"\aDISPLAY\x10\x02\"\xe4\r\n" +
+	"\aDISPLAY\x10\x02\"\xef\r\n" +
 	"\x0fLinuxCNCCommand\x12\x1c\n" +
 	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\x12\x16\n" +
 	"\x06serial\x18\x02 \x01(\x05R\x06serial\x12.\n" +
@@ -5414,8 +5413,8 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\x03mdi\x18\f \x01(\v2\x14.linuxcnc.MdiCommandH\x00R\x03mdi\x12(\n" +
 	"\x03jog\x18\r \x01(\v2\x14.linuxcnc.JogCommandH\x00R\x03jog\x12+\n" +
 	"\x04home\x18\x0e \x01(\v2\x15.linuxcnc.HomeCommandH\x00R\x04home\x121\n" +
-	"\x06unhome\x18\x0f \x01(\v2\x17.linuxcnc.UnhomeCommandH\x00R\x06unhome\x120\n" +
-	"\aspindle\x18\x10 \x01(\v2\x14.linuxcnc.SpindleCmdH\x00R\aspindle\x12M\n" +
+	"\x06unhome\x18\x0f \x01(\v2\x17.linuxcnc.UnhomeCommandH\x00R\x06unhome\x12;\n" +
+	"\aspindle\x18\x10 \x01(\v2\x1f.linuxcnc.SpindleControlCommandH\x00R\aspindle\x12M\n" +
 	"\x10spindle_override\x18\x11 \x01(\v2 .linuxcnc.SpindleOverrideCommandH\x00R\x0fspindleOverride\x12.\n" +
 	"\x05brake\x18\x12 \x01(\v2\x16.linuxcnc.BrakeCommandH\x00R\x05brake\x127\n" +
 	"\bfeedrate\x18\x13 \x01(\v2\x19.linuxcnc.FeedrateCommandH\x00R\bfeedrate\x12:\n" +
@@ -5508,11 +5507,11 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\tJointType\x12\x1a\n" +
 	"\x16JOINT_TYPE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fJOINT_LINEAR\x10\x01\x12\x11\n" +
-	"\rJOINT_ANGULAR\x10\x02*Z\n" +
+	"\rJOINT_ANGULAR\x10\x02*Q\n" +
 	"\x10SpindleDirection\x12\x13\n" +
 	"\x0fSPINDLE_STOPPED\x10\x00\x12\x13\n" +
-	"\x0fSPINDLE_FORWARD\x10\x01\x12\x1c\n" +
-	"\x0fSPINDLE_REVERSE\x10\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01*\xa5\x01\n" +
+	"\x0fSPINDLE_FORWARD\x10\x01\x12\x13\n" +
+	"\x0fSPINDLE_REVERSE\x10\x02*\xa5\x01\n" +
 	"\x0eSpindleCommand\x12\x13\n" +
 	"\x0fSPINDLE_CMD_OFF\x10\x00\x12\x17\n" +
 	"\x13SPINDLE_CMD_FORWARD\x10\x01\x12\x17\n" +
@@ -5599,7 +5598,7 @@ var file_linuxcnc_proto_goTypes = []any{
 	(*JogCommand)(nil),                      // 34: linuxcnc.JogCommand
 	(*HomeCommand)(nil),                     // 35: linuxcnc.HomeCommand
 	(*UnhomeCommand)(nil),                   // 36: linuxcnc.UnhomeCommand
-	(*SpindleCmd)(nil),                      // 37: linuxcnc.SpindleCmd
+	(*SpindleControlCommand)(nil),           // 37: linuxcnc.SpindleControlCommand
 	(*SpindleOverrideCommand)(nil),          // 38: linuxcnc.SpindleOverrideCommand
 	(*BrakeCommand)(nil),                    // 39: linuxcnc.BrakeCommand
 	(*FeedrateCommand)(nil),                 // 40: linuxcnc.FeedrateCommand
@@ -5664,7 +5663,7 @@ var file_linuxcnc_proto_depIdxs = []int32{
 	2,  // 31: linuxcnc.StateCommand.state:type_name -> linuxcnc.TaskState
 	1,  // 32: linuxcnc.ModeCommand.mode:type_name -> linuxcnc.TaskMode
 	13, // 33: linuxcnc.JogCommand.type:type_name -> linuxcnc.JogType
-	10, // 34: linuxcnc.SpindleCmd.command:type_name -> linuxcnc.SpindleCommand
+	10, // 34: linuxcnc.SpindleControlCommand.command:type_name -> linuxcnc.SpindleCommand
 	12, // 35: linuxcnc.BrakeCommand.state:type_name -> linuxcnc.BrakeState
 	14, // 36: linuxcnc.AutoCommand.command:type_name -> linuxcnc.AutoCommandType
 	5,  // 37: linuxcnc.TrajModeCommand.mode:type_name -> linuxcnc.TrajMode
@@ -5675,7 +5674,7 @@ var file_linuxcnc_proto_depIdxs = []int32{
 	34, // 42: linuxcnc.LinuxCNCCommand.jog:type_name -> linuxcnc.JogCommand
 	35, // 43: linuxcnc.LinuxCNCCommand.home:type_name -> linuxcnc.HomeCommand
 	36, // 44: linuxcnc.LinuxCNCCommand.unhome:type_name -> linuxcnc.UnhomeCommand
-	37, // 45: linuxcnc.LinuxCNCCommand.spindle:type_name -> linuxcnc.SpindleCmd
+	37, // 45: linuxcnc.LinuxCNCCommand.spindle:type_name -> linuxcnc.SpindleControlCommand
 	38, // 46: linuxcnc.LinuxCNCCommand.spindle_override:type_name -> linuxcnc.SpindleOverrideCommand
 	39, // 47: linuxcnc.LinuxCNCCommand.brake:type_name -> linuxcnc.BrakeCommand
 	40, // 48: linuxcnc.LinuxCNCCommand.feedrate:type_name -> linuxcnc.FeedrateCommand

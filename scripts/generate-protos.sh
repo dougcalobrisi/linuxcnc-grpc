@@ -6,7 +6,7 @@
 #   --node  Generate Node.js/TypeScript code (requires ts-proto)
 #   --all   Generate all languages
 
-set -e
+set -euo pipefail
 
 # Get project root (parent of scripts directory)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -194,6 +194,15 @@ if [ "$GENERATE_NODE" = true ]; then
 
     echo "Generated Node.js/TypeScript code in $NODE_OUT_DIR"
 fi
+
+# --- Sync proto files to Rust package (build.rs reads from there) ---
+echo ""
+echo "=== Syncing proto files to Rust package ==="
+RUST_PROTO_DIR="$PROJECT_ROOT/packages/rust/proto"
+mkdir -p "$RUST_PROTO_DIR"
+cp "$PROTO_DIR/linuxcnc.proto" "$RUST_PROTO_DIR/"
+cp "$PROTO_DIR/hal.proto" "$RUST_PROTO_DIR/"
+echo "Synced proto files to $RUST_PROTO_DIR"
 
 echo ""
 echo "Done!"

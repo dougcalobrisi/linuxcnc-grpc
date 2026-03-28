@@ -5,8 +5,11 @@ Provides real LinuxCNC machine control and status via gRPC.
 Requires the linuxcnc Python module and a running LinuxCNC instance.
 """
 
+import os
 import time
 import logging
+import threading
+from pathlib import Path
 from typing import Iterator
 
 import grpc
@@ -19,6 +22,12 @@ logger = logging.getLogger(__name__)
 # Reconnection constants
 INITIAL_RECONNECT_INTERVAL = 1  # seconds
 MAX_RECONNECT_INTERVAL = 30  # seconds
+
+# Input validation limits
+MAX_MDI_COMMAND_LENGTH = 10000  # characters
+
+# Default allowed NC file directory (override with LINUXCNC_NC_FILES env var)
+DEFAULT_NC_FILES_DIR = "/home/cnc/linuxcnc/nc_files"
 
 
 class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
@@ -36,8 +45,40 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         Raises:
             RuntimeError: If linuxcnc module cannot connect to LinuxCNC.
         """
+        self._lock = threading.RLock()
         self._command_serial = 0
         self._connected = False
+
+        self._command_handlers = {
+            "state": self._handle_state_cmd,
+            "mode": self._handle_mode_cmd,
+            "mdi": self._handle_mdi_cmd,
+            "jog": self._handle_jog_cmd,
+            "home": self._handle_home_cmd,
+            "unhome": self._handle_unhome_cmd,
+            "spindle": self._handle_spindle_cmd,
+            "spindle_override": self._handle_spindle_override_cmd,
+            "brake": self._handle_brake_cmd,
+            "feedrate": self._handle_feedrate_cmd,
+            "rapidrate": self._handle_rapidrate_cmd,
+            "maxvel": self._handle_maxvel_cmd,
+            "coolant": self._handle_coolant_cmd,
+            "tool_offset": self._handle_tool_offset_cmd,
+            "program": self._handle_program_cmd,
+            "digital_output": self._handle_digital_output_cmd,
+            "analog_output": self._handle_analog_output_cmd,
+            "set_limit": self._handle_set_limit_cmd,
+            "override_config": self._handle_override_config_cmd,
+            "program_options": self._handle_program_options_cmd,
+            "teleop": self._handle_teleop_cmd,
+            "traj_mode": self._handle_traj_mode_cmd,
+            "override_limits": self._handle_override_limits_cmd,
+            "reset_interpreter": self._handle_reset_interpreter_cmd,
+            "load_tool_table": self._handle_load_tool_table_cmd,
+            "task_plan_sync": self._handle_task_plan_sync_cmd,
+            "debug": self._handle_debug_cmd,
+            "operator_message": self._handle_operator_message_cmd,
+        }
 
         # Cache version from module attribute
         self._version = getattr(linuxcnc, 'version', 'unknown')
@@ -48,11 +89,12 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
     def _connect(self) -> None:
         """Establish connection to LinuxCNC."""
-        self._stat = linuxcnc.stat()
-        self._command = linuxcnc.command()
-        self._error_channel = linuxcnc.error_channel()
-        self._stat.poll()
-        self._connected = True
+        with self._lock:
+            self._stat = linuxcnc.stat()
+            self._command = linuxcnc.command()
+            self._error_channel = linuxcnc.error_channel()
+            self._stat.poll()
+            self._connected = True
 
     def _reconnect(self) -> bool:
         """
@@ -72,14 +114,38 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 logger.warning(f"Reconnect failed, retrying in {interval}s: {e}")
                 time.sleep(interval)
                 interval *= 2
-        self._connected = False
+        with self._lock:
+            self._connected = False
         logger.error("Failed to reconnect to LinuxCNC after max retries")
         return False
 
     def _next_serial(self) -> int:
         """Get next command serial number."""
-        self._command_serial += 1
-        return self._command_serial
+        with self._lock:
+            self._command_serial += 1
+            return self._command_serial
+
+    def _validate_joint_index(self, index: int, is_joint: bool = False) -> None:
+        """Validate joint or axis index is within bounds."""
+        with self._lock:
+            self._stat.poll()
+            if is_joint:
+                max_index = len(self._stat.joint)
+            else:
+                max_index = len(self._stat.axis)
+        if index < -1 or index >= max_index:
+            label = "joint" if is_joint else "axis"
+            raise ValueError(f"{label} index {index} out of range (0..{max_index - 1})")
+        if index == -1 and not is_joint:
+            raise ValueError("axis index -1 is not valid")
+
+    def _validate_spindle_index(self, index: int) -> None:
+        """Validate spindle index is within bounds."""
+        with self._lock:
+            self._stat.poll()
+            max_index = len(self._stat.spindle)
+        if index < 0 or index >= max_index:
+            raise ValueError(f"spindle index {index} out of range (0..{max_index - 1})")
 
     # =========================================================================
     # GetStatus RPC
@@ -98,22 +164,21 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         """
         logger.debug("GetStatus called")
         try:
-            self._stat.poll()
-            mapper = LinuxCNCMapper(self._stat, version=self._version)
-            return mapper.map_to_proto()
+            with self._lock:
+                self._stat.poll()
+                mapper = LinuxCNCMapper(self._stat, version=self._version)
+                return mapper.map_to_proto()
         except linuxcnc.error as e:
             logger.error(f"LinuxCNC error in GetStatus: {e}")
-            # Attempt reconnection
             if self._reconnect():
                 try:
-                    self._stat.poll()
-                    mapper = LinuxCNCMapper(self._stat, version=self._version)
-                    return mapper.map_to_proto()
+                    with self._lock:
+                        self._stat.poll()
+                        mapper = LinuxCNCMapper(self._stat, version=self._version)
+                        return mapper.map_to_proto()
                 except Exception as retry_error:
                     logger.error(f"GetStatus failed after reconnect: {retry_error}")
-            context.set_code(grpc.StatusCode.UNAVAILABLE)
-            context.set_details(f"LinuxCNC unavailable: {e}")
-            return linuxcnc_pb2.LinuxCNCStatus()
+            context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
 
     # =========================================================================
     # SendCommand RPC
@@ -134,9 +199,10 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         logger.debug(f"SendCommand: {command_type} (serial={serial})")
 
         try:
-            handler = getattr(self, f"_handle_{command_type}_cmd", None)
+            handler = self._command_handlers.get(command_type)
             if handler:
-                handler(request)
+                with self._lock:
+                    handler(request)
                 return linuxcnc_pb2.CommandResponse(
                     serial=serial,
                     status=linuxcnc_pb2.RCS_DONE,
@@ -189,12 +255,22 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _handle_mdi_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle MDI command (execute G-code string)."""
         command = request.mdi.command
+        logger.debug(f"MDI command received: {command!r}")
+        if not command or not command.strip():
+            raise ValueError("MDI command must not be empty")
+        if "\x00" in command:
+            raise ValueError("MDI command must not contain null bytes")
+        if len(command) > MAX_MDI_COMMAND_LENGTH:
+            raise ValueError(
+                f"MDI command too long ({len(command)} chars, max {MAX_MDI_COMMAND_LENGTH})"
+            )
         self._command.mdi(command)
         logger.info(f"MDI command: {command}")
 
     def _handle_jog_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle jog command (stop, continuous, increment)."""
         jog = request.jog
+        self._validate_joint_index(jog.index, jog.is_joint)
         if jog.type == linuxcnc_pb2.JOG_STOP:
             self._command.jog(linuxcnc.JOG_STOP, jog.is_joint, jog.index)
         elif jog.type == linuxcnc_pb2.JOG_CONTINUOUS:
@@ -208,18 +284,23 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _handle_home_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle home command (-1 for all joints)."""
         joint = request.home.joint
+        if joint != -1:
+            self._validate_joint_index(joint, is_joint=True)
         self._command.home(joint)
         logger.info(f"Home command: joint={joint}")
 
     def _handle_unhome_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle unhome command."""
         joint = request.unhome.joint
+        if joint != -1:
+            self._validate_joint_index(joint, is_joint=True)
         self._command.unhome(joint)
         logger.info(f"Unhome command: joint={joint}")
 
     def _handle_spindle_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle spindle command (forward, reverse, off, increase, decrease)."""
         sp = request.spindle
+        self._validate_spindle_index(sp.spindle)
         if sp.command == linuxcnc_pb2.SPINDLE_CMD_FORWARD:
             self._command.spindle(linuxcnc.SPINDLE_FORWARD, sp.speed, sp.spindle, sp.wait_for_at_speed)
         elif sp.command == linuxcnc_pb2.SPINDLE_CMD_REVERSE:
@@ -237,12 +318,14 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _handle_spindle_override_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle spindle override command."""
         so = request.spindle_override
+        self._validate_spindle_index(so.spindle)
         self._command.spindleoverride(so.scale, so.spindle)
         logger.info(f"Spindle override: scale={so.scale}, spindle={so.spindle}")
 
     def _handle_brake_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle brake command (engage/release)."""
         brake = request.brake
+        self._validate_spindle_index(brake.spindle)
         if brake.state == linuxcnc_pb2.BRAKE_ENGAGE:
             self._command.brake(linuxcnc.BRAKE_ENGAGE, brake.spindle)
         else:
@@ -294,7 +377,21 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         p = request.program
         cmd_type = p.WhichOneof("command")
         if cmd_type == "open":
-            self._command.program_open(p.open)
+            path = p.open
+            if not path or not path.strip():
+                raise ValueError("Program path must not be empty")
+            if "\x00" in path:
+                raise ValueError("Program path must not contain null bytes")
+            # Resolve to absolute path and validate against allowed directory
+            resolved = Path(path).resolve()
+            allowed_dir = Path(
+                os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
+            ).resolve()
+            if not resolved.is_relative_to(allowed_dir):
+                raise ValueError(
+                    f"Program path must be within allowed directory: {allowed_dir}"
+                )
+            self._command.program_open(str(resolved))
         elif cmd_type == "run_from_line":
             self._command.auto(linuxcnc.AUTO_RUN, p.run_from_line)
         elif cmd_type == "pause" and p.pause:
@@ -421,7 +518,8 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         logger.debug(f"WaitComplete called - serial={request.serial}, timeout={timeout}")
 
         try:
-            result = self._command.wait_complete(timeout)
+            with self._lock:
+                result = self._command.wait_complete(timeout)
 
             if result == linuxcnc.RCS_DONE:
                 status = linuxcnc_pb2.RCS_DONE
@@ -468,17 +566,18 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         try:
             while context.is_active():
                 try:
-                    self._stat.poll()
-                    mapper = LinuxCNCMapper(self._stat, version=self._version)
-                    yield mapper.map_to_proto()
+                    with self._lock:
+                        self._stat.poll()
+                        mapper = LinuxCNCMapper(self._stat, version=self._version)
+                        status = mapper.map_to_proto()
+                    yield status
                 except linuxcnc.error as e:
                     logger.error(f"LinuxCNC error in StreamStatus: {e}")
                     if not self._reconnect():
-                        context.set_code(grpc.StatusCode.UNAVAILABLE)
-                        context.set_details(f"LinuxCNC unavailable: {e}")
+                        context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
                         return
                 time.sleep(interval_sec)
-        except Exception as e:
+        except (grpc.RpcError, OSError) as e:
             logger.error(f"StreamStatus error: {e}")
         finally:
             logger.info("StreamStatus ended")
@@ -513,16 +612,20 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
         try:
             while context.is_active():
-                error = self._error_channel.poll()
+                with self._lock:
+                    error = self._error_channel.poll()
                 if error:
-                    error_type, message = error
-                    yield linuxcnc_pb2.ErrorMessage(
-                        type=self._map_error_type(error_type),
-                        message=message,
-                        timestamp=int(time.time() * 1e9)
-                    )
+                    try:
+                        error_type, message = error
+                        yield linuxcnc_pb2.ErrorMessage(
+                            type=self._map_error_type(error_type),
+                            message=message,
+                            timestamp=int(time.time() * 1e9)
+                        )
+                    except Exception as e:
+                        logger.error(f"Error processing error message: {e}", exc_info=True)
                 time.sleep(0.05)  # 50ms poll interval
-        except Exception as e:
+        except (grpc.RpcError, OSError) as e:
             logger.error(f"StreamErrors error: {e}")
         finally:
             logger.info("StreamErrors ended")

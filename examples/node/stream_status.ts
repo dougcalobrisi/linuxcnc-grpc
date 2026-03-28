@@ -32,9 +32,14 @@ const opts = program.opts();
 const address = `${opts.host}:${opts.port}`;
 const intervalMs = parseInt(opts.interval);
 
+console.error(`Connecting to ${address}...`);
 const client = new LinuxCNCServiceClient(
   address,
-  credentials.createInsecure()
+  credentials.createInsecure(),
+  {
+    'grpc.initial_reconnect_backoff_ms': 1000,
+    'grpc.max_reconnect_backoff_ms': 5000,
+  }
 );
 
 function formatPosition(pos: { x: number; y: number; z: number }): string {
@@ -42,9 +47,13 @@ function formatPosition(pos: { x: number; y: number; z: number }): string {
 }
 
 function formatState(status: LinuxCNCStatus): string {
-  const mode = taskModeToJSON(status.task!.taskMode).replace("MODE_", "");
-  const state = taskStateToJSON(status.task!.taskState).replace("STATE_", "");
-  const interp = interpStateToJSON(status.task!.interpState).replace(
+  const task = status.task;
+  if (!task) {
+    return "NO_TASK";
+  }
+  const mode = taskModeToJSON(task.taskMode).replace("MODE_", "");
+  const state = taskStateToJSON(task.taskState).replace("STATE_", "");
+  const interp = interpStateToJSON(task.interpState).replace(
     "INTERP_",
     ""
   );
@@ -67,10 +76,17 @@ stream.on("data", (status: LinuxCNCStatus) => {
   updateCount++;
   const elapsed = (Date.now() - startTime) / 1000;
 
-  const pos = formatPosition(status.position!.actualPosition!);
+  const position = status.position;
+  if (!position) return;
+  const actualPosition = position.actualPosition;
+  if (!actualPosition) return;
+  const trajectory = status.trajectory;
+  if (!trajectory) return;
+
+  const pos = formatPosition(actualPosition);
   const state = formatState(status);
-  const vel = status.trajectory!.currentVel;
-  const feed = status.trajectory!.feedrate * 100;
+  const vel = trajectory.currentVel;
+  const feed = trajectory.feedrate * 100;
 
   // Format spindle info
   let spindleInfo = "";
@@ -88,6 +104,7 @@ stream.on("error", (err: grpc.ServiceError) => {
     // Normal cancellation
   } else {
     console.error(`\ngRPC error: ${err.code}: ${err.details}`);
+    client.close();
     process.exit(1);
   }
 });

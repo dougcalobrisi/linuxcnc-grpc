@@ -22,6 +22,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -34,7 +35,7 @@ import (
 type LinuxCNCClient struct {
 	conn   *grpc.ClientConn
 	client pb.LinuxCNCServiceClient
-	serial int32
+	serial atomic.Int32
 }
 
 func NewLinuxCNCClient(host string, port int) (*LinuxCNCClient, error) {
@@ -46,17 +47,15 @@ func NewLinuxCNCClient(host string, port int) (*LinuxCNCClient, error) {
 	return &LinuxCNCClient{
 		conn:   conn,
 		client: pb.NewLinuxCNCServiceClient(conn),
-		serial: 0,
 	}, nil
 }
 
-func (c *LinuxCNCClient) Close() {
-	c.conn.Close()
+func (c *LinuxCNCClient) Close() error {
+	return c.conn.Close()
 }
 
 func (c *LinuxCNCClient) nextSerial() int32 {
-	c.serial++
-	return c.serial
+	return c.serial.Add(1)
 }
 
 func (c *LinuxCNCClient) GetStatus(ctx context.Context) (*pb.LinuxCNCStatus, error) {
@@ -121,13 +120,13 @@ func ensureMDIReady(ctx context.Context, client *LinuxCNCClient) error {
 			return fmt.Errorf("failed to reset E-stop: %s", resp.ErrorMessage)
 		}
 		time.Sleep(100 * time.Millisecond)
+		status, err = client.GetStatus(ctx)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Power on
-	status, err = client.GetStatus(ctx)
-	if err != nil {
-		return err
-	}
 	if status.Task.TaskState != pb.TaskState_STATE_ON {
 		fmt.Println("Powering on machine...")
 		resp, err := client.SetState(ctx, pb.TaskState_STATE_ON)
@@ -138,13 +137,13 @@ func ensureMDIReady(ctx context.Context, client *LinuxCNCClient) error {
 			return fmt.Errorf("failed to power on: %s", resp.ErrorMessage)
 		}
 		time.Sleep(100 * time.Millisecond)
+		status, err = client.GetStatus(ctx)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Set MDI mode
-	status, err = client.GetStatus(ctx)
-	if err != nil {
-		return err
-	}
 	if status.Task.TaskMode != pb.TaskMode_MODE_MDI {
 		fmt.Println("Setting MDI mode...")
 		resp, err := client.SetMode(ctx, pb.TaskMode_MODE_MDI)
@@ -277,9 +276,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Ensure machine is ready for MDI
 	if err := ensureMDIReady(ctx, client); err != nil {
@@ -287,7 +287,8 @@ func main() {
 	}
 
 	if isInteractive {
-		interactiveMode(ctx, client)
+		// Interactive mode runs indefinitely, use background context
+		interactiveMode(context.Background(), client)
 	} else {
 		if err := executeMDI(ctx, client, command, !*noWait); err != nil {
 			log.Fatalf("MDI command failed: %v", err)

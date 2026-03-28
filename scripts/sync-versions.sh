@@ -92,15 +92,15 @@ fi
 
 # Update pyproject.toml
 info "Updating $PYPROJECT..."
-sed_inplace "s/^version = \"$CURRENT_PY\"/version = \"$NEW_VERSION\"/" "$PYPROJECT"
+sed_inplace "s/^version = \"${CURRENT_PY}\"/version = \"${NEW_VERSION}\"/" "$PYPROJECT"
 
 # Update package.json
 info "Updating $PACKAGE_JSON..."
-sed_inplace "s/\"version\": \"$CURRENT_NODE\"/\"version\": \"$NEW_VERSION\"/" "$PACKAGE_JSON"
+sed_inplace "s/\"version\": \"${CURRENT_NODE}\"/\"version\": \"${NEW_VERSION}\"/" "$PACKAGE_JSON"
 
 # Update Cargo.toml
 info "Updating $CARGO_TOML..."
-sed_inplace "s/^version = \"$CURRENT_RUST\"/version = \"$NEW_VERSION\"/" "$CARGO_TOML"
+sed_inplace "s/^version = \"${CURRENT_RUST}\"/version = \"${NEW_VERSION}\"/" "$CARGO_TOML"
 
 # Verify updates
 echo ""

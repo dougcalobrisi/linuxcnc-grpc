@@ -18,6 +18,7 @@ use linuxcnc_grpc::linuxcnc::{LinuxCncStatus, Position, StreamStatusRequest, Tas
 use std::io::{self, Write};
 use std::time::Instant;
 use tokio::signal;
+use tokio::time::{timeout, Duration};
 
 #[derive(Parser, Debug)]
 #[command(name = "stream_status")]
@@ -110,9 +111,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ = &mut ctrl_c => {
                 break;
             }
-            result = stream.next() => {
+            result = timeout(Duration::from_secs(30), stream.next()) => {
                 match result {
-                    Some(Ok(status)) => {
+                    Ok(Some(Ok(status))) => {
                         update_count += 1;
 
                         let pos_str = status
@@ -149,11 +150,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         io::stdout().flush()?;
                     }
-                    Some(Err(e)) => {
+                    Ok(Some(Err(e))) => {
                         eprintln!("\nStream error: {}", e);
                         break;
                     }
-                    None => {
+                    Ok(None) => {
+                        break;
+                    }
+                    Err(_) => {
+                        eprintln!("\nTimeout: no status update received in 30 seconds");
                         break;
                     }
                 }

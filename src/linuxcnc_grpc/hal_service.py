@@ -112,9 +112,7 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
             return status
         except Exception as e:
             logger.error(f"GetSystemStatus failed: {e}")
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(str(e))
-            return hal_pb2.HalSystemStatus()
+            context.abort(grpc.StatusCode.INTERNAL, str(e))
 
     # =========================================================================
     # SendCommand RPC (Introspection-only)
@@ -412,6 +410,9 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         interval = interval_ms / 1000.0
         logger.info(f"StreamStatus started - interval={interval_ms}ms")
 
+        consecutive_errors = 0
+        max_consecutive_errors = 5
+
         try:
             while context.is_active():
                 try:
@@ -419,8 +420,13 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
                     mapper = HalMapper(pins, signals, params)
                     status = mapper.map_to_proto()
                     yield status
+                    consecutive_errors = 0
                 except Exception as e:
-                    logger.error(f"StreamStatus poll error: {e}")
+                    consecutive_errors += 1
+                    logger.error(f"StreamStatus poll error ({consecutive_errors}/{max_consecutive_errors}): {e}")
+                    if consecutive_errors >= max_consecutive_errors:
+                        context.abort(grpc.StatusCode.INTERNAL, f"Too many consecutive errors: {e}")
+                        return
                 time.sleep(interval)
         except Exception as e:
             logger.error(f"StreamStatus error: {e}")
@@ -453,13 +459,15 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         previous_values: Dict[str, Any] = {}
         previous_types: Dict[str, int] = {}
 
-        # Initialize with current values
+        # Initialize with current values - fail fast on invalid names
         for name in names:
             try:
                 previous_values[name] = hal.get_value(name)
                 previous_types[name] = self._get_type_for_name(name)
             except Exception as e:
-                logger.warning(f"Could not get initial value for {name}: {e}")
+                logger.error(f"Invalid watch target '{name}': {e}")
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Cannot watch '{name}': {e}")
+                return
 
         # Create mapper for value conversion
         mapper = HalMapper([], [], [])

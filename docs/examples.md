@@ -457,6 +457,24 @@ except grpc.RpcError as e:
         print(f"Error: {e.code()}: {e.details()}")
 ```
 
+### Streaming Timeouts
+
+The Rust streaming examples (`stream_status`, `hal_query` watch) use per-message timeouts to detect unresponsive servers. Each `stream.next()` call is wrapped with `tokio::time::timeout`:
+
+```rust
+use tokio::time::{timeout, Duration};
+
+// 30-second timeout per message
+match timeout(Duration::from_secs(30), stream.next()).await {
+    Ok(Some(Ok(status))) => { /* process */ }
+    Ok(Some(Err(e))) => { /* gRPC error */ }
+    Ok(None) => { /* stream ended */ }
+    Err(_) => { eprintln!("Timeout waiting for update"); break; }
+}
+```
+
+This prevents indefinite hangs if the server becomes unresponsive.
+
 ### Graceful Shutdown
 
 ```python

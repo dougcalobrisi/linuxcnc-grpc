@@ -38,7 +38,7 @@ impl MockServer {
             .spawn()?;
 
         // Wait for ready signal
-        let stdout = process.stdout.take().unwrap();
+        let stdout = process.stdout.take().expect("mock server stdout not available");
         let reader = BufReader::new(stdout);
 
         for line in reader.lines() {
@@ -85,19 +85,19 @@ async fn test_get_status() {
     let status = response.into_inner();
 
     // Verify task status
-    assert_eq!(status.task.as_ref().unwrap().task_mode, TaskMode::ModeManual as i32);
-    assert_eq!(status.task.as_ref().unwrap().task_state, TaskState::StateOn as i32);
-    assert_eq!(status.task.as_ref().unwrap().exec_state, ExecState::ExecDone as i32);
-    assert_eq!(status.task.as_ref().unwrap().echo_serial_number, 1234);
+    assert_eq!(status.task.as_ref().expect("task status missing").task_mode, TaskMode::ModeManual as i32);
+    assert_eq!(status.task.as_ref().expect("task status missing").task_state, TaskState::StateOn as i32);
+    assert_eq!(status.task.as_ref().expect("task status missing").exec_state, ExecState::ExecDone as i32);
+    assert_eq!(status.task.as_ref().expect("task status missing").echo_serial_number, 1234);
 
     // Verify trajectory
-    let trajectory = status.trajectory.as_ref().unwrap();
+    let trajectory = status.trajectory.as_ref().expect("trajectory status missing");
     assert_eq!(trajectory.joints, 3);
     assert!(trajectory.enabled);
 
     // Verify position
-    let position = status.position.as_ref().unwrap();
-    let actual = position.actual_position.as_ref().unwrap();
+    let position = status.position.as_ref().expect("position status missing");
+    let actual = position.actual_position.as_ref().expect("actual position missing");
     assert_eq!(actual.x, 1.0);
     assert_eq!(actual.y, 2.0);
     assert_eq!(actual.z, 3.0);
@@ -110,7 +110,7 @@ async fn test_get_status() {
     }
 
     // Verify tool
-    assert_eq!(status.tool.as_ref().unwrap().tool_in_spindle, 1);
+    assert_eq!(status.tool.as_ref().expect("tool status missing").tool_in_spindle, 1);
 }
 
 #[tokio::test]
@@ -250,7 +250,7 @@ async fn test_stream_status() {
     while let Some(result) = stream.next().await {
         let status = result.expect("Stream error");
         assert_eq!(
-            status.task.as_ref().unwrap().task_mode,
+            status.task.as_ref().expect("task status missing").task_mode,
             TaskMode::ModeManual as i32
         );
         count += 1;

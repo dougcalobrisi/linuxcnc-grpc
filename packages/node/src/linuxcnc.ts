@@ -505,7 +505,8 @@ export function jointTypeToJSON(object: JointType): string {
 export enum SpindleDirection {
   SPINDLE_STOPPED = 0,
   SPINDLE_FORWARD = 1,
-  SPINDLE_REVERSE = -1,
+  SPINDLE_REVERSE = 2,
+  UNRECOGNIZED = -1,
 }
 
 export function spindleDirectionFromJSON(object: any): SpindleDirection {
@@ -516,11 +517,13 @@ export function spindleDirectionFromJSON(object: any): SpindleDirection {
     case 1:
     case "SPINDLE_FORWARD":
       return SpindleDirection.SPINDLE_FORWARD;
-    case -1:
+    case 2:
     case "SPINDLE_REVERSE":
       return SpindleDirection.SPINDLE_REVERSE;
+    case -1:
+    case "UNRECOGNIZED":
     default:
-      return SpindleDirection.SPINDLE_REVERSE;
+      return SpindleDirection.UNRECOGNIZED;
   }
 }
 
@@ -532,8 +535,9 @@ export function spindleDirectionToJSON(object: SpindleDirection): string {
       return "SPINDLE_FORWARD";
     case SpindleDirection.SPINDLE_REVERSE:
       return "SPINDLE_REVERSE";
+    case SpindleDirection.UNRECOGNIZED:
     default:
-      return "SPINDLE_REVERSE";
+      return "UNRECOGNIZED";
   }
 }
 
@@ -1136,7 +1140,7 @@ export interface UnhomeCommand {
 }
 
 /** Spindle command */
-export interface SpindleCmd {
+export interface SpindleControlCommand {
   command: SpindleCommand;
   /** For FORWARD/REVERSE */
   speed: number;
@@ -1349,7 +1353,7 @@ export interface LinuxCNCCommand {
   jog?: JogCommand | undefined;
   home?: HomeCommand | undefined;
   unhome?: UnhomeCommand | undefined;
-  spindle?: SpindleCmd | undefined;
+  spindle?: SpindleControlCommand | undefined;
   spindleOverride?: SpindleOverrideCommand | undefined;
   brake?: BrakeCommand | undefined;
   feedrate?: FeedrateCommand | undefined;
@@ -5290,12 +5294,12 @@ export const UnhomeCommand: MessageFns<UnhomeCommand> = {
   },
 };
 
-function createBaseSpindleCmd(): SpindleCmd {
+function createBaseSpindleControlCommand(): SpindleControlCommand {
   return { command: 0, speed: 0, spindle: 0, waitForAtSpeed: false };
 }
 
-export const SpindleCmd: MessageFns<SpindleCmd> = {
-  encode(message: SpindleCmd, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+export const SpindleControlCommand: MessageFns<SpindleControlCommand> = {
+  encode(message: SpindleControlCommand, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.command !== 0) {
       writer.uint32(8).int32(message.command);
     }
@@ -5311,10 +5315,10 @@ export const SpindleCmd: MessageFns<SpindleCmd> = {
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): SpindleCmd {
+  decode(input: BinaryReader | Uint8Array, length?: number): SpindleControlCommand {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseSpindleCmd();
+    const message = createBaseSpindleControlCommand();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -5359,7 +5363,7 @@ export const SpindleCmd: MessageFns<SpindleCmd> = {
     return message;
   },
 
-  fromJSON(object: any): SpindleCmd {
+  fromJSON(object: any): SpindleControlCommand {
     return {
       command: isSet(object.command) ? spindleCommandFromJSON(object.command) : 0,
       speed: isSet(object.speed) ? globalThis.Number(object.speed) : 0,
@@ -5368,7 +5372,7 @@ export const SpindleCmd: MessageFns<SpindleCmd> = {
     };
   },
 
-  toJSON(message: SpindleCmd): unknown {
+  toJSON(message: SpindleControlCommand): unknown {
     const obj: any = {};
     if (message.command !== 0) {
       obj.command = spindleCommandToJSON(message.command);
@@ -5385,11 +5389,11 @@ export const SpindleCmd: MessageFns<SpindleCmd> = {
     return obj;
   },
 
-  create<I extends Exact<DeepPartial<SpindleCmd>, I>>(base?: I): SpindleCmd {
-    return SpindleCmd.fromPartial(base ?? ({} as any));
+  create<I extends Exact<DeepPartial<SpindleControlCommand>, I>>(base?: I): SpindleControlCommand {
+    return SpindleControlCommand.fromPartial(base ?? ({} as any));
   },
-  fromPartial<I extends Exact<DeepPartial<SpindleCmd>, I>>(object: I): SpindleCmd {
-    const message = createBaseSpindleCmd();
+  fromPartial<I extends Exact<DeepPartial<SpindleControlCommand>, I>>(object: I): SpindleControlCommand {
+    const message = createBaseSpindleControlCommand();
     message.command = object.command ?? 0;
     message.speed = object.speed ?? 0;
     message.spindle = object.spindle ?? 0;
@@ -7115,7 +7119,7 @@ export const LinuxCNCCommand: MessageFns<LinuxCNCCommand> = {
       UnhomeCommand.encode(message.unhome, writer.uint32(122).fork()).join();
     }
     if (message.spindle !== undefined) {
-      SpindleCmd.encode(message.spindle, writer.uint32(130).fork()).join();
+      SpindleControlCommand.encode(message.spindle, writer.uint32(130).fork()).join();
     }
     if (message.spindleOverride !== undefined) {
       SpindleOverrideCommand.encode(message.spindleOverride, writer.uint32(138).fork()).join();
@@ -7259,7 +7263,7 @@ export const LinuxCNCCommand: MessageFns<LinuxCNCCommand> = {
             break;
           }
 
-          message.spindle = SpindleCmd.decode(reader, reader.uint32());
+          message.spindle = SpindleControlCommand.decode(reader, reader.uint32());
           continue;
         }
         case 17: {
@@ -7449,7 +7453,7 @@ export const LinuxCNCCommand: MessageFns<LinuxCNCCommand> = {
       jog: isSet(object.jog) ? JogCommand.fromJSON(object.jog) : undefined,
       home: isSet(object.home) ? HomeCommand.fromJSON(object.home) : undefined,
       unhome: isSet(object.unhome) ? UnhomeCommand.fromJSON(object.unhome) : undefined,
-      spindle: isSet(object.spindle) ? SpindleCmd.fromJSON(object.spindle) : undefined,
+      spindle: isSet(object.spindle) ? SpindleControlCommand.fromJSON(object.spindle) : undefined,
       spindleOverride: isSet(object.spindleOverride)
         ? SpindleOverrideCommand.fromJSON(object.spindleOverride)
         : undefined,
@@ -7507,7 +7511,7 @@ export const LinuxCNCCommand: MessageFns<LinuxCNCCommand> = {
       obj.unhome = UnhomeCommand.toJSON(message.unhome);
     }
     if (message.spindle !== undefined) {
-      obj.spindle = SpindleCmd.toJSON(message.spindle);
+      obj.spindle = SpindleControlCommand.toJSON(message.spindle);
     }
     if (message.spindleOverride !== undefined) {
       obj.spindleOverride = SpindleOverrideCommand.toJSON(message.spindleOverride);
@@ -7597,7 +7601,7 @@ export const LinuxCNCCommand: MessageFns<LinuxCNCCommand> = {
       ? UnhomeCommand.fromPartial(object.unhome)
       : undefined;
     message.spindle = (object.spindle !== undefined && object.spindle !== null)
-      ? SpindleCmd.fromPartial(object.spindle)
+      ? SpindleControlCommand.fromPartial(object.spindle)
       : undefined;
     message.spindleOverride = (object.spindleOverride !== undefined && object.spindleOverride !== null)
       ? SpindleOverrideCommand.fromPartial(object.spindleOverride)

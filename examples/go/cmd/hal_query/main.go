@@ -30,6 +30,11 @@ import (
 	pb "github.com/dougcalobrisi/linuxcnc-grpc/packages/go"
 )
 
+// rpcCtx returns a context with a 5-second timeout for individual RPC calls.
+func rpcCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Second)
+}
+
 func formatValue(value *pb.HalValue) string {
 	if value == nil {
 		return "?"
@@ -50,6 +55,8 @@ func formatValue(value *pb.HalValue) string {
 		return fmt.Sprintf("%d", v.S64Value)
 	case *pb.HalValue_U64Value:
 		return fmt.Sprintf("%d", v.U64Value)
+	case *pb.HalValue_PortValue:
+		return v.PortValue
 	default:
 		return "?"
 	}
@@ -67,7 +74,9 @@ func formatDirection(direction pb.PinDirection) string {
 }
 
 func queryPins(client pb.HalServiceClient, pattern string) {
-	response, err := client.QueryPins(context.Background(), &pb.QueryPinsCommand{Pattern: pattern})
+	ctx, cancel := rpcCtx()
+	defer cancel()
+	response, err := client.QueryPins(ctx, &pb.QueryPinsCommand{Pattern: pattern})
 	if err != nil {
 		log.Fatalf("QueryPins failed: %v", err)
 	}
@@ -96,7 +105,9 @@ func queryPins(client pb.HalServiceClient, pattern string) {
 }
 
 func querySignals(client pb.HalServiceClient, pattern string) {
-	response, err := client.QuerySignals(context.Background(), &pb.QuerySignalsCommand{Pattern: pattern})
+	ctx, cancel := rpcCtx()
+	defer cancel()
+	response, err := client.QuerySignals(ctx, &pb.QuerySignalsCommand{Pattern: pattern})
 	if err != nil {
 		log.Fatalf("QuerySignals failed: %v", err)
 	}
@@ -128,7 +139,9 @@ func querySignals(client pb.HalServiceClient, pattern string) {
 }
 
 func queryParams(client pb.HalServiceClient, pattern string) {
-	response, err := client.QueryParams(context.Background(), &pb.QueryParamsCommand{Pattern: pattern})
+	ctx, cancel := rpcCtx()
+	defer cancel()
+	response, err := client.QueryParams(ctx, &pb.QueryParamsCommand{Pattern: pattern})
 	if err != nil {
 		log.Fatalf("QueryParams failed: %v", err)
 	}
@@ -156,7 +169,9 @@ func queryParams(client pb.HalServiceClient, pattern string) {
 }
 
 func queryComponents(client pb.HalServiceClient, pattern string) {
-	response, err := client.QueryComponents(context.Background(), &pb.QueryComponentsCommand{Pattern: pattern})
+	ctx, cancel := rpcCtx()
+	defer cancel()
+	response, err := client.QueryComponents(ctx, &pb.QueryComponentsCommand{Pattern: pattern})
 	if err != nil {
 		log.Fatalf("QueryComponents failed: %v", err)
 	}
@@ -225,7 +240,9 @@ func watchValues(client pb.HalServiceClient, names []string, intervalMs int) {
 }
 
 func getSystemStatus(client pb.HalServiceClient) {
-	status, err := client.GetSystemStatus(context.Background(), &pb.GetSystemStatusRequest{})
+	ctx, cancel := rpcCtx()
+	defer cancel()
+	status, err := client.GetSystemStatus(ctx, &pb.GetSystemStatusRequest{})
 	if err != nil {
 		log.Fatalf("GetSystemStatus failed: %v", err)
 	}

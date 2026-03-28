@@ -65,6 +65,8 @@ program
   .description("Get HAL system status")
   .action(() => runCommand("status", ""));
 
+const RPC_DEADLINE = 5000;
+
 // Declare client before parse() since actions may run synchronously during parse()
 let client: HalServiceClient;
 
@@ -100,6 +102,9 @@ function formatValue(value: HalValue | undefined): string {
   if (value.u64Value !== undefined) {
     return value.u64Value.toString();
   }
+  if (value.portValue !== undefined) {
+    return value.portValue;
+  }
   return "?";
 }
 
@@ -117,9 +122,10 @@ function queryPins(pattern: string): void {
   const request = QueryPinsCommand.create();
   request.pattern = pattern;
 
-  client.queryPins(request, (err, response) => {
+  client.queryPins(request, new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
     if (err) {
       console.error(`Error: ${err.message}`);
+      client.close();
       process.exit(1);
     }
     if (!response.success) {
@@ -151,9 +157,10 @@ function querySignals(pattern: string): void {
   const request = QuerySignalsCommand.create();
   request.pattern = pattern;
 
-  client.querySignals(request, (err, response) => {
+  client.querySignals(request, new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
     if (err) {
       console.error(`Error: ${err.message}`);
+      client.close();
       process.exit(1);
     }
     if (!response.success) {
@@ -187,9 +194,10 @@ function queryParams(pattern: string): void {
   const request = QueryParamsCommand.create();
   request.pattern = pattern;
 
-  client.queryParams(request, (err, response) => {
+  client.queryParams(request, new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
     if (err) {
       console.error(`Error: ${err.message}`);
+      client.close();
       process.exit(1);
     }
     if (!response.success) {
@@ -222,9 +230,10 @@ function queryComponents(pattern: string): void {
   const request = QueryComponentsCommand.create();
   request.pattern = pattern;
 
-  client.queryComponents(request, (err, response) => {
+  client.queryComponents(request, new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
     if (err) {
       console.error(`Error: ${err.message}`);
+      client.close();
       process.exit(1);
     }
     if (!response.success) {
@@ -275,6 +284,7 @@ function watchValues(names: string[]): void {
       // Normal cancellation
     } else {
       console.error(`\ngRPC error: ${err.code}: ${err.details}`);
+      client.close();
       process.exit(1);
     }
   });
@@ -289,9 +299,10 @@ function watchValues(names: string[]): void {
 }
 
 function getSystemStatus(): void {
-  client.getSystemStatus(GetSystemStatusRequest.create(), (err, status) => {
+  client.getSystemStatus(GetSystemStatusRequest.create(), new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, status) => {
     if (err) {
       console.error(`Error: ${err.message}`);
+      client.close();
       process.exit(1);
     }
 
@@ -312,7 +323,12 @@ function getSystemStatus(): void {
 }
 
 function runCommand(command: string, arg: string | string[]): void {
-  client = new HalServiceClient(getAddress(), credentials.createInsecure());
+  const address = getAddress();
+  console.error(`Connecting to ${address}...`);
+  client = new HalServiceClient(address, credentials.createInsecure(), {
+    'grpc.initial_reconnect_backoff_ms': 1000,
+    'grpc.max_reconnect_backoff_ms': 5000,
+  });
 
   switch (command) {
     case "pins":

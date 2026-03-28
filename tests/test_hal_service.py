@@ -60,7 +60,9 @@ class TestGetSystemStatus:
             request = hal_pb2.GetSystemStatusRequest()
             service.GetSystemStatus(request, mock_grpc_context)
 
-            mock_grpc_context.set_code.assert_called_with(grpc.StatusCode.INTERNAL)
+            mock_grpc_context.abort.assert_called_once()
+            args = mock_grpc_context.abort.call_args
+            assert args[0][0] == grpc.StatusCode.INTERNAL
 
 
 class TestSendCommand:

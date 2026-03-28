@@ -171,6 +171,8 @@ class HalMapper:
         driver = self._get(signal_info, 'driver', '')
 
         # Get connected pins from our map
+        # Note: readers list is always empty because the HAL API doesn't
+        # expose signal-to-reader-pin connections. reader_count will be 0.
         conn = self._signal_pins.get(name, {'driver': driver, 'readers': []})
 
         return hal_pb2.HalSignalInfo(

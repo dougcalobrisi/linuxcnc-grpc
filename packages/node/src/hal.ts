@@ -266,7 +266,11 @@ export interface HalValue {
   s32Value?: number | undefined;
   u32Value?: number | undefined;
   s64Value?: number | undefined;
-  u64Value?: number | undefined;
+  u64Value?:
+    | number
+    | undefined;
+  /** Port type (advanced) */
+  portValue?: string | undefined;
 }
 
 /** Information about a HAL pin */
@@ -683,6 +687,7 @@ function createBaseHalValue(): HalValue {
     u32Value: undefined,
     s64Value: undefined,
     u64Value: undefined,
+    portValue: undefined,
   };
 }
 
@@ -705,6 +710,9 @@ export const HalValue: MessageFns<HalValue> = {
     }
     if (message.u64Value !== undefined) {
       writer.uint32(48).uint64(message.u64Value);
+    }
+    if (message.portValue !== undefined) {
+      writer.uint32(58).string(message.portValue);
     }
     return writer;
   },
@@ -764,6 +772,14 @@ export const HalValue: MessageFns<HalValue> = {
           message.u64Value = longToNumber(reader.uint64());
           continue;
         }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.portValue = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -781,6 +797,7 @@ export const HalValue: MessageFns<HalValue> = {
       u32Value: isSet(object.u32Value) ? globalThis.Number(object.u32Value) : undefined,
       s64Value: isSet(object.s64Value) ? globalThis.Number(object.s64Value) : undefined,
       u64Value: isSet(object.u64Value) ? globalThis.Number(object.u64Value) : undefined,
+      portValue: isSet(object.portValue) ? globalThis.String(object.portValue) : undefined,
     };
   },
 
@@ -804,6 +821,9 @@ export const HalValue: MessageFns<HalValue> = {
     if (message.u64Value !== undefined) {
       obj.u64Value = Math.round(message.u64Value);
     }
+    if (message.portValue !== undefined) {
+      obj.portValue = message.portValue;
+    }
     return obj;
   },
 
@@ -818,6 +838,7 @@ export const HalValue: MessageFns<HalValue> = {
     message.u32Value = object.u32Value ?? undefined;
     message.s64Value = object.s64Value ?? undefined;
     message.u64Value = object.u64Value ?? undefined;
+    message.portValue = object.portValue ?? undefined;
     return message;
   },
 };

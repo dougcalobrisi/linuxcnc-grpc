@@ -95,7 +95,7 @@ enum JointType {
 enum SpindleDirection {
   SPINDLE_STOPPED = 0;
   SPINDLE_FORWARD = 1;
-  SPINDLE_REVERSE = -1;
+  SPINDLE_REVERSE = 2;
 }
 
 // Spindle command
@@ -270,7 +270,7 @@ message AxisStatus {
 message SpindleStatus {
   int32 spindle_number = 1;
   bool brake = 2;
-  int32 direction = 3;             // -1=reverse, 0=stopped, 1=forward
+  int32 direction = 3;             // 0=stopped, 1=forward, 2=reverse
   bool enabled = 4;
   bool override_enabled = 5;
   double speed = 6;                // Commanded speed (RPM)
@@ -417,7 +417,7 @@ message UnhomeCommand {
 }
 
 // Spindle command
-message SpindleCmd {
+message SpindleControlCommand {
   SpindleCommand command = 1;
   double speed = 2;                     // For FORWARD/REVERSE
   int32 spindle = 3;                    // Spindle number (default 0)
@@ -581,7 +581,7 @@ message LinuxCNCCommand {
     JogCommand jog = 13;
     HomeCommand home = 14;
     UnhomeCommand unhome = 15;
-    SpindleCmd spindle = 16;
+    SpindleControlCommand spindle = 16;
     SpindleOverrideCommand spindle_override = 17;
     BrakeCommand brake = 18;
     FeedrateCommand feedrate = 19;

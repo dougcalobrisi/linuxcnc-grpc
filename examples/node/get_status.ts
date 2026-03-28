@@ -8,6 +8,7 @@
  *   npx tsx get_status.ts [--host HOST] [--port PORT]
  */
 
+import { Metadata } from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
@@ -29,9 +30,14 @@ program
 const opts = program.opts();
 const address = `${opts.host}:${opts.port}`;
 
+console.error(`Connecting to ${address}...`);
 const client = new LinuxCNCServiceClient(
   address,
-  credentials.createInsecure()
+  credentials.createInsecure(),
+  {
+    'grpc.initial_reconnect_backoff_ms': 1000,
+    'grpc.max_reconnect_backoff_ms': 5000,
+  }
 );
 
 function printStatus(status: LinuxCNCStatus): void {
@@ -40,17 +46,32 @@ function printStatus(status: LinuxCNCStatus): void {
   console.log("=".repeat(60));
 
   // Task status
+  const task = status.task;
+  if (!task) {
+    console.error("No task status available");
+    return;
+  }
   console.log("\n[Task]");
-  console.log(`  Mode:       ${taskModeToJSON(status.task!.taskMode)}`);
-  console.log(`  State:      ${taskStateToJSON(status.task!.taskState)}`);
-  console.log(`  Exec State: ${execStateToJSON(status.task!.execState)}`);
-  console.log(`  Interp:     ${interpStateToJSON(status.task!.interpState)}`);
-  if (status.task!.file) {
-    console.log(`  File:       ${status.task!.file}`);
+  console.log(`  Mode:       ${taskModeToJSON(task.taskMode)}`);
+  console.log(`  State:      ${taskStateToJSON(task.taskState)}`);
+  console.log(`  Exec State: ${execStateToJSON(task.execState)}`);
+  console.log(`  Interp:     ${interpStateToJSON(task.interpState)}`);
+  if (task.file) {
+    console.log(`  File:       ${task.file}`);
   }
 
   // Position
-  const pos = status.position!.actualPosition!;
+  const position = status.position;
+  if (!position) {
+    console.error("No position status available");
+    return;
+  }
+  const actualPosition = position.actualPosition;
+  if (!actualPosition) {
+    console.error("No actual position available");
+    return;
+  }
+  const pos = actualPosition;
   console.log("\n[Position]");
   console.log(
     `  X: ${pos.x.toFixed(4).padStart(10)}  Y: ${pos.y.toFixed(4).padStart(10)}  Z: ${pos.z.toFixed(4).padStart(10)}`
@@ -62,11 +83,16 @@ function printStatus(status: LinuxCNCStatus): void {
   }
 
   // Trajectory
+  const trajectory = status.trajectory;
+  if (!trajectory) {
+    console.error("No trajectory status available");
+    return;
+  }
   console.log("\n[Trajectory]");
-  console.log(`  Enabled:    ${status.trajectory!.enabled}`);
-  console.log(`  Feed Rate:  ${(status.trajectory!.feedrate * 100).toFixed(1)}%`);
-  console.log(`  Rapid Rate: ${(status.trajectory!.rapidrate * 100).toFixed(1)}%`);
-  console.log(`  Velocity:   ${status.trajectory!.currentVel.toFixed(2)}`);
+  console.log(`  Enabled:    ${trajectory.enabled}`);
+  console.log(`  Feed Rate:  ${(trajectory.feedrate * 100).toFixed(1)}%`);
+  console.log(`  Rapid Rate: ${(trajectory.rapidrate * 100).toFixed(1)}%`);
+  console.log(`  Velocity:   ${trajectory.currentVel.toFixed(2)}`);
 
   // Joints
   console.log("\n[Joints]");
@@ -96,14 +122,24 @@ function printStatus(status: LinuxCNCStatus): void {
   }
 
   // I/O
+  const io = status.io;
+  if (!io) {
+    console.error("No I/O status available");
+    return;
+  }
   console.log("\n[I/O]");
-  console.log(`  E-stop: ${status.io!.estop ? "ACTIVE" : "OK"}`);
-  console.log(`  Mist:   ${coolantStateToJSON(status.io!.mist)}`);
-  console.log(`  Flood:  ${coolantStateToJSON(status.io!.flood)}`);
+  console.log(`  E-stop: ${io.estop ? "ACTIVE" : "OK"}`);
+  console.log(`  Mist:   ${coolantStateToJSON(io.mist)}`);
+  console.log(`  Flood:  ${coolantStateToJSON(io.flood)}`);
 
   // Active G-codes
-  if (status.gcode!.activeGcodes.length > 0) {
-    const gcodes = status.gcode!.activeGcodes
+  const gcode = status.gcode;
+  if (!gcode) {
+    console.error("No G-code status available");
+    return;
+  }
+  if (gcode.activeGcodes.length > 0) {
+    const gcodes = gcode.activeGcodes
       .filter((g) => g > 0)
       .map((g) => (g % 10 === 0 ? `G${g / 10}` : `G${(g / 10).toFixed(1)}`));
     console.log("\n[Active G-codes]");
@@ -126,9 +162,11 @@ function printStatus(status: LinuxCNCStatus): void {
   console.log();
 }
 
-client.getStatus(GetStatusRequest.create(), (err, status) => {
+const deadline = new Date(Date.now() + 5000);
+client.getStatus(GetStatusRequest.create(), new Metadata(), { deadline }, (err, status) => {
   if (err) {
     console.error(`gRPC error: ${err.code}: ${err.details}`);
+    client.close();
     process.exit(1);
   }
   printStatus(status);

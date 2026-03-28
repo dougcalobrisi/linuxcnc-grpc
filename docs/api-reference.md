@@ -84,7 +84,7 @@ rpc SendCommand(LinuxCNCCommand) returns (CommandResponse)
 | `jog` | JogCommand | Jog axis/joint |
 | `home` | HomeCommand | Home joint(s) |
 | `unhome` | UnhomeCommand | Unhome joint |
-| `spindle` | SpindleCmd | Spindle control |
+| `spindle` | SpindleControlCommand | Spindle control |
 | `spindle_override` | SpindleOverrideCommand | Set spindle override |
 | `brake` | BrakeCommand | Spindle brake control |
 | `feedrate` | FeedrateCommand | Set feed rate override |
@@ -454,6 +454,7 @@ enum HalType {
   HAL_U32 = 4;    // Unsigned 32-bit integer
   HAL_S64 = 5;    // Signed 64-bit integer
   HAL_U64 = 6;    // Unsigned 64-bit integer
+  HAL_PORT = 7;   // Port type (advanced)
 }
 ```
 
@@ -572,6 +573,7 @@ message HalValue {
     uint32 u32_value = 4;
     int64 s64_value = 5;
     uint64 u64_value = 6;
+    string port_value = 7;       // Port type (advanced)
   }
 }
 ```

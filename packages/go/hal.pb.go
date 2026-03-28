@@ -262,6 +262,7 @@ type HalValue struct {
 	//	*HalValue_U32Value
 	//	*HalValue_S64Value
 	//	*HalValue_U64Value
+	//	*HalValue_PortValue
 	Value         isHalValue_Value `protobuf_oneof:"value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -358,6 +359,15 @@ func (x *HalValue) GetU64Value() uint64 {
 	return 0
 }
 
+func (x *HalValue) GetPortValue() string {
+	if x != nil {
+		if x, ok := x.Value.(*HalValue_PortValue); ok {
+			return x.PortValue
+		}
+	}
+	return ""
+}
+
 type isHalValue_Value interface {
 	isHalValue_Value()
 }
@@ -386,6 +396,10 @@ type HalValue_U64Value struct {
 	U64Value uint64 `protobuf:"varint,6,opt,name=u64_value,json=u64Value,proto3,oneof"`
 }
 
+type HalValue_PortValue struct {
+	PortValue string `protobuf:"bytes,7,opt,name=port_value,json=portValue,proto3,oneof"` // Port type (advanced)
+}
+
 func (*HalValue_BitValue) isHalValue_Value() {}
 
 func (*HalValue_FloatValue) isHalValue_Value() {}
@@ -397,6 +411,8 @@ func (*HalValue_U32Value) isHalValue_Value() {}
 func (*HalValue_S64Value) isHalValue_Value() {}
 
 func (*HalValue_U64Value) isHalValue_Value() {}
+
+func (*HalValue_PortValue) isHalValue_Value() {}
 
 // Information about a HAL pin
 type HalPinInfo struct {
@@ -3153,7 +3169,7 @@ var File_hal_proto protoreflect.FileDescriptor
 
 const file_hal_proto_rawDesc = "" +
 	"\n" +
-	"\thal.proto\x12\x03hal\"\xd1\x01\n" +
+	"\thal.proto\x12\x03hal\"\xf2\x01\n" +
 	"\bHalValue\x12\x1d\n" +
 	"\tbit_value\x18\x01 \x01(\bH\x00R\bbitValue\x12!\n" +
 	"\vfloat_value\x18\x02 \x01(\x01H\x00R\n" +
@@ -3161,7 +3177,9 @@ const file_hal_proto_rawDesc = "" +
 	"\ts32_value\x18\x03 \x01(\x05H\x00R\bs32Value\x12\x1d\n" +
 	"\tu32_value\x18\x04 \x01(\rH\x00R\bu32Value\x12\x1d\n" +
 	"\ts64_value\x18\x05 \x01(\x03H\x00R\bs64Value\x12\x1d\n" +
-	"\tu64_value\x18\x06 \x01(\x04H\x00R\bu64ValueB\a\n" +
+	"\tu64_value\x18\x06 \x01(\x04H\x00R\bu64Value\x12\x1f\n" +
+	"\n" +
+	"port_value\x18\a \x01(\tH\x00R\tportValueB\a\n" +
 	"\x05value\"\x8c\x02\n" +
 	"\n" +
 	"HalPinInfo\x12\x12\n" +
@@ -3553,6 +3571,7 @@ func file_hal_proto_init() {
 		(*HalValue_U32Value)(nil),
 		(*HalValue_S64Value)(nil),
 		(*HalValue_U64Value)(nil),
+		(*HalValue_PortValue)(nil),
 	}
 	file_hal_proto_msgTypes[28].OneofWrappers = []any{
 		(*HalCommand_CreateComponent)(nil),

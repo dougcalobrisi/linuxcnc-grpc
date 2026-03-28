@@ -20,15 +20,13 @@ import time
 
 import grpc
 
-# Try installed package first, fall back to local src/ directory
+# Try installed package first, fall back to local packages/ directory
 try:
-    from linuxcnc_grpc._generated import linuxcnc_pb2
-    from linuxcnc_grpc._generated import linuxcnc_pb2_grpc
+    from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 except ImportError:
     from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
-    from linuxcnc_grpc._generated import linuxcnc_pb2
-    from linuxcnc_grpc._generated import linuxcnc_pb2_grpc
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "packages" / "python"))
+    from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 
 
 class LinuxCNCClient:
@@ -71,7 +69,7 @@ class LinuxCNCClient:
         cmd.state.state = state
         return self.send_command(cmd)
 
-    def mdi(self, gcode: str) -> tuple[linuxcnc_pb2.CommandResponse, int]:
+    def mdi(self, gcode: str) -> "tuple[linuxcnc_pb2.CommandResponse, int]":
         """Send an MDI command. Returns (response, serial)."""
         cmd = linuxcnc_pb2.LinuxCNCCommand()
         cmd.mdi.command = gcode

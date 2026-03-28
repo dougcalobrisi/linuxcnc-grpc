@@ -61,7 +61,7 @@ tonic = "0.12"
 
 ```python
 import grpc
-from linuxcnc_grpc._generated import linuxcnc_pb2, linuxcnc_pb2_grpc
+from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 
 # Connect to server
 channel = grpc.insecure_channel("localhost:50051")
@@ -187,7 +187,7 @@ Commands follow a consistent pattern across all languages:
 
 ```python
 import time
-from linuxcnc_grpc._generated import linuxcnc_pb2, linuxcnc_pb2_grpc
+from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 
 # Ensure machine is on and in MDI mode first
 def send_mdi(stub, gcode):
@@ -282,7 +282,7 @@ Query HAL pins, signals, and parameters:
 ### Python
 
 ```python
-from linuxcnc_grpc._generated import hal_pb2, hal_pb2_grpc
+from linuxcnc_pb import hal_pb2, hal_pb2_grpc
 
 hal_stub = hal_pb2_grpc.HalServiceStub(channel)
 

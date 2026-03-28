@@ -12,6 +12,7 @@
  *   and understand the jog parameters before running.
  */
 
+import { Metadata } from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
@@ -35,10 +36,17 @@ program
 const opts = program.opts();
 const address = `${opts.host}:${opts.port}`;
 
+console.error(`Connecting to ${address}...`);
 const client = new LinuxCNCServiceClient(
   address,
-  credentials.createInsecure()
+  credentials.createInsecure(),
+  {
+    'grpc.initial_reconnect_backoff_ms': 1000,
+    'grpc.max_reconnect_backoff_ms': 5000,
+  }
 );
+
+const RPC_DEADLINE = 5000;
 
 let serial = 0;
 
@@ -48,7 +56,7 @@ function nextSerial(): number {
 
 function getStatus(): Promise<LinuxCNCStatus> {
   return new Promise((resolve, reject) => {
-    client.getStatus(GetStatusRequest.create(), (err, status) => {
+    client.getStatus(GetStatusRequest.create(), new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, status) => {
       if (err) reject(err);
       else resolve(status);
     });
@@ -59,7 +67,7 @@ function sendCommand(cmd: LinuxCNCCommand): Promise<CommandResponse> {
   cmd.serial = nextSerial();
   cmd.timestamp = Date.now() * 1000000;
   return new Promise((resolve, reject) => {
-    client.sendCommand(cmd, (err, response) => {
+    client.sendCommand(cmd, new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
       if (err) reject(err);
       else resolve(response);
     });
@@ -126,7 +134,12 @@ async function ensureMachineReady(): Promise<boolean> {
   let status = await getStatus();
 
   // Check E-stop
-  if (status.task!.taskState === TaskState.STATE_ESTOP) {
+  let task = status.task;
+  if (!task) {
+    console.log("No task status available");
+    return false;
+  }
+  if (task.taskState === TaskState.STATE_ESTOP) {
     console.log("Machine is in E-stop. Resetting...");
     const resp = await setState(TaskState.STATE_ESTOP_RESET);
     if (resp.status !== RcsStatus.RCS_DONE) {
@@ -138,7 +151,12 @@ async function ensureMachineReady(): Promise<boolean> {
 
   // Power on
   status = await getStatus();
-  if (status.task!.taskState !== TaskState.STATE_ON) {
+  task = status.task;
+  if (!task) {
+    console.log("No task status available");
+    return false;
+  }
+  if (task.taskState !== TaskState.STATE_ON) {
     console.log("Powering on machine...");
     const resp = await setState(TaskState.STATE_ON);
     if (resp.status !== RcsStatus.RCS_DONE) {
@@ -150,7 +168,12 @@ async function ensureMachineReady(): Promise<boolean> {
 
   // Set manual mode for jogging
   status = await getStatus();
-  if (status.task!.taskMode !== TaskMode.MODE_MANUAL) {
+  task = status.task;
+  if (!task) {
+    console.log("No task status available");
+    return false;
+  }
+  if (task.taskMode !== TaskMode.MODE_MANUAL) {
     console.log("Setting manual mode...");
     const resp = await setMode(TaskMode.MODE_MANUAL);
     if (resp.status !== RcsStatus.RCS_DONE) {
@@ -179,7 +202,12 @@ async function demoIncrementalJog(): Promise<void> {
 
   // Show new position
   const status = await getStatus();
-  const pos = status.position!.actualPosition!;
+  const position = status.position;
+  if (!position || !position.actualPosition) {
+    console.log("No position data available");
+    return;
+  }
+  const pos = position.actualPosition;
   console.log(`New position: X=${pos.x.toFixed(4)} Y=${pos.y.toFixed(4)} Z=${pos.z.toFixed(4)}`);
 }
 
@@ -207,7 +235,12 @@ async function demoContinuousJog(): Promise<void> {
 
   // Show new position
   const status = await getStatus();
-  const pos = status.position!.actualPosition!;
+  const position = status.position;
+  if (!position || !position.actualPosition) {
+    console.log("No position data available");
+    return;
+  }
+  const pos = position.actualPosition;
   console.log(`New position: X=${pos.x.toFixed(4)} Y=${pos.y.toFixed(4)} Z=${pos.z.toFixed(4)}`);
 }
 
@@ -215,7 +248,12 @@ async function main(): Promise<void> {
   try {
     // Show initial status
     const status = await getStatus();
-    const pos = status.position!.actualPosition!;
+    const position = status.position;
+    if (!position || !position.actualPosition) {
+      console.error("No position data available");
+      process.exit(1);
+    }
+    const pos = position.actualPosition;
     console.log(`Current position: X=${pos.x.toFixed(4)} Y=${pos.y.toFixed(4)} Z=${pos.z.toFixed(4)}`);
 
     if (opts.skipDemo) {

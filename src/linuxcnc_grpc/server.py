@@ -20,6 +20,7 @@ from concurrent import futures
 
 import grpc
 
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from linuxcnc_pb import linuxcnc_pb2_grpc, hal_pb2_grpc
 from .linuxcnc_service import LinuxCNCServiceServicer
 from .hal_service import HalServiceServicer
@@ -31,6 +32,14 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+
+
+class _RequestLoggingInterceptor(grpc.ServerInterceptor):
+    """Logs all incoming RPC calls at debug level."""
+
+    def intercept_service(self, continuation, handler_call_details):
+        logger.debug(f"RPC: {handler_call_details.method}")
+        return continuation(handler_call_details)
 
 
 def create_server(host: str = "0.0.0.0", port: int = 50051, max_workers: int = 10) -> grpc.Server:
@@ -45,7 +54,15 @@ def create_server(host: str = "0.0.0.0", port: int = 50051, max_workers: int = 1
     Returns:
         Configured gRPC server (not yet started)
     """
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=max_workers),
+        interceptors=[_RequestLoggingInterceptor()],
+        options=[
+            ('grpc.keepalive_time_ms', 30000),
+            ('grpc.keepalive_timeout_ms', 10000),
+            ('grpc.max_receive_message_length', 10 * 1024 * 1024),  # 10MB
+        ]
+    )
 
     # Register services
     linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(
@@ -56,6 +73,13 @@ def create_server(host: str = "0.0.0.0", port: int = 50051, max_workers: int = 1
         HalServiceServicer(),
         server
     )
+
+    # Register health check service
+    health_servicer = health.HealthServicer()
+    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+    health_servicer.set("linuxcnc.LinuxCNCService", health_pb2.HealthCheckResponse.SERVING)
+    health_servicer.set("hal.HalService", health_pb2.HealthCheckResponse.SERVING)
+    health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
 
     # Add insecure port (for development/testing)
     address = f"{host}:{port}"
@@ -98,6 +122,7 @@ def serve(host: str = "0.0.0.0", port: int = 50051):
     logger.info("Services available:")
     logger.info("  - LinuxCNCService (linuxcnc.proto)")
     logger.info("  - HalService (hal.proto)")
+    logger.info("  - Health (grpc.health.v1)")
     logger.info("")
     logger.info("Press Ctrl+C to stop")
     logger.info("=" * 60)

@@ -276,7 +276,7 @@ type (
 	JogCommand              = pb.JogCommand
 	HomeCommand             = pb.HomeCommand
 	UnhomeCommand           = pb.UnhomeCommand
-	SpindleCmd              = pb.SpindleCmd
+	SpindleControlCommand              = pb.SpindleControlCommand
 	SpindleOverrideCommand  = pb.SpindleOverrideCommand
 	BrakeCommand            = pb.BrakeCommand
 	FeedrateCommand         = pb.FeedrateCommand

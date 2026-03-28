@@ -4,7 +4,9 @@ Unit tests for LinuxCNCServiceServicer.
 Tests the gRPC service layer for LinuxCNC machine control.
 """
 
+import os
 import sys
+import tempfile
 from unittest.mock import MagicMock, patch
 
 import grpc
@@ -81,8 +83,10 @@ class TestGetStatus:
                 request = linuxcnc_pb2.GetStatusRequest()
                 service.GetStatus(request, mock_grpc_context)
 
-                # After reconnect fails, returns UNAVAILABLE
-                mock_grpc_context.set_code.assert_called_with(grpc.StatusCode.UNAVAILABLE)
+                # After reconnect fails, aborts with UNAVAILABLE
+                mock_grpc_context.abort.assert_called_once()
+                args = mock_grpc_context.abort.call_args
+                assert args[0][0] == grpc.StatusCode.UNAVAILABLE
 
 
 class TestSendCommand:
@@ -267,6 +271,226 @@ class TestMdiCommand:
             mock_cmd.mdi.assert_called_once_with("G1 X10 Y20 Z5 F100")
 
 
+class TestMdiValidation:
+    """Test MDI command input validation."""
+
+    def test_rejects_empty_command(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns error for empty MDI command."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_cmd = MagicMock()
+        mock_linuxcnc_module.command.return_value = mock_cmd
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            service = LinuxCNCServiceServicer()
+            request = linuxcnc_pb2.LinuxCNCCommand(
+                mdi=linuxcnc_pb2.MdiCommand(command="")
+            )
+            response = service.SendCommand(request, mock_grpc_context)
+
+            assert response.status == linuxcnc_pb2.RCS_ERROR
+            assert "empty" in response.error_message.lower()
+
+    def test_rejects_whitespace_only_command(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns error for whitespace-only MDI command."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_cmd = MagicMock()
+        mock_linuxcnc_module.command.return_value = mock_cmd
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            service = LinuxCNCServiceServicer()
+            request = linuxcnc_pb2.LinuxCNCCommand(
+                mdi=linuxcnc_pb2.MdiCommand(command="   ")
+            )
+            response = service.SendCommand(request, mock_grpc_context)
+
+            assert response.status == linuxcnc_pb2.RCS_ERROR
+            assert "empty" in response.error_message.lower()
+
+    def test_rejects_null_bytes(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns error for MDI command containing null bytes."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_cmd = MagicMock()
+        mock_linuxcnc_module.command.return_value = mock_cmd
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            service = LinuxCNCServiceServicer()
+            request = linuxcnc_pb2.LinuxCNCCommand(
+                mdi=linuxcnc_pb2.MdiCommand(command="G0 X10\x00")
+            )
+            response = service.SendCommand(request, mock_grpc_context)
+
+            assert response.status == linuxcnc_pb2.RCS_ERROR
+            assert "null" in response.error_message.lower()
+
+
+class TestIndexValidation:
+    """Test joint/axis/spindle index validation."""
+
+    def test_rejects_invalid_joint_index(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns error for out-of-bounds joint index."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_cmd = MagicMock()
+        mock_linuxcnc_module.command.return_value = mock_cmd
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+        mock_linuxcnc_module.JOG_STOP = 0
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            service = LinuxCNCServiceServicer()
+            request = linuxcnc_pb2.LinuxCNCCommand(
+                jog=linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_STOP, is_joint=True, index=999
+                )
+            )
+            response = service.SendCommand(request, mock_grpc_context)
+
+            assert response.status == linuxcnc_pb2.RCS_ERROR
+            assert "out of range" in response.error_message.lower()
+
+    def test_rejects_axis_index_minus_one(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns error for axis index -1 (only valid for joints)."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_cmd = MagicMock()
+        mock_linuxcnc_module.command.return_value = mock_cmd
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+        mock_linuxcnc_module.JOG_STOP = 0
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            service = LinuxCNCServiceServicer()
+            request = linuxcnc_pb2.LinuxCNCCommand(
+                jog=linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_STOP, is_joint=False, index=-1
+                )
+            )
+            response = service.SendCommand(request, mock_grpc_context)
+
+            assert response.status == linuxcnc_pb2.RCS_ERROR
+            assert "not valid" in response.error_message.lower()
+
+    def test_rejects_invalid_spindle_index(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns error for out-of-bounds spindle index."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_cmd = MagicMock()
+        mock_linuxcnc_module.command.return_value = mock_cmd
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+        mock_linuxcnc_module.SPINDLE_FORWARD = 1
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            service = LinuxCNCServiceServicer()
+            request = linuxcnc_pb2.LinuxCNCCommand(
+                spindle=linuxcnc_pb2.SpindleControlCommand(
+                    command=linuxcnc_pb2.SPINDLE_CMD_FORWARD, speed=1000.0, spindle=99
+                )
+            )
+            response = service.SendCommand(request, mock_grpc_context)
+
+            assert response.status == linuxcnc_pb2.RCS_ERROR
+            assert "out of range" in response.error_message.lower()
+
+
+class TestProgramPathValidation:
+    """Test program open path validation."""
+
+    def test_rejects_path_traversal(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns error for paths containing '..'."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_cmd = MagicMock()
+        mock_linuxcnc_module.command.return_value = mock_cmd
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}), \
+             patch.dict(os.environ, {"LINUXCNC_NC_FILES": "/home/cnc/nc_files"}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            service = LinuxCNCServiceServicer()
+            request = linuxcnc_pb2.LinuxCNCCommand(
+                program=linuxcnc_pb2.ProgramCommand(open="../../etc/passwd")
+            )
+            response = service.SendCommand(request, mock_grpc_context)
+
+            assert response.status == linuxcnc_pb2.RCS_ERROR
+            assert "allowed directory" in response.error_message
+
+    def test_rejects_empty_path(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns error for empty program path."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_cmd = MagicMock()
+        mock_linuxcnc_module.command.return_value = mock_cmd
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            service = LinuxCNCServiceServicer()
+            request = linuxcnc_pb2.LinuxCNCCommand(
+                program=linuxcnc_pb2.ProgramCommand(open="  ")
+            )
+            response = service.SendCommand(request, mock_grpc_context)
+
+            assert response.status == linuxcnc_pb2.RCS_ERROR
+            assert "empty" in response.error_message.lower()
+
+    def test_rejects_null_bytes_in_path(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Returns error for paths containing null bytes."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_cmd = MagicMock()
+        mock_linuxcnc_module.command.return_value = mock_cmd
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+            from linuxcnc_pb import linuxcnc_pb2
+
+            service = LinuxCNCServiceServicer()
+            request = linuxcnc_pb2.LinuxCNCCommand(
+                program=linuxcnc_pb2.ProgramCommand(open="/path/to/file\x00.ngc")
+            )
+            response = service.SendCommand(request, mock_grpc_context)
+
+            assert response.status == linuxcnc_pb2.RCS_ERROR
+            assert "null" in response.error_message.lower()
+
+
 class TestJogCommand:
     """Test jog command handler."""
 
@@ -439,7 +663,7 @@ class TestSpindleCommand:
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
-                spindle=linuxcnc_pb2.SpindleCmd(
+                spindle=linuxcnc_pb2.SpindleControlCommand(
                     command=linuxcnc_pb2.SPINDLE_CMD_FORWARD, speed=1000.0, spindle=0
                 )
             )
@@ -463,7 +687,7 @@ class TestSpindleCommand:
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
-                spindle=linuxcnc_pb2.SpindleCmd(
+                spindle=linuxcnc_pb2.SpindleControlCommand(
                     command=linuxcnc_pb2.SPINDLE_CMD_REVERSE, speed=500.0, spindle=0
                 )
             )
@@ -487,7 +711,7 @@ class TestSpindleCommand:
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
-                spindle=linuxcnc_pb2.SpindleCmd(
+                spindle=linuxcnc_pb2.SpindleControlCommand(
                     command=linuxcnc_pb2.SPINDLE_CMD_OFF, spindle=0
                 )
             )
@@ -511,7 +735,7 @@ class TestSpindleCommand:
 
             service = LinuxCNCServiceServicer()
             request = linuxcnc_pb2.LinuxCNCCommand(
-                spindle=linuxcnc_pb2.SpindleCmd(
+                spindle=linuxcnc_pb2.SpindleControlCommand(
                     command=linuxcnc_pb2.SPINDLE_CMD_INCREASE, spindle=0
                 )
             )
@@ -714,14 +938,21 @@ class TestProgramCommand:
             from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
             from linuxcnc_pb import linuxcnc_pb2
 
-            service = LinuxCNCServiceServicer()
-            request = linuxcnc_pb2.LinuxCNCCommand(
-                program=linuxcnc_pb2.ProgramCommand(open="/path/to/file.ngc")
-            )
-            response = service.SendCommand(request, mock_grpc_context)
+            # Use a temp directory as the allowed NC files directory
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Resolve symlinks (macOS /var -> /private/var)
+                tmpdir = str(os.path.realpath(tmpdir))
+                test_file = os.path.join(tmpdir, "file.ngc")
+                open(test_file, 'w').close()  # Create the file
+                with patch.dict(os.environ, {"LINUXCNC_NC_FILES": tmpdir}):
+                    service = LinuxCNCServiceServicer()
+                    request = linuxcnc_pb2.LinuxCNCCommand(
+                        program=linuxcnc_pb2.ProgramCommand(open=test_file)
+                    )
+                    response = service.SendCommand(request, mock_grpc_context)
 
-            assert response.status == linuxcnc_pb2.RCS_DONE
-            mock_cmd.program_open.assert_called_once_with("/path/to/file.ngc")
+                    assert response.status == linuxcnc_pb2.RCS_DONE
+                    mock_cmd.program_open.assert_called_once_with(test_file)
 
     def test_run_program(
         self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context

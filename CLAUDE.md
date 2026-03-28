@@ -14,9 +14,10 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── linuxcnc.proto
 │   └── hal.proto
 ├── src/linuxcnc_grpc/         # Python package (PyPI: linuxcnc-grpc)
-│   ├── _generated/            # Python generated code
+│   ├── _generated/            # Re-exports from linuxcnc_pb (backwards compatibility)
 │   └── *.py                   # Server implementation
 ├── packages/
+│   ├── python/linuxcnc_pb/    # Python generated protobuf code
 │   ├── node/                  # npm package (linuxcnc-grpc)
 │   │   ├── package.json
 │   │   └── src/*.ts           # Generated TypeScript
@@ -77,6 +78,21 @@ All packages use consistent naming across registries:
 | crates.io | `linuxcnc-grpc`                             |
 | Go        | `github.com/dougcalobrisi/linuxcnc-grpc`    |
 
+## Server Architecture Notes
+
+**Thread Safety**: `LinuxCNCServiceServicer` uses a `threading.RLock` to protect all
+accesses to `self._stat`, `self._command`, and `self._error_channel`. Streaming RPCs
+(`StreamStatus`, `StreamErrors`) hold the lock only during poll/map operations, releasing
+it before `sleep` and `yield` to avoid blocking other threads.
+
+**Command Dispatch**: `SendCommand` uses an explicit `_command_handlers` dict mapping
+command type strings to handler methods (no dynamic `getattr` dispatch).
+
+**Input Validation**: Handler methods validate indices before dispatching to LinuxCNC:
+- `_validate_joint_index(index, is_joint)` checks bounds against `stat.joint`/`stat.axis`; index -1 is only valid for joint operations (home/unhome all).
+- `_validate_spindle_index(index)` checks bounds against `stat.spindle`.
+- MDI commands reject empty strings and null bytes, and log the full command at WARNING level for audit.
+
 ## Running Tests
 
 ```bash
@@ -116,7 +132,7 @@ cd packages/node && npm install
 
 All generated code is **committed** so users don't need protoc:
 
-- **Python**: `src/linuxcnc_grpc/_generated/`
+- **Python**: `packages/python/linuxcnc_pb/` (re-exported via `src/linuxcnc_grpc/_generated/` for backwards compatibility)
 - **Go**: `*.pb.go` at repo root
 - **Rust**: Generated at build time via `build.rs` (proto files in `packages/rust/proto/`)
 - **Node.js**: `packages/node/src/linuxcnc.ts`, `packages/node/src/hal.ts`

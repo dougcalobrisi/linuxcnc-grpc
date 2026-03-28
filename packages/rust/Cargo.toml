@@ -13,13 +13,14 @@ include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml"]
 [dependencies]
 prost = "0.13"
 tonic = "0.12"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
 
 [build-dependencies]
 tonic-build = "0.12"
 
 [dev-dependencies]
 serde_json = "1.0"
+tokio = { version = "1", features = ["process"] }
 tokio-test = "0.4"
 futures-util = "0.3"
 serial_test = "3.0"

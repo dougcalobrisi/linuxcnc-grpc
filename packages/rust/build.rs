@@ -7,19 +7,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Proto files are included in the crate under proto/
     let proto_dir = "proto";
 
-    // Configure tonic-build for LinuxCNC proto
-    tonic_build::configure()
-        .build_server(true)
-        .build_client(true)
-        .out_dir(&out_dir)
-        .compile_protos(&[format!("{}/linuxcnc.proto", proto_dir)], &[proto_dir])?;
-
-    // Configure tonic-build for HAL proto
-    tonic_build::configure()
-        .build_server(true)
-        .build_client(true)
-        .out_dir(&out_dir)
-        .compile_protos(&[format!("{}/hal.proto", proto_dir)], &[proto_dir])?;
+    for proto_file in &["linuxcnc.proto", "hal.proto"] {
+        tonic_build::configure()
+            .build_server(true)
+            .build_client(true)
+            .out_dir(&out_dir)
+            .compile_protos(&[format!("{}/{}", proto_dir, proto_file)], &[proto_dir])?;
+    }
 
     Ok(())
 }

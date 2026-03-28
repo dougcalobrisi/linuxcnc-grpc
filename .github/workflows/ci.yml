@@ -85,6 +85,17 @@ jobs:
       - name: Regenerate protos
         run: ./scripts/generate-protos.sh --all
 
+      - name: Check Rust proto sync
+        run: |
+          diff proto/linuxcnc.proto packages/rust/proto/linuxcnc.proto || {
+            echo "::error::Rust proto files are out of sync with proto/. Run './scripts/generate-protos.sh --all' to sync."
+            exit 1
+          }
+          diff proto/hal.proto packages/rust/proto/hal.proto || {
+            echo "::error::Rust proto files are out of sync with proto/. Run './scripts/generate-protos.sh --all' to sync."
+            exit 1
+          }
+
       - name: Check for uncommitted changes
         run: |
           if ! git diff --exit-code; then
@@ -264,13 +275,24 @@ jobs:
       - name: Start mock server
         run: |
           python tests/mock_server.py &
+          MOCK_PID=$!
+          READY=false
           for i in {1..30}; do
+            if ! kill -0 $MOCK_PID 2>/dev/null; then
+              echo "ERROR: Mock server process died"
+              exit 1
+            fi
             if nc -z localhost 50051 2>/dev/null; then
               echo "Mock server is ready"
+              READY=true
               break
             fi
             sleep 0.5
           done
+          if [ "$READY" != "true" ]; then
+            echo "ERROR: Mock server failed to start within 15 seconds"
+            exit 1
+          fi
 
       - name: Test Python examples
         run: |
@@ -304,13 +326,24 @@ jobs:
       - name: Start mock server
         run: |
           python tests/mock_server.py &
+          MOCK_PID=$!
+          READY=false
           for i in {1..30}; do
+            if ! kill -0 $MOCK_PID 2>/dev/null; then
+              echo "ERROR: Mock server process died"
+              exit 1
+            fi
             if nc -z localhost 50051 2>/dev/null; then
               echo "Mock server is ready"
+              READY=true
               break
             fi
             sleep 0.5
           done
+          if [ "$READY" != "true" ]; then
+            echo "ERROR: Mock server failed to start within 15 seconds"
+            exit 1
+          fi
 
       - name: Test Go examples
         run: |
@@ -354,13 +387,24 @@ jobs:
       - name: Start mock server
         run: |
           python tests/mock_server.py &
+          MOCK_PID=$!
+          READY=false
           for i in {1..30}; do
+            if ! kill -0 $MOCK_PID 2>/dev/null; then
+              echo "ERROR: Mock server process died"
+              exit 1
+            fi
             if nc -z localhost 50051 2>/dev/null; then
               echo "Mock server is ready"
+              READY=true
               break
             fi
             sleep 0.5
           done
+          if [ "$READY" != "true" ]; then
+            echo "ERROR: Mock server failed to start within 15 seconds"
+            exit 1
+          fi
 
       - name: Test Node examples
         run: |
@@ -423,13 +467,24 @@ jobs:
       - name: Start mock server
         run: |
           python tests/mock_server.py &
+          MOCK_PID=$!
+          READY=false
           for i in {1..30}; do
+            if ! kill -0 $MOCK_PID 2>/dev/null; then
+              echo "ERROR: Mock server process died"
+              exit 1
+            fi
             if nc -z localhost 50051 2>/dev/null; then
               echo "Mock server is ready"
+              READY=true
               break
             fi
             sleep 0.5
           done
+          if [ "$READY" != "true" ]; then
+            echo "ERROR: Mock server failed to start within 15 seconds"
+            exit 1
+          fi
 
       - name: Test Rust examples
         run: |

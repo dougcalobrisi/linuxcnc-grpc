@@ -53,7 +53,7 @@ clean:
 # Check Python syntax
 lint:
 	$(PYTHON) -m py_compile src/linuxcnc_grpc/*.py
-	$(PYTHON) -m py_compile examples/*.py
+	$(PYTHON) -m py_compile examples/python/*.py
 	$(PYTHON) -m py_compile tests/*.py
 	@echo "Syntax check passed"
 

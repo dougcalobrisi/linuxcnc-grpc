@@ -59,6 +59,7 @@ message HalValue {
     uint32 u32_value = 4;
     int64 s64_value = 5;
     uint64 u64_value = 6;
+    string port_value = 7;       // Port type (advanced)
   }
 }
 

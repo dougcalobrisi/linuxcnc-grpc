@@ -21,6 +21,7 @@ use linuxcnc_grpc::hal::{
 };
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::signal;
+use tokio::time::timeout;
 
 #[derive(Parser, Debug)]
 #[command(name = "hal_query")]
@@ -88,6 +89,7 @@ fn format_value(value: &Option<HalValue>) -> String {
             Some(linuxcnc_grpc::hal::hal_value::Value::U32Value(u)) => format!("{}", u),
             Some(linuxcnc_grpc::hal::hal_value::Value::S64Value(i)) => format!("{}", i),
             Some(linuxcnc_grpc::hal::hal_value::Value::U64Value(u)) => format!("{}", u),
+            Some(linuxcnc_grpc::hal::hal_value::Value::PortValue(s)) => s.clone(),
             None => "?".to_string(),
         },
         None => "?".to_string(),
@@ -325,9 +327,9 @@ async fn watch_values(
             _ = &mut ctrl_c => {
                 break;
             }
-            result = stream.next() => {
+            result = timeout(Duration::from_secs(30), stream.next()) => {
                 match result {
-                    Some(Ok(batch)) => {
+                    Ok(Some(Ok(batch))) => {
                         for change in batch.changes {
                             let old_val = format_value(&change.old_value);
                             let new_val = format_value(&change.new_value);
@@ -336,11 +338,15 @@ async fn watch_values(
                             println!("[{}] {}: {} -> {}", datetime, change.name, old_val, new_val);
                         }
                     }
-                    Some(Err(e)) => {
+                    Ok(Some(Err(e))) => {
                         eprintln!("Stream error: {}", e);
                         break;
                     }
-                    None => {
+                    Ok(None) => {
+                        break;
+                    }
+                    Err(_) => {
+                        eprintln!("Timeout: no update received in 30 seconds");
                         break;
                     }
                 }
@@ -353,11 +359,37 @@ async fn watch_values(
 
 fn chrono_lite_format(ts: std::time::SystemTime) -> String {
     let duration = ts.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = duration.as_secs();
-    let hours = (secs / 3600) % 24;
-    let minutes = (secs / 60) % 60;
-    let seconds = secs % 60;
-    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    let total_secs = duration.as_secs();
+
+    // Days since Unix epoch to Y/M/D (simplified Gregorian)
+    let mut days = (total_secs / 86400) as i64;
+    let secs_of_day = total_secs % 86400;
+    let hours = secs_of_day / 3600;
+    let minutes = (secs_of_day % 3600) / 60;
+    let seconds = secs_of_day % 60;
+
+    // Compute year/month/day from days since 1970-01-01 (UTC)
+    let mut year: i64 = 1970;
+    loop {
+        let days_in_year = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_months = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0usize;
+    for &dim in &days_in_months {
+        if days < dim {
+            break;
+        }
+        days -= dim;
+        month += 1;
+    }
+
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", year, month + 1, days + 1, hours, minutes, seconds)
 }
 
 async fn get_system_status(
