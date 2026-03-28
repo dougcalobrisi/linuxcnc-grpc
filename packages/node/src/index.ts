@@ -25,8 +25,11 @@
 
 import * as grpc from '@grpc/grpc-js';
 
-// Re-export grpc credentials to avoid version conflicts
+// Re-export grpc utilities to avoid version conflicts
 export const credentials = grpc.credentials;
+export const Metadata = grpc.Metadata;
+export const status = grpc.status;
+export type { ServiceError } from '@grpc/grpc-js';
 
 export * from './linuxcnc';
 export * from './hal';

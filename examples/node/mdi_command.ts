@@ -14,7 +14,6 @@
  */
 
 import * as readline from "readline";
-import { Metadata } from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
@@ -23,6 +22,7 @@ import {
   WaitCompleteRequest,
   LinuxCNCStatus,
   CommandResponse,
+  Metadata,
   TaskMode,
   TaskState,
   RcsStatus,

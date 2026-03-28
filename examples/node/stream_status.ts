@@ -10,17 +10,18 @@
  * Press Ctrl+C to stop streaming.
  */
 
-import * as grpc from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
   StreamStatusRequest,
   LinuxCNCStatus,
+  credentials,
+  status,
   taskModeToJSON,
   taskStateToJSON,
   interpStateToJSON,
-  credentials,
 } from "linuxcnc-grpc";
+import type { ServiceError } from "linuxcnc-grpc";
 
 program
   .option("--host <host>", "gRPC server host", "localhost")
@@ -99,8 +100,8 @@ stream.on("data", (status: LinuxCNCStatus) => {
   );
 });
 
-stream.on("error", (err: grpc.ServiceError) => {
-  if (err.code === grpc.status.CANCELLED) {
+stream.on("error", (err: ServiceError) => {
+  if (err.code === status.CANCELLED) {
     // Normal cancellation
   } else {
     console.error(`\ngRPC error: ${err.code}: ${err.details}`);

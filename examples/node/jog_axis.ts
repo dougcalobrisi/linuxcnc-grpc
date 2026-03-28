@@ -12,7 +12,6 @@
  *   and understand the jog parameters before running.
  */
 
-import { Metadata } from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
@@ -20,6 +19,7 @@ import {
   LinuxCNCCommand,
   LinuxCNCStatus,
   CommandResponse,
+  Metadata,
   TaskMode,
   TaskState,
   JogType,

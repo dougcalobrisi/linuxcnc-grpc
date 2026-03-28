@@ -8,13 +8,13 @@
  *   npx tsx upload_file.ts [--host HOST] [--port PORT] [--cleanup]
  */
 
-import { Metadata } from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
   UploadFileRequest,
   ListFilesRequest,
   DeleteFileRequest,
+  Metadata,
   credentials,
 } from "linuxcnc-grpc";
 

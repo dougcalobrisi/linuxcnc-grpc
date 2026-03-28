@@ -8,12 +8,12 @@
  *   npx tsx get_status.ts [--host HOST] [--port PORT]
  */
 
-import { Metadata } from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   LinuxCNCServiceClient,
   GetStatusRequest,
   LinuxCNCStatus,
+  Metadata,
   taskModeToJSON,
   taskStateToJSON,
   execStateToJSON,

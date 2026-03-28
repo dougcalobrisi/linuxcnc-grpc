@@ -11,11 +11,11 @@
  *   npx tsx hal_query.ts watch "spindle.0.speed-out" "axis.x.pos-cmd"
  */
 
-import * as grpc from "@grpc/grpc-js";
 import { program } from "commander";
 import {
   HalServiceClient,
   GetSystemStatusRequest,
+  Metadata,
   QueryPinsCommand,
   QuerySignalsCommand,
   QueryParamsCommand,
@@ -28,7 +28,9 @@ import {
   halTypeToJSON,
   pinDirectionToJSON,
   credentials,
+  status,
 } from "linuxcnc-grpc";
+import type { ServiceError } from "linuxcnc-grpc";
 
 program
   .option("--host <host>", "gRPC server host", "localhost")
@@ -122,7 +124,7 @@ function queryPins(pattern: string): void {
   const request = QueryPinsCommand.create();
   request.pattern = pattern;
 
-  client.queryPins(request, new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
+  client.queryPins(request, new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
     if (err) {
       console.error(`Error: ${err.message}`);
       client.close();
@@ -157,7 +159,7 @@ function querySignals(pattern: string): void {
   const request = QuerySignalsCommand.create();
   request.pattern = pattern;
 
-  client.querySignals(request, new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
+  client.querySignals(request, new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
     if (err) {
       console.error(`Error: ${err.message}`);
       client.close();
@@ -194,7 +196,7 @@ function queryParams(pattern: string): void {
   const request = QueryParamsCommand.create();
   request.pattern = pattern;
 
-  client.queryParams(request, new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
+  client.queryParams(request, new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
     if (err) {
       console.error(`Error: ${err.message}`);
       client.close();
@@ -230,7 +232,7 @@ function queryComponents(pattern: string): void {
   const request = QueryComponentsCommand.create();
   request.pattern = pattern;
 
-  client.queryComponents(request, new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
+  client.queryComponents(request, new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
     if (err) {
       console.error(`Error: ${err.message}`);
       client.close();
@@ -279,8 +281,8 @@ function watchValues(names: string[]): void {
     }
   });
 
-  stream.on("error", (err: grpc.ServiceError) => {
-    if (err.code === grpc.status.CANCELLED) {
+  stream.on("error", (err: ServiceError) => {
+    if (err.code === status.CANCELLED) {
       // Normal cancellation
     } else {
       console.error(`\ngRPC error: ${err.code}: ${err.details}`);
@@ -299,7 +301,7 @@ function watchValues(names: string[]): void {
 }
 
 function getSystemStatus(): void {
-  client.getSystemStatus(GetSystemStatusRequest.create(), new grpc.Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, status) => {
+  client.getSystemStatus(GetSystemStatusRequest.create(), new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, status) => {
     if (err) {
       console.error(`Error: ${err.message}`);
       client.close();

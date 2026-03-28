@@ -79,12 +79,11 @@ npm install linuxcnc-grpc
 ```
 
 ```typescript
-import * as grpc from '@grpc/grpc-js';
-import { LinuxCNCServiceClient, GetStatusRequest } from 'linuxcnc-grpc';
+import { LinuxCNCServiceClient, GetStatusRequest, credentials } from 'linuxcnc-grpc';
 
 const client = new LinuxCNCServiceClient(
   'localhost:50051',
-  grpc.credentials.createInsecure()
+  credentials.createInsecure()
 );
 
 client.getStatus(GetStatusRequest.create(), (err, status) => {
