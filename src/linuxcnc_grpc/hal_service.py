@@ -428,8 +428,11 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
                         context.abort(grpc.StatusCode.INTERNAL, f"Too many consecutive errors: {e}")
                         return
                 time.sleep(interval)
+        except grpc.RpcError:
+            pass  # Client disconnected; normal shutdown
         except Exception as e:
             logger.error(f"StreamStatus error: {e}")
+            context.abort(grpc.StatusCode.INTERNAL, f"Stream failed: {e}")
         finally:
             logger.info("StreamStatus ended")
 
@@ -500,7 +503,10 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
                     )
 
                 time.sleep(interval)
+        except grpc.RpcError:
+            pass  # Client disconnected; normal shutdown
         except Exception as e:
             logger.error(f"WatchValues error: {e}")
+            context.abort(grpc.StatusCode.INTERNAL, f"Stream failed: {e}")
         finally:
             logger.info("WatchValues ended")

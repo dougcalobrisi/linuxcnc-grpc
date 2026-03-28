@@ -577,8 +577,11 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                         context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
                         return
                 time.sleep(interval_sec)
-        except (grpc.RpcError, OSError) as e:
+        except grpc.RpcError:
+            pass  # Client disconnected; normal shutdown
+        except OSError as e:
             logger.error(f"StreamStatus error: {e}")
+            context.abort(grpc.StatusCode.INTERNAL, f"Stream failed: {e}")
         finally:
             logger.info("StreamStatus ended")
 
@@ -625,7 +628,10 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                     except Exception as e:
                         logger.error(f"Error processing error message: {e}", exc_info=True)
                 time.sleep(0.05)  # 50ms poll interval
-        except (grpc.RpcError, OSError) as e:
+        except grpc.RpcError:
+            pass  # Client disconnected; normal shutdown
+        except OSError as e:
             logger.error(f"StreamErrors error: {e}")
+            context.abort(grpc.StatusCode.INTERNAL, f"Stream failed: {e}")
         finally:
             logger.info("StreamErrors ended")
