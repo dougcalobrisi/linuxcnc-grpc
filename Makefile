@@ -1,11 +1,15 @@
 # linuxcnc-grpc Makefile
 
-.PHONY: all install install-dev proto proto-go proto-rust proto-node proto-all clean lint test test-cov test-go test-node test-all run run-debug dist help build build-python build-node build-rust build-all publish publish-python publish-node publish-rust publish-all publish-dry-run sync-version
+.PHONY: all setup install install-dev proto proto-go proto-rust proto-node proto-all clean lint test test-cov test-go test-node test-all run run-debug dist help build build-python build-node build-rust build-all publish publish-python publish-node publish-rust publish-all publish-dry-run sync-version
 
 PYTHON ?= python3
 PIP ?= pip
 
 all: proto
+
+# Install all development and build dependencies
+setup:
+	$(PIP) install -e ".[dev,build]"
 
 # Install package
 install:
@@ -88,6 +92,7 @@ run-debug:
 
 # Build distribution packages
 dist: clean proto
+	$(PIP) install build
 	$(PYTHON) -m build
 
 # Show help
@@ -96,6 +101,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all          Generate protobuf code (default)"
+	@echo "  setup        Install all dev + build dependencies"
 	@echo "  install      Install package"
 	@echo "  install-dev  Install in editable mode with dev dependencies"
 	@echo "  proto        Generate protobuf/gRPC code (Python only)"
