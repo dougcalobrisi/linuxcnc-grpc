@@ -26,23 +26,30 @@ jobs:
       - name: Check version consistency
         id: version
         run: |
-          # Extract versions from all package files
-          PY_VER=$(grep -E '^version[[:space:]]*=' pyproject.toml | head -1 | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/')
-          NODE_VER=$(grep -E '"version"' packages/node/package.json | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
-          RUST_VER=$(grep -E '^version[[:space:]]*=' packages/rust/Cargo.toml | head -1 | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/')
+          source scripts/common.sh
+
+          PY_VER=$(get_python_version)
+          NODE_VER=$(get_node_version)
+          RUST_VER=$(get_rust_version)
 
           echo "Python version: $PY_VER"
           echo "Node.js version: $NODE_VER"
           echo "Rust version: $RUST_VER"
 
-          if [ "$PY_VER" != "$NODE_VER" ] || [ "$NODE_VER" != "$RUST_VER" ]; then
-            echo "::error::Version mismatch! Python=$PY_VER, Node=$NODE_VER, Rust=$RUST_VER"
+          # Normalize to semver for comparison (PEP 440 0.6.0b1 == semver 0.6.0-beta.1)
+          PY_NORM=$(normalize_version "$PY_VER")
+          NODE_NORM=$(normalize_version "$NODE_VER")
+          RUST_NORM=$(normalize_version "$RUST_VER")
+
+          if [ "$PY_NORM" != "$NODE_NORM" ] || [ "$NODE_NORM" != "$RUST_NORM" ]; then
+            echo "::error::Version mismatch! Python=$PY_VER ($PY_NORM), Node=$NODE_VER ($NODE_NORM), Rust=$RUST_VER ($RUST_NORM)"
             echo "Run 'make sync-version VERSION=x.y.z' to synchronize versions"
             exit 1
           fi
 
-          echo "version=$PY_VER" >> "$GITHUB_OUTPUT"
-          echo "All packages at version: $PY_VER"
+          # Output semver form for downstream jobs (tags, release notes)
+          echo "version=$NODE_VER" >> "$GITHUB_OUTPUT"
+          echo "All packages at version: $NODE_VER (normalized: $NODE_NORM)"
 
       - name: Check tag doesn't already exist
         if: ${{ inputs.create_tag && !inputs.dry_run }}
@@ -87,6 +94,19 @@ jobs:
       - name: Validate package
         run: uv run twine check dist/*
 
+      - name: Verify build artifacts match version
+        run: |
+          source scripts/common.sh
+          EXPECTED=$(get_python_version)
+          for artifact in dist/*; do
+            basename="$(basename "$artifact")"
+            if ! echo "$basename" | grep -q "$EXPECTED"; then
+              echo "::error::Stale artifact: $basename (expected version $EXPECTED)"
+              exit 1
+            fi
+          done
+          echo "All artifacts match version $EXPECTED"
+
       - name: Publish to PyPI
         if: ${{ !inputs.dry_run }}
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -100,6 +120,9 @@ jobs:
     needs: [preflight, ci]
     runs-on: ubuntu-latest
     environment: npm
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
 
@@ -114,23 +137,52 @@ jobs:
       - name: Install and build
         run: cd packages/node && npm ci && npm run build
 
+      - name: Verify package version
+        run: |
+          cd packages/node
+          EXPECTED="${{ needs.preflight.outputs.version }}"
+          ACTUAL=$(node -p "require('./package.json').version")
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Package version mismatch: got $ACTUAL, expected $EXPECTED"
+            exit 1
+          fi
+          echo "Package version verified: $ACTUAL"
+
       - name: Publish to npm
         if: ${{ !inputs.dry_run }}
-        run: cd packages/node && npm publish --access public
+        run: |
+          cd packages/node
+          VERSION="${{ needs.preflight.outputs.version }}"
+          TAG_ARGS=""
+          if echo "$VERSION" | grep -qE '-(alpha|beta|rc)\.'; then
+            TAG=$(echo "$VERSION" | sed -E 's/.*-(alpha|beta|rc)\..*/\1/')
+            TAG_ARGS="--tag $TAG"
+            echo "Pre-release detected: publishing with --tag $TAG"
+          fi
+          npm publish --access public --provenance $TAG_ARGS
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Dry run validation
         if: ${{ inputs.dry_run }}
         run: |
-          cd packages/node && npm publish --dry-run --access public
-          echo "Dry run - would publish Node.js ${{ needs.preflight.outputs.version }} to npm"
+          cd packages/node
+          VERSION="${{ needs.preflight.outputs.version }}"
+          if echo "$VERSION" | grep -qE '-(alpha|beta|rc)\.'; then
+            TAG=$(echo "$VERSION" | sed -E 's/.*-(alpha|beta|rc)\..*/\1/')
+            echo "Would publish with --tag $TAG"
+          fi
+          npm publish --dry-run --access public
+          echo "Dry run - would publish Node.js $VERSION to npm"
 
-  # Publish Rust to crates.io
+  # Publish Rust to crates.io (uses OIDC trusted publishing)
   publish-rust:
     needs: [preflight, ci]
     runs-on: ubuntu-latest
     environment: crates
+    permissions:
+      contents: read
+      id-token: write
     env:
       PROTOC_VERSION: "32.1"
     steps:
@@ -163,11 +215,20 @@ jobs:
         with:
           workspaces: packages/rust -> target
 
+      - name: Verify crate version
+        run: |
+          cd packages/rust
+          EXPECTED="${{ needs.preflight.outputs.version }}"
+          ACTUAL=$(grep -E '^version[[:space:]]*=' Cargo.toml | head -1 | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/')
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Crate version mismatch: got $ACTUAL, expected $EXPECTED"
+            exit 1
+          fi
+          echo "Crate version verified: $ACTUAL"
+
       - name: Publish to crates.io
         if: ${{ !inputs.dry_run }}
         run: cd packages/rust && cargo publish
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Dry run validation
         if: ${{ inputs.dry_run }}
@@ -198,6 +259,7 @@ jobs:
         with:
           tag_name: "v${{ needs.preflight.outputs.version }}"
           name: "Release v${{ needs.preflight.outputs.version }}"
+          prerelease: ${{ contains(needs.preflight.outputs.version, '-') }}
           body: |
             ## Packages Published
 

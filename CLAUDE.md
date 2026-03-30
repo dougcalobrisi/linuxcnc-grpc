@@ -287,15 +287,19 @@ The CI workflow uses aggressive caching to minimize build times:
    - `create_tag`: Create git tag and GitHub Release after publish
 
 The release workflow:
-- Validates version consistency across all packages
+- Validates version consistency across all packages (normalizes PEP 440 vs semver)
 - Runs full CI suite before publishing
+- Verifies build artifacts match expected versions before uploading
 - Publishes Python, Node.js, and Rust in parallel
+- Auto-detects npm `--tag` for pre-release versions (beta, alpha, rc)
+- Publishes npm packages with `--provenance` for supply chain attestation
+- Marks GitHub Releases as pre-release when version contains a pre-release suffix
 - Creates git tag and GitHub Release after all succeed
 
-Required secrets/environments:
-- `pypi` environment: Uses trusted publishing (OIDC)
-- `npm` environment: `NPM_TOKEN` secret
-- `crates` environment: `CARGO_REGISTRY_TOKEN` secret
+Authentication (all use OIDC trusted publishing):
+- `pypi` environment: OIDC via `pypa/gh-action-pypi-publish`
+- `npm` environment: `NPM_TOKEN` secret + OIDC provenance attestation
+- `crates` environment: OIDC trusted publishing (configured on crates.io)
 
 ## Documentation
 

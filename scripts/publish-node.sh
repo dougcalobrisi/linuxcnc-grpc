@@ -42,6 +42,15 @@ if [ ! -d "dist" ]; then
     exit 1
 fi
 
+# Verify package.json version matches what we expect to publish
+EXPECTED_NODE_VERSION=$(get_node_version)
+PACKED_VERSION=$(node -p "require('./package.json').version")
+if [ "$PACKED_VERSION" != "$EXPECTED_NODE_VERSION" ]; then
+    error "Package version mismatch: package.json says $PACKED_VERSION but expected $EXPECTED_NODE_VERSION"
+    echo "  Run: make build-node"
+    exit 1
+fi
+
 # Check npm login status
 if [ "$DRY_RUN" = false ]; then
     if ! npm whoami &>/dev/null; then
@@ -50,6 +59,16 @@ if [ "$DRY_RUN" = false ]; then
         exit 1
     fi
     info "Logged in as: $(npm whoami)"
+fi
+
+# Auto-detect npm tag from version if not explicitly set.
+# Pre-release versions (e.g., 0.6.0-beta.1) default to their pre-release type
+# so they don't become the "latest" tag on npm.
+if [ -z "$NPM_TAG" ]; then
+    if echo "$EXPECTED_NODE_VERSION" | grep -qE '-(alpha|beta|rc)\.'; then
+        NPM_TAG=$(echo "$EXPECTED_NODE_VERSION" | sed -E 's/.*-(alpha|beta|rc)\..*/\1/')
+        info "Auto-detected npm tag: $NPM_TAG (pre-release version)"
+    fi
 fi
 
 # Build publish command
