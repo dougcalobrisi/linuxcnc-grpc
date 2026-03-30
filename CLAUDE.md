@@ -25,17 +25,29 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │       ├── Cargo.toml
 │       ├── proto/             # Proto files (copied for crate packaging)
 │       └── src/               # Rust source (uses tonic for codegen)
+├── client.go                  # Go gRPC client wrapper
+├── client_test.go             # Go client tests
 ├── scripts/                   # Build, publish, and utility scripts
 │   ├── generate-protos.sh     # Generate proto code for all languages
 │   ├── build-*.sh             # Build scripts per language
 │   ├── publish-*.sh           # Publish scripts per registry
-│   └── sync-versions.sh       # Version management
+│   ├── sync-versions.sh       # Version management
+│   └── wait-for-linuxcnc.py   # Poll LinuxCNC readiness (e2e CI)
+├── tests/                     # Python test suite
+│   ├── test_e2e.py            # E2E tests against real LinuxCNC simulator
+│   ├── test_integration.py    # Integration tests with mock server
+│   ├── test_*_mapper.py       # Unit tests for proto mappers
+│   ├── test_*_service.py      # Unit tests for gRPC services
+│   ├── mock_server.py         # Mock gRPC server for integration tests
+│   └── conftest.py            # Shared fixtures
 ├── docs/                      # Documentation
 │   ├── README.md              # Documentation index
 │   ├── getting-started.md     # Installation and quickstart
 │   ├── server.md              # Server configuration
 │   ├── api-reference.md       # Complete API documentation
-│   └── examples.md            # Examples guide
+│   ├── examples.md            # Examples guide
+│   ├── tutorial.md            # Step-by-step tutorial
+│   └── e2e-testing.md         # E2E testing guide
 └── examples/                  # Multi-language client examples
     ├── python/                # Python examples
     ├── go/                    # Go examples (in cmd/ subdirectories)
@@ -202,6 +214,8 @@ All automation scripts are in the `scripts/` directory:
 | `publish-rust.sh` | Publish to crates.io |
 | `publish-all.sh` | Publish all packages (with confirmation) |
 | `sync-versions.sh` | Synchronize version across all packages |
+| `common.sh` | Shared helper functions sourced by other scripts |
+| `wait-for-linuxcnc.py` | Poll LinuxCNC readiness (used by e2e CI) |
 
 ### Building Packages
 
@@ -231,6 +245,7 @@ make sync-version VERSION=0.6.0  # Update all package versions
 GitHub Actions workflows:
 
 - **ci.yml**: Runs on push/PR - tests all languages, checks proto freshness
+- **e2e.yml**: Runs on push/PR - e2e tests against a real LinuxCNC simulator (builds from source on Ubuntu 24.04)
 - **release.yml**: Unified release workflow (manual dispatch) - publishes to PyPI, npm, and crates.io
 
 ### CI Job Structure
@@ -286,3 +301,5 @@ User-facing documentation is in the `docs/` directory:
 | [docs/server.md](docs/server.md) | Server configuration and setup |
 | [docs/api-reference.md](docs/api-reference.md) | Complete API documentation |
 | [docs/examples.md](docs/examples.md) | Examples guide and walkthroughs |
+| [docs/tutorial.md](docs/tutorial.md) | Step-by-step tutorial |
+| [docs/e2e-testing.md](docs/e2e-testing.md) | E2E testing with LinuxCNC simulator |
