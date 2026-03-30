@@ -149,12 +149,18 @@ fi
 if [ "$CREATE_COMMIT" = true ]; then
     echo ""
     info "Creating git commit..."
-    git add "$PYPROJECT" "$PACKAGE_JSON" "$CARGO_TOML"
+    # Build explicit file list so we only commit version files,
+    # regardless of other staged changes in the working tree.
+    COMMIT_FILES=("$PYPROJECT" "$PACKAGE_JSON" "$CARGO_TOML")
     if [ -f "$PROJECT_ROOT/packages/rust/Cargo.lock" ]; then
-        git add "$PROJECT_ROOT/packages/rust/Cargo.lock"
+        COMMIT_FILES+=("$PROJECT_ROOT/packages/rust/Cargo.lock")
     fi
-    git commit -m "chore: bump version to $SEMVER_VERSION"
-    success "Created commit"
+    if git commit --only "${COMMIT_FILES[@]}" -m "chore: bump version to $SEMVER_VERSION"; then
+        success "Created commit"
+    else
+        error "git commit failed — files are modified but not committed"
+        exit 1
+    fi
 fi
 
 # Create tag if requested
@@ -162,8 +168,12 @@ if [ "$CREATE_TAG" = true ]; then
     echo ""
     TAG="v$SEMVER_VERSION"
     info "Creating git tag: $TAG"
-    git tag "$TAG"
-    success "Created tag: $TAG"
+    if git tag "$TAG"; then
+        success "Created tag: $TAG"
+    else
+        error "git tag failed — tag $TAG may already exist"
+        exit 1
+    fi
     echo ""
     warn "Don't forget to push the tag: git push origin $TAG"
 fi
