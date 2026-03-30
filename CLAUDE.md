@@ -236,9 +236,16 @@ make publish-dry-run  # Test publish without uploading
 ### Version Management
 
 ```bash
-make sync-version VERSION=0.6.0  # Update all package versions
+make sync-version VERSION=0.6.0           # Stable release
+make sync-version VERSION=0.6.0-beta.1    # Pre-release (also accepts 0.6.0b1)
 ./scripts/sync-versions.sh 0.6.0 --commit --tag  # With git commit and tag
 ```
+
+Pre-release versions are automatically converted per ecosystem:
+- **Python (PEP 440)**: `0.6.0b1`, `0.6.0a1`, `0.6.0rc1`
+- **npm/Rust (semver)**: `0.6.0-beta.1`, `0.6.0-alpha.1`, `0.6.0-rc.1`
+
+Either format can be passed as input; the script converts to the correct format for each package.
 
 ## CI/CD
 

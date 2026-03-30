@@ -261,3 +261,5 @@ examples/go/hal_query
 examples/go/jog_axis
 examples/go/mdi_command
 examples/go/stream_status
+
+.claude/
