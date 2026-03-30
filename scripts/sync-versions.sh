@@ -90,6 +90,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "  $PYPROJECT  -> $PY_VERSION"
     echo "  $PACKAGE_JSON -> $SEMVER_VERSION"
     echo "  $CARGO_TOML -> $SEMVER_VERSION"
+    echo "  uv.lock (re-locked)"
     if [ "$CREATE_COMMIT" = true ]; then
         echo ""
         echo "Would create commit: chore: bump version to $SEMVER_VERSION"
@@ -139,7 +140,10 @@ fi
 
 success "All versions updated (Python: $PY_VERSION, npm/Rust: $SEMVER_VERSION)"
 
-# Update Cargo.lock if it exists
+# Update lockfiles
+info "Updating uv.lock..."
+(cd "$PROJECT_ROOT" && uv lock 2>/dev/null || true)
+
 if [ -f "$PROJECT_ROOT/packages/rust/Cargo.lock" ]; then
     info "Updating Cargo.lock..."
     (cd "$PROJECT_ROOT/packages/rust" && cargo update --package linuxcnc-grpc 2>/dev/null || true)
@@ -152,6 +156,9 @@ if [ "$CREATE_COMMIT" = true ]; then
     # Build explicit file list so we only commit version files,
     # regardless of other staged changes in the working tree.
     COMMIT_FILES=("$PYPROJECT" "$PACKAGE_JSON" "$CARGO_TOML")
+    if [ -f "$PROJECT_ROOT/uv.lock" ]; then
+        COMMIT_FILES+=("$PROJECT_ROOT/uv.lock")
+    fi
     if [ -f "$PROJECT_ROOT/packages/rust/Cargo.lock" ]; then
         COMMIT_FILES+=("$PROJECT_ROOT/packages/rust/Cargo.lock")
     fi
