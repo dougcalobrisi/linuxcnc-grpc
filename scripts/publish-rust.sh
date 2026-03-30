@@ -25,6 +25,15 @@ done
 
 cd "$RUST_DIR"
 
+# Verify Cargo.toml version matches what we expect to publish
+EXPECTED_RUST_VERSION=$(get_rust_version)
+PACKED_VERSION=$(cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
+if [ "$PACKED_VERSION" != "$EXPECTED_RUST_VERSION" ]; then
+    error "Package version mismatch: cargo metadata says $PACKED_VERSION but Cargo.toml says $EXPECTED_RUST_VERSION"
+    echo "  Run: make build-rust"
+    exit 1
+fi
+
 # For actual publishing, we validate strictly (no dirty files)
 # For dry-run mode, allow dirty to enable testing during development
 if [ "$DRY_RUN" = true ]; then

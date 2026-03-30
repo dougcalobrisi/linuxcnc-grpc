@@ -130,7 +130,7 @@ packages/node/*.tsbuildinfo
 # Rust (packages/rust/)
 # =============================================================================
 packages/rust/target/
-packages/rust/Cargo.lock
+#packages/rust/Cargo.lock
 
 # =============================================================================
 # IDEs and Editors

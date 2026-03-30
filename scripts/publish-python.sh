@@ -36,6 +36,17 @@ if [ ! -d "dist" ] || [ -z "$(ls -A dist/ 2>/dev/null)" ]; then
     exit 1
 fi
 
+# Verify dist artifacts match the version in pyproject.toml
+EXPECTED_PY_VERSION=$(get_python_version)
+for artifact in dist/*; do
+    basename="$(basename "$artifact")"
+    if ! echo "$basename" | grep -q "$EXPECTED_PY_VERSION"; then
+        error "Stale artifact found: $basename (expected version $EXPECTED_PY_VERSION)"
+        echo "  Run: make build-python"
+        exit 1
+    fi
+done
+
 # Check for twine (via python -m)
 if ! python3 -c "import twine" 2>/dev/null; then
     error "Python 'twine' module not found."
