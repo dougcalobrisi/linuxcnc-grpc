@@ -298,8 +298,8 @@ The release workflow:
 
 Authentication (all use OIDC trusted publishing):
 - `pypi` environment: OIDC via `pypa/gh-action-pypi-publish`
-- `npm` environment: `NPM_TOKEN` secret + OIDC provenance attestation
-- `crates` environment: OIDC trusted publishing (configured on crates.io)
+- `npm` environment: OIDC trusted publishing (configured on npmjs.com, requires npm >= 11.5.1)
+- `crates` environment: OIDC via `rust-lang/crates-io-auth-action` (configured on crates.io)
 
 ## Documentation
 

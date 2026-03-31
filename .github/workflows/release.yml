@@ -131,9 +131,11 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
           cache: 'npm'
           cache-dependency-path: 'packages/node/package-lock.json'
+
+      - name: Update npm
+        run: npm install -g npm@latest
 
       - name: Install and build
         run: cd packages/node && npm ci && npm run build
@@ -155,22 +157,20 @@ jobs:
           cd packages/node
           VERSION="${{ needs.preflight.outputs.version }}"
           TAG_ARGS=""
-          if echo "$VERSION" | grep -qE '-(alpha|beta|rc)\.'; then
-            TAG=$(echo "$VERSION" | sed -E 's/.*-(alpha|beta|rc)\..*/\1/')
+          if echo "$VERSION" | grep -q -- '-alpha\.\|-beta\.\|-rc\.'; then
+            TAG=$(echo "$VERSION" | sed 's/.*-\(alpha\|beta\|rc\)\..*/\1/')
             TAG_ARGS="--tag $TAG"
             echo "Pre-release detected: publishing with --tag $TAG"
           fi
           npm publish --access public --provenance $TAG_ARGS
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Dry run validation
         if: ${{ inputs.dry_run }}
         run: |
           cd packages/node
           VERSION="${{ needs.preflight.outputs.version }}"
-          if echo "$VERSION" | grep -qE '-(alpha|beta|rc)\.'; then
-            TAG=$(echo "$VERSION" | sed -E 's/.*-(alpha|beta|rc)\..*/\1/')
+          if echo "$VERSION" | grep -q -- '-alpha\.\|-beta\.\|-rc\.'; then
+            TAG=$(echo "$VERSION" | sed 's/.*-\(alpha\|beta\|rc\)\..*/\1/')
             echo "Would publish with --tag $TAG"
           fi
           npm publish --dry-run --access public
@@ -227,9 +227,16 @@ jobs:
           fi
           echo "Crate version verified: $ACTUAL"
 
+      - name: Authenticate with crates.io
+        if: ${{ !inputs.dry_run }}
+        uses: rust-lang/crates-io-auth-action@v1
+        id: crates-auth
+
       - name: Publish to crates.io
         if: ${{ !inputs.dry_run }}
         run: cd packages/rust && cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
 
       - name: Dry run validation
         if: ${{ inputs.dry_run }}
