@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linuxcnc-grpc"
-version = "0.6.0b4"
+version = "0.6.0b5"
 description = "gRPC server exposing LinuxCNC machine control and HAL functionality"
 readme = "README.md"
 license = "MIT"
