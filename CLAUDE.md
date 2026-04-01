@@ -254,6 +254,7 @@ GitHub Actions workflows:
 - **ci.yml**: Runs on push/PR - tests all languages, checks proto freshness
 - **e2e.yml**: Runs on push/PR - e2e tests against a real LinuxCNC simulator (builds from source on Ubuntu 24.04)
 - **release.yml**: Unified release workflow (manual dispatch) - publishes to PyPI, npm, and crates.io
+- **version-bump.yml**: Creates a version bump PR (manual dispatch) - updates all package versions via `sync-versions.sh`
 
 ### CI Job Structure
 

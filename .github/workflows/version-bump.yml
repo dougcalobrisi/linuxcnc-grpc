@@ -1,0 +1,84 @@
+name: Version Bump
+
+on:
+  pull_request: # TEMPORARY: remove after testing
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version (e.g., 0.7.0, 0.7.0-beta.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  VERSION: ${{ inputs.version || '0.0.0-beta.1' }}
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version format
+        run: |
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$' && \
+             ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(a|b|rc)[0-9]+$'; then
+            echo "::error::Invalid version format: $VERSION"
+            echo "Expected: X.Y.Z, X.Y.Z-beta.N (semver), or X.Y.ZbN (PEP 440)"
+            exit 1
+          fi
+          echo "Version format valid: $VERSION"
+
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create version bump branch
+        run: |
+          BRANCH="chore/bump-version-${VERSION}"
+          git checkout -b "$BRANCH"
+
+      - name: Bump versions
+        run: ./scripts/sync-versions.sh "$VERSION" --commit
+
+      - name: Push branch
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: git push origin HEAD
+
+      - name: Create pull request
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          gh pr create \
+            --title "chore: bump version to ${VERSION}" \
+            --body "$(cat <<EOF
+          ## Version Bump to ${VERSION}
+
+          Updates version across all packages:
+          - \`pyproject.toml\` (Python/PyPI)
+          - \`packages/node/package.json\` (Node.js/npm)
+          - \`packages/rust/Cargo.toml\` (Rust/crates.io)
+          - Lockfiles (\`uv.lock\`, \`Cargo.lock\`)
+
+          After merging, run the [Release workflow](../../actions/workflows/release.yml) to publish.
+
+          Triggered by @${ACTOR} via workflow dispatch.
+          EOF
+          )"
