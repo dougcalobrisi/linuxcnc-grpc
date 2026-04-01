@@ -1,7 +1,6 @@
 name: Version Bump
 
 on:
-  pull_request: # TEMPORARY: remove after testing
   workflow_dispatch:
     inputs:
       version:
