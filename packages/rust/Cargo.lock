@@ -473,7 +473,7 @@ checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
 
 [[package]]
 name = "linuxcnc-grpc"
-version = "0.6.0-beta.4"
+version = "0.6.0-beta.5"
 dependencies = [
  "futures-util",
  "prost",
