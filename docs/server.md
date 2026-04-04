@@ -47,8 +47,7 @@ Add to your machine's HAL file (e.g., `your_machine.hal`):
 
 ```hal
 # Start gRPC server
-# -W makes LinuxCNC wait for the server to be ready
-loadusr -W linuxcnc-grpc --host 0.0.0.0 --port 50051
+loadusr linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 ### Method 2: Dedicated HAL File
@@ -57,7 +56,7 @@ Create a separate `grpc-server.hal` file:
 
 ```hal
 # grpc-server.hal
-loadusr -W linuxcnc-grpc --host 0.0.0.0 --port 50051
+loadusr linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 Reference it in your INI file:

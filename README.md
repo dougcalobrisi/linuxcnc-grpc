@@ -40,7 +40,7 @@ To start the gRPC server automatically when LinuxCNC launches, add to your machi
 
 ```hal
 # Start gRPC server (runs until LinuxCNC exits)
-loadusr -W linuxcnc-grpc --host 0.0.0.0 --port 50051
+loadusr linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 Or use a dedicated HAL file via your INI:
@@ -49,8 +49,6 @@ Or use a dedicated HAL file via your INI:
 [HAL]
 POSTGUI_HALFILE = grpc-server.hal
 ```
-
-The `-W` flag tells LinuxCNC to wait for the server to become ready before continuing.
 
 ## Quick Start
 
