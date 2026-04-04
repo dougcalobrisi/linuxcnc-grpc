@@ -134,9 +134,6 @@ jobs:
           cache: 'npm'
           cache-dependency-path: 'packages/node/package-lock.json'
 
-      - name: Update npm
-        run: npm install -g npm@latest
-
       - name: Install and build
         run: cd packages/node && npm ci && npm run build
 
