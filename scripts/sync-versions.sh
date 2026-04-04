@@ -117,13 +117,16 @@ info "Updating $CARGO_TOML..."
 sed_inplace "s/^version = \"${CURRENT_RUST}\"/version = \"${SEMVER_VERSION}\"/" "$CARGO_TOML"
 
 # Update version strings in documentation (Rust Cargo.toml examples use major.minor).
-# Discovers all .md files containing the pattern rather than maintaining a hardcoded list.
+# Restrict updates to tracked Markdown files so local build/output artifacts are not modified.
 DOC_UPDATED_FILES=()
 info "Updating doc version strings to $DOC_VERSION..."
-while IFS= read -r doc_file; do
-    sed_inplace "s/linuxcnc-grpc = \"[0-9]\+\.[0-9]\+\"/linuxcnc-grpc = \"${DOC_VERSION}\"/" "$doc_file"
-    DOC_UPDATED_FILES+=("$doc_file")
-done < <(grep -rl 'linuxcnc-grpc = "[0-9]' --include='*.md' "$PROJECT_ROOT")
+while IFS= read -r -d '' doc_file; do
+    doc_path="$PROJECT_ROOT/$doc_file"
+    if grep -q 'linuxcnc-grpc = "[0-9]' "$doc_path"; then
+        sed_inplace "s/linuxcnc-grpc = \"[0-9]*\.[0-9]*\"/linuxcnc-grpc = \"${DOC_VERSION}\"/" "$doc_path"
+        DOC_UPDATED_FILES+=("$doc_path")
+    fi
+done < <(git -C "$PROJECT_ROOT" ls-files -z -- '*.md')
 if [ ${#DOC_UPDATED_FILES[@]} -gt 0 ]; then
     info "Updated ${#DOC_UPDATED_FILES[@]} doc file(s)"
 fi
