@@ -574,7 +574,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-linuxcnc-grpc = "0.5"
+linuxcnc-grpc = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 tonic = "0.12"
 futures-util = "0.3"

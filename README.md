@@ -1,5 +1,10 @@
 # linuxcnc-grpc
 
+[![PyPI](https://img.shields.io/pypi/v/linuxcnc-grpc)](https://pypi.org/project/linuxcnc-grpc/)
+[![npm](https://img.shields.io/npm/v/linuxcnc-grpc)](https://www.npmjs.com/package/linuxcnc-grpc)
+[![crates.io](https://img.shields.io/crates/v/linuxcnc-grpc)](https://crates.io/crates/linuxcnc-grpc)
+[![Go Reference](https://pkg.go.dev/badge/github.com/dougcalobrisi/linuxcnc-grpc.svg)](https://pkg.go.dev/github.com/dougcalobrisi/linuxcnc-grpc)
+
 gRPC interface for LinuxCNC machine control and HAL (Hardware Abstraction Layer).
 
 ## Why gRPC?
@@ -35,7 +40,7 @@ To start the gRPC server automatically when LinuxCNC launches, add to your machi
 
 ```hal
 # Start gRPC server (runs until LinuxCNC exits)
-loadusr -W linuxcnc-grpc --host 0.0.0.0 --port 50051
+loadusr linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
 Or use a dedicated HAL file via your INI:
@@ -45,8 +50,6 @@ Or use a dedicated HAL file via your INI:
 POSTGUI_HALFILE = grpc-server.hal
 ```
 
-The `-W` flag tells LinuxCNC to wait for the server to become ready before continuing.
-
 ## Quick Start
 
 ### Python
@@ -54,6 +57,8 @@ The `-W` flag tells LinuxCNC to wait for the server to become ready before conti
 ```bash
 pip install linuxcnc-grpc
 ```
+
+> [PyPI package](https://pypi.org/project/linuxcnc-grpc/)
 
 ```python
 import grpc
@@ -71,6 +76,8 @@ print(f"Position: X={status.position.x:.3f} Y={status.position.y:.3f} Z={status.
 ```bash
 go get github.com/dougcalobrisi/linuxcnc-grpc
 ```
+
+> [pkg.go.dev](https://pkg.go.dev/github.com/dougcalobrisi/linuxcnc-grpc)
 
 ```go
 import (
@@ -92,6 +99,8 @@ fmt.Printf("Position: X=%.3f Y=%.3f Z=%.3f\n", status.Position.X, status.Positio
 npm install linuxcnc-grpc
 ```
 
+> [npm package](https://www.npmjs.com/package/linuxcnc-grpc)
+
 ```typescript
 import * as grpc from "@grpc/grpc-js";
 import { LinuxCNCServiceClient, GetStatusRequest } from "linuxcnc-grpc";
@@ -105,9 +114,11 @@ client.getStatus(GetStatusRequest.create(), (err, status) => {
 
 ### Rust
 
+> [crates.io](https://crates.io/crates/linuxcnc-grpc)
+
 ```toml
 [dependencies]
-linuxcnc-grpc = "0.5"
+linuxcnc-grpc = "0.6"
 tokio = { version = "1", features = ["full"] }
 tonic = "0.12"
 ```

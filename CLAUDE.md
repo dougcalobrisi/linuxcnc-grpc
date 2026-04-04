@@ -191,7 +191,7 @@ import { LinuxCNCServiceClient, GetStatusRequest } from 'linuxcnc-grpc';
 ### Rust
 ```toml
 [dependencies]
-linuxcnc-grpc = "0.5"
+linuxcnc-grpc = "0.6"
 ```
 
 ```rust
@@ -213,7 +213,7 @@ All automation scripts are in the `scripts/` directory:
 | `publish-node.sh` | Publish to npm |
 | `publish-rust.sh` | Publish to crates.io |
 | `publish-all.sh` | Publish all packages (with confirmation) |
-| `sync-versions.sh` | Synchronize version across all packages |
+| `sync-versions.sh` | Synchronize version across all packages and doc examples |
 | `common.sh` | Shared helper functions sourced by other scripts |
 | `wait-for-linuxcnc.py` | Poll LinuxCNC readiness (used by e2e CI) |
 
@@ -246,6 +246,8 @@ Pre-release versions are automatically converted per ecosystem:
 - **npm/Rust (semver)**: `0.6.0-beta.1`, `0.6.0-alpha.1`, `0.6.0-rc.1`
 
 Either format can be passed as input; the script converts to the correct format for each package.
+
+The script also auto-discovers and updates Rust dependency version strings (major.minor) in all `.md` files containing `linuxcnc-grpc = "X.Y"`.
 
 ## CI/CD
 

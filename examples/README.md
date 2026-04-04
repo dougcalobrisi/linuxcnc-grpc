@@ -9,6 +9,7 @@ Example clients demonstrating how to connect to and use the LinuxCNC gRPC server
 | Python | [python/](python/) | `linuxcnc-grpc` (PyPI) |
 | Go | [go/](go/) | `github.com/dougcalobrisi/linuxcnc-grpc` |
 | Node.js/TypeScript | [node/](node/) | `linuxcnc-grpc` (npm) |
+| Rust | [rust/](rust/) | `linuxcnc-grpc` (crates.io) |
 
 ## Examples
 
@@ -21,6 +22,7 @@ Each language directory contains equivalent implementations of these examples:
 | `jog_axis` | Jog an axis (continuous and incremental movements) |
 | `mdi_command` | Execute MDI G-code commands with interactive mode |
 | `hal_query` | Query HAL pins, signals, parameters, and components |
+| `upload_file` | Upload, list, and delete G-code files |
 
 ## Quick Start
 
@@ -42,6 +44,12 @@ go run ./cmd/get_status
 cd examples/node
 npm install
 npx tsx get_status.ts
+```
+
+### Rust
+```bash
+cd examples/rust
+cargo run --bin get_status
 ```
 
 ## Prerequisites
@@ -68,6 +76,9 @@ go run ./cmd/get_status -- --host 192.168.1.100 --port 50051
 
 # Node.js
 npx tsx get_status.ts --host 192.168.1.100 --port 50051
+
+# Rust
+cargo run --bin get_status -- --host 192.168.1.100 --port 50051
 ```
 
 ## Safety Warning
@@ -86,3 +97,4 @@ These examples can control real CNC machinery. Always ensure:
 - [Python README](python/README.md) - Python-specific setup and usage
 - [Go README](go/README.md) - Go-specific setup and usage
 - [Node.js README](node/README.md) - Node.js/TypeScript-specific setup and usage
+- [Rust README](rust/README.md) - Rust-specific setup and usage

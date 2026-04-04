@@ -66,6 +66,7 @@ cd "$PROJECT_ROOT"
 # User can pass either format; we derive the correct one for each ecosystem.
 PY_VERSION=$(to_pep440 "$NEW_VERSION")
 SEMVER_VERSION=$(to_semver_prerelease "$NEW_VERSION")
+DOC_VERSION=$(to_doc_version "$SEMVER_VERSION")
 
 # Get current versions
 CURRENT_PY=$(get_python_version)
@@ -81,6 +82,7 @@ info "New versions:"
 echo "  Python (PEP 440): $PY_VERSION"
 echo "  Node.js (semver):  $SEMVER_VERSION"
 echo "  Rust (semver):     $SEMVER_VERSION"
+echo "  Docs (major.minor): $DOC_VERSION"
 echo ""
 
 if [ "$DRY_RUN" = true ]; then
@@ -91,6 +93,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "  $PACKAGE_JSON -> $SEMVER_VERSION"
     echo "  $CARGO_TOML -> $SEMVER_VERSION"
     echo "  uv.lock (re-locked)"
+    echo "  *.md files containing linuxcnc-grpc version -> \"$DOC_VERSION\""
     if [ "$CREATE_COMMIT" = true ]; then
         echo ""
         echo "Would create commit: chore: bump version to $SEMVER_VERSION"
@@ -112,6 +115,21 @@ sed_inplace "s/\"version\": \"${CURRENT_NODE}\"/\"version\": \"${SEMVER_VERSION}
 # Update Cargo.toml (semver format)
 info "Updating $CARGO_TOML..."
 sed_inplace "s/^version = \"${CURRENT_RUST}\"/version = \"${SEMVER_VERSION}\"/" "$CARGO_TOML"
+
+# Update version strings in documentation (Rust Cargo.toml examples use major.minor).
+# Restrict updates to tracked Markdown files so local build/output artifacts are not modified.
+DOC_UPDATED_FILES=()
+info "Updating doc version strings to $DOC_VERSION..."
+while IFS= read -r -d '' doc_file; do
+    doc_path="$PROJECT_ROOT/$doc_file"
+    if grep -q 'linuxcnc-grpc = "[0-9]' "$doc_path"; then
+        sed_inplace "s/linuxcnc-grpc = \"[0-9]*\.[0-9]*\"/linuxcnc-grpc = \"${DOC_VERSION}\"/" "$doc_path"
+        DOC_UPDATED_FILES+=("$doc_path")
+    fi
+done < <(git -C "$PROJECT_ROOT" ls-files -z -- '*.md')
+if [ ${#DOC_UPDATED_FILES[@]} -gt 0 ]; then
+    info "Updated ${#DOC_UPDATED_FILES[@]} doc file(s)"
+fi
 
 # Verify updates
 echo ""
@@ -156,6 +174,7 @@ if [ "$CREATE_COMMIT" = true ]; then
     # Build explicit file list so we only commit version files,
     # regardless of other staged changes in the working tree.
     COMMIT_FILES=("$PYPROJECT" "$PACKAGE_JSON" "$CARGO_TOML")
+    COMMIT_FILES+=("${DOC_UPDATED_FILES[@]}")
     if [ -f "$PROJECT_ROOT/uv.lock" ]; then
         COMMIT_FILES+=("$PROJECT_ROOT/uv.lock")
     fi
