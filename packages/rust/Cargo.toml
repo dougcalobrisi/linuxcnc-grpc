@@ -8,7 +8,8 @@ repository = "https://github.com/dougcalobrisi/linuxcnc-grpc"
 documentation = "https://docs.rs/linuxcnc-grpc"
 keywords = ["linuxcnc", "cnc", "grpc", "machine-control", "hal"]
 categories = ["api-bindings", "hardware-support"]
-include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml"]
+readme = "README.md"
+include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml", "README.md"]
 
 [dependencies]
 prost = "0.13"

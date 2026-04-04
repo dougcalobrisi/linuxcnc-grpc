@@ -104,6 +104,22 @@ jobs:
             exit 1
           fi
 
+  # Verify package READMEs are up-to-date with root README
+  readme-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Regenerate package READMEs
+        run: ./scripts/generate-package-readmes.sh
+
+      - name: Check for uncommitted changes
+        run: |
+          if ! git diff --exit-code packages/node/README.md packages/rust/README.md; then
+            echo "::error::Package READMEs are out of date. Run './scripts/generate-package-readmes.sh' and commit the changes."
+            exit 1
+          fi
+
   # Python linting
   lint:
     runs-on: ubuntu-latest

@@ -163,6 +163,14 @@ All generated code is **committed** so users don't need protoc:
 - **Rust**: Generated at build time via `build.rs` (proto files in `packages/rust/proto/`)
 - **Node.js**: `packages/node/src/linuxcnc.ts`, `packages/node/src/hal.ts`
 
+## Package READMEs
+
+`packages/node/README.md` and `packages/rust/README.md` are **auto-generated** from the root `README.md`
+by `scripts/generate-package-readmes.sh` (or `make readme`). These are what npm and crates.io display on
+their package pages. CI checks they are up-to-date via the `readme-check` job.
+
+The root `README.md` uses absolute GitHub URLs for all links so it renders correctly on PyPI and pkg.go.dev.
+
 ## Client Installation
 
 ### Python
@@ -205,6 +213,7 @@ All automation scripts are in the `scripts/` directory:
 | Script | Purpose |
 |--------|---------|
 | `generate-protos.sh` | Generate protobuf code for all languages |
+| `generate-package-readmes.sh` | Generate package READMEs for npm/crates.io from root README |
 | `build-python.sh` | Build Python wheel and sdist |
 | `build-node.sh` | Build Node.js/TypeScript package |
 | `build-rust.sh` | Build Rust crate |
@@ -253,7 +262,7 @@ The script also auto-discovers and updates Rust dependency version strings (majo
 
 GitHub Actions workflows:
 
-- **ci.yml**: Runs on push/PR - tests all languages, checks proto freshness
+- **ci.yml**: Runs on push/PR - tests all languages, checks proto freshness, checks package README freshness
 - **e2e.yml**: Runs on push/PR - e2e tests against a real LinuxCNC simulator (builds from source on Ubuntu 24.04)
 - **release.yml**: Unified release workflow (manual dispatch) - publishes to PyPI, npm, and crates.io
 - **version-bump.yml**: Creates a version bump PR (manual dispatch) - updates all package versions via `sync-versions.sh`
@@ -262,6 +271,7 @@ GitHub Actions workflows:
 
 ```
 proto-check ─────────────────────────────────────────────────────┐
+readme-check                                                     │
 lint ──► test-python ──► test-node ──► examples-node            │
                      ├──► test-rust ──► examples-rust           │
                      └──► test-go ───► examples-go              │
