@@ -118,7 +118,7 @@ client.getStatus(GetStatusRequest.create(), (err, status) => {
 
 ```toml
 [dependencies]
-linuxcnc-grpc = "0.6"
+linuxcnc-grpc = "1.0"
 tokio = { version = "1", features = ["full"] }
 tonic = "0.12"
 ```
