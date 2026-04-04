@@ -92,6 +92,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "  $PYPROJECT  -> $PY_VERSION"
     echo "  $PACKAGE_JSON -> $SEMVER_VERSION"
     echo "  $CARGO_TOML -> $SEMVER_VERSION"
+    echo "  src/linuxcnc_grpc/__init__.py -> $PY_VERSION"
     echo "  uv.lock (re-locked)"
     echo "  *.md files containing linuxcnc-grpc version -> \"$DOC_VERSION\""
     if [ "$CREATE_COMMIT" = true ]; then
@@ -107,6 +108,13 @@ fi
 # Update pyproject.toml (PEP 440 format)
 info "Updating $PYPROJECT..."
 sed_inplace "s/^version = \"${CURRENT_PY}\"/version = \"${PY_VERSION}\"/" "$PYPROJECT"
+
+# Update __init__.py __version__ (PEP 440 format)
+INIT_PY="$PROJECT_ROOT/src/linuxcnc_grpc/__init__.py"
+if [ -f "$INIT_PY" ]; then
+    info "Updating $INIT_PY..."
+    sed_inplace "s/__version__ = \".*\"/__version__ = \"${PY_VERSION}\"/" "$INIT_PY"
+fi
 
 # Update package.json (semver format)
 info "Updating $PACKAGE_JSON..."
@@ -173,7 +181,7 @@ if [ "$CREATE_COMMIT" = true ]; then
     info "Creating git commit..."
     # Build explicit file list so we only commit version files,
     # regardless of other staged changes in the working tree.
-    COMMIT_FILES=("$PYPROJECT" "$PACKAGE_JSON" "$CARGO_TOML")
+    COMMIT_FILES=("$PYPROJECT" "$PACKAGE_JSON" "$CARGO_TOML" "$INIT_PY")
     COMMIT_FILES+=("${DOC_UPDATED_FILES[@]}")
     if [ -f "$PROJECT_ROOT/uv.lock" ]; then
         COMMIT_FILES+=("$PROJECT_ROOT/uv.lock")

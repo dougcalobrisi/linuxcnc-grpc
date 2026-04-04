@@ -11,7 +11,7 @@ license = "MIT"
 requires-python = ">=3.10"
 keywords = ["linuxcnc", "cnc", "grpc", "machine-control", "hal"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Manufacturing",
     "Operating System :: POSIX :: Linux",
@@ -36,7 +36,10 @@ build = ["build>=1.0.0", "twine>=5.0.0"]
 linuxcnc-grpc = "linuxcnc_grpc.server:main"
 
 [project.urls]
+Homepage = "https://github.com/dougcalobrisi/linuxcnc-grpc"
 Repository = "https://github.com/dougcalobrisi/linuxcnc-grpc"
+Documentation = "https://github.com/dougcalobrisi/linuxcnc-grpc/tree/main/docs"
+"Bug Tracker" = "https://github.com/dougcalobrisi/linuxcnc-grpc/issues"
 
 [tool.setuptools.packages.find]
 where = ["src", "packages/python"]
