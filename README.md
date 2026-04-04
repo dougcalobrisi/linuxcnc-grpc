@@ -138,14 +138,14 @@ Complete examples for all supported languages:
 
 | Example | Description | Python | Go | Node.js | Rust |
 |---------|-------------|--------|-----|---------|------|
-| `get_status` | Poll machine status | [view](examples/python/get_status.py) | [view](examples/go/cmd/get_status/main.go) | [view](examples/node/get_status.ts) | [view](examples/rust/src/bin/get_status.rs) |
-| `stream_status` | Real-time status streaming | [view](examples/python/stream_status.py) | [view](examples/go/cmd/stream_status/main.go) | [view](examples/node/stream_status.ts) | [view](examples/rust/src/bin/stream_status.rs) |
-| `jog_axis` | Jog axes with keyboard | [view](examples/python/jog_axis.py) | [view](examples/go/cmd/jog_axis/main.go) | [view](examples/node/jog_axis.ts) | [view](examples/rust/src/bin/jog_axis.rs) |
-| `mdi_command` | Execute G-code via MDI | [view](examples/python/mdi_command.py) | [view](examples/go/cmd/mdi_command/main.go) | [view](examples/node/mdi_command.ts) | [view](examples/rust/src/bin/mdi_command.rs) |
-| `hal_query` | Query HAL pins/signals | [view](examples/python/hal_query.py) | [view](examples/go/cmd/hal_query/main.go) | [view](examples/node/hal_query.ts) | [view](examples/rust/src/bin/hal_query.rs) |
-| `upload_file` | Upload, list, delete G-code files | [view](examples/python/upload_file.py) | [view](examples/go/cmd/upload_file/main.go) | [view](examples/node/upload_file.ts) | [view](examples/rust/src/bin/upload_file.rs) |
+| `get_status` | Poll machine status | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/python/get_status.py) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/go/cmd/get_status/main.go) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/node/get_status.ts) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/rust/src/bin/get_status.rs) |
+| `stream_status` | Real-time status streaming | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/python/stream_status.py) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/go/cmd/stream_status/main.go) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/node/stream_status.ts) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/rust/src/bin/stream_status.rs) |
+| `jog_axis` | Jog axes with keyboard | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/python/jog_axis.py) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/go/cmd/jog_axis/main.go) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/node/jog_axis.ts) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/rust/src/bin/jog_axis.rs) |
+| `mdi_command` | Execute G-code via MDI | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/python/mdi_command.py) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/go/cmd/mdi_command/main.go) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/node/mdi_command.ts) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/rust/src/bin/mdi_command.rs) |
+| `hal_query` | Query HAL pins/signals | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/python/hal_query.py) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/go/cmd/hal_query/main.go) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/node/hal_query.ts) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/rust/src/bin/hal_query.rs) |
+| `upload_file` | Upload, list, delete G-code files | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/python/upload_file.py) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/go/cmd/upload_file/main.go) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/node/upload_file.ts) | [view](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/rust/src/bin/upload_file.rs) |
 
-See [examples/README.md](examples/README.md) for setup instructions.
+See [examples/README.md](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/examples/README.md) for setup instructions.
 
 ## Services
 
@@ -187,7 +187,7 @@ credentials = grpc.ssl_channel_credentials(root_certificates)
 channel = grpc.secure_channel('your-machine:50051', credentials)
 ```
 
-See [Server Configuration](docs/server.md#security-considerations) for complete TLS setup instructions.
+See [Server Configuration](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/docs/server.md#security-considerations) for complete TLS setup instructions.
 
 ## Development
 
@@ -205,8 +205,8 @@ make test-all      # All languages
 make proto-all     # Regenerate for all languages
 ```
 
-See [CLAUDE.md](CLAUDE.md) for detailed development documentation.
+See [CLAUDE.md](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/CLAUDE.md) for detailed development documentation.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/LICENSE)

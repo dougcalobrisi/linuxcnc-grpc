@@ -205,6 +205,7 @@ All automation scripts are in the `scripts/` directory:
 | Script | Purpose |
 |--------|---------|
 | `generate-protos.sh` | Generate protobuf code for all languages |
+| `generate-package-readmes.sh` | Generate package READMEs for npm/crates.io from root README |
 | `build-python.sh` | Build Python wheel and sdist |
 | `build-node.sh` | Build Node.js/TypeScript package |
 | `build-rust.sh` | Build Rust crate |

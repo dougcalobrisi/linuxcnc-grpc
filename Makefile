@@ -1,6 +1,6 @@
 # linuxcnc-grpc Makefile
 
-.PHONY: all setup install install-dev proto proto-go proto-rust proto-node proto-all clean lint test test-cov test-go test-node test-all run run-debug dist help build build-python build-node build-rust build-all publish publish-python publish-node publish-rust publish-all publish-dry-run sync-version
+.PHONY: all setup install install-dev proto proto-go proto-rust proto-node proto-all clean lint test test-cov test-go test-node test-all run run-debug dist help build build-python build-node build-rust build-all publish publish-python publish-node publish-rust publish-all publish-dry-run sync-version readme
 
 all: proto
 
@@ -167,6 +167,12 @@ publish-all:
 
 publish-dry-run:
 	DRY_RUN=1 uv run ./scripts/publish-all.sh
+
+# --- README generation ---
+
+# Generate package-specific READMEs for npm and crates.io
+readme:
+	./scripts/generate-package-readmes.sh
 
 # --- Version management ---
 
