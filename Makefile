@@ -129,6 +129,7 @@ help:
 	@echo "  publish-all    Publish all packages"
 	@echo "  publish-dry-run Test publish without uploading"
 	@echo "  sync-version   Sync version across packages (VERSION=x.y.z)"
+	@echo "  readme         Generate package READMEs for npm/crates.io"
 	@echo ""
 	@echo "  help         Show this help"
 
