@@ -1,6 +1,6 @@
 {
   "name": "linuxcnc-grpc",
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0-beta.2",
   "description": "TypeScript/JavaScript gRPC client for LinuxCNC machine control and HAL",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
