@@ -121,6 +121,17 @@ to_semver_prerelease() {
         -e 's/([0-9])rc([0-9])/\1-rc.\2/'
 }
 
+# Extract major.minor from a version string for use in documentation examples.
+# Examples:
+#   0.6.0           -> 0.6
+#   0.6.0-beta.5    -> 0.6
+#   0.6.0b5         -> 0.6
+#   1.2.3-rc.1      -> 1.2
+to_doc_version() {
+    local ver="$1"
+    echo "$ver" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/'
+}
+
 # Normalize a version to a canonical form for comparison.
 # Converts both PEP 440 and semver pre-release formats to semver.
 normalize_version() {
