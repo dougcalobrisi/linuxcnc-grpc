@@ -121,7 +121,7 @@ sed_inplace "s/^version = \"${CURRENT_RUST}\"/version = \"${SEMVER_VERSION}\"/" 
 DOC_UPDATED_FILES=()
 info "Updating doc version strings to $DOC_VERSION..."
 while IFS= read -r doc_file; do
-    sed_inplace "s/linuxcnc-grpc = \"[0-9]*\.[0-9]*\"/linuxcnc-grpc = \"${DOC_VERSION}\"/" "$doc_file"
+    sed_inplace "s/linuxcnc-grpc = \"[0-9]\+\.[0-9]\+\"/linuxcnc-grpc = \"${DOC_VERSION}\"/" "$doc_file"
     DOC_UPDATED_FILES+=("$doc_file")
 done < <(grep -rl 'linuxcnc-grpc = "[0-9]' --include='*.md' "$PROJECT_ROOT")
 if [ ${#DOC_UPDATED_FILES[@]} -gt 0 ]; then
