@@ -603,7 +603,7 @@ wheels = [
 
 [[package]]
 name = "linuxcnc-grpc"
-version = "1.0.0b3"
+version = "1.0.0b4"
 source = { editable = "." }
 dependencies = [
     { name = "grpcio" },
