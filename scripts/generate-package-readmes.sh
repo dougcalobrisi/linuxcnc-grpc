@@ -13,15 +13,9 @@ BLOB_URL="$REPO_URL/blob/main"
 
 README="$PROJECT_ROOT/README.md"
 
-# Extract a range of lines between two patterns (exclusive of both).
-# Usage: extract_between "start_pattern" "stop_pattern" < file
-extract_between() {
-    sed -n "/$1/,/$2/{ /$1/d; /$2/d; p; }"
-}
-
 # Extract badges (lines starting with [![)
 get_badges() {
-    grep '^\[!\[' "$README"
+    sed -n '/^\[!\[/p' "$README"
 }
 
 # Extract the intro paragraph and Why gRPC section
