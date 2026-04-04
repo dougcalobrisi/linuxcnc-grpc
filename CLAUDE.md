@@ -191,7 +191,7 @@ import { LinuxCNCServiceClient, GetStatusRequest } from 'linuxcnc-grpc';
 ### Rust
 ```toml
 [dependencies]
-linuxcnc-grpc = "0.6"
+linuxcnc-grpc = "1.0"
 ```
 
 ```rust
