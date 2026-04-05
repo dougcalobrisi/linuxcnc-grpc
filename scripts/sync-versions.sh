@@ -94,6 +94,9 @@ if [ "$DRY_RUN" = true ]; then
     echo "  $CARGO_TOML -> $SEMVER_VERSION"
     echo "  src/linuxcnc_grpc/__init__.py -> $PY_VERSION"
     echo "  uv.lock (re-locked)"
+    echo "  packages/node/package-lock.json (re-locked)"
+    echo "  packages/rust/Cargo.lock (re-locked)"
+    echo "  examples/rust/Cargo.lock (re-locked)"
     echo "  *.md files containing linuxcnc-grpc version -> \"$DOC_VERSION\""
     if [ "$CREATE_COMMIT" = true ]; then
         echo ""
@@ -171,8 +174,18 @@ info "Updating uv.lock..."
 (cd "$PROJECT_ROOT" && uv lock 2>/dev/null || true)
 
 if [ -f "$PROJECT_ROOT/packages/rust/Cargo.lock" ]; then
-    info "Updating Cargo.lock..."
+    info "Updating packages/rust/Cargo.lock..."
     (cd "$PROJECT_ROOT/packages/rust" && cargo update --package linuxcnc-grpc 2>/dev/null || true)
+fi
+
+if [ -f "$PROJECT_ROOT/examples/rust/Cargo.lock" ]; then
+    info "Updating examples/rust/Cargo.lock..."
+    (cd "$PROJECT_ROOT/examples/rust" && cargo update --package linuxcnc-grpc 2>/dev/null || true)
+fi
+
+if [ -f "$PROJECT_ROOT/packages/node/package-lock.json" ]; then
+    info "Updating packages/node/package-lock.json..."
+    (cd "$PROJECT_ROOT/packages/node" && npm install --package-lock-only 2>/dev/null || true)
 fi
 
 # Create commit if requested
@@ -188,6 +201,12 @@ if [ "$CREATE_COMMIT" = true ]; then
     fi
     if [ -f "$PROJECT_ROOT/packages/rust/Cargo.lock" ]; then
         COMMIT_FILES+=("$PROJECT_ROOT/packages/rust/Cargo.lock")
+    fi
+    if [ -f "$PROJECT_ROOT/examples/rust/Cargo.lock" ]; then
+        COMMIT_FILES+=("$PROJECT_ROOT/examples/rust/Cargo.lock")
+    fi
+    if [ -f "$PROJECT_ROOT/packages/node/package-lock.json" ]; then
+        COMMIT_FILES+=("$PROJECT_ROOT/packages/node/package-lock.json")
     fi
     if git commit --only "${COMMIT_FILES[@]}" -m "chore: bump version to $SEMVER_VERSION"; then
         success "Created commit"
