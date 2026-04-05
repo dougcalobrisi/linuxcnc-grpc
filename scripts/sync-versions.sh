@@ -169,9 +169,9 @@ fi
 
 success "All versions updated (Python: $PY_VERSION, npm/Rust: $SEMVER_VERSION)"
 
-# Update lockfiles
+# Update lockfiles (--upgrade pulls in latest compatible deps, including security patches)
 info "Updating uv.lock..."
-(cd "$PROJECT_ROOT" && uv lock 2>/dev/null || true)
+(cd "$PROJECT_ROOT" && uv lock --upgrade 2>/dev/null || true)
 
 if [ -f "$PROJECT_ROOT/packages/rust/Cargo.lock" ]; then
     info "Updating packages/rust/Cargo.lock..."
