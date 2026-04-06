@@ -40,14 +40,18 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── test_*_service.py      # Unit tests for gRPC services
 │   ├── mock_server.py         # Mock gRPC server for integration tests
 │   └── conftest.py            # Shared fixtures
-├── docs/                      # Documentation
-│   ├── README.md              # Documentation index
-│   ├── getting-started.md     # Installation and quickstart
-│   ├── server.md              # Server configuration
-│   ├── api-reference.md       # Complete API documentation
-│   ├── examples.md            # Examples guide
-│   ├── tutorial.md            # Step-by-step tutorial
-│   └── e2e-testing.md         # E2E testing guide
+├── docs/                      # Hugo documentation site
+│   ├── hugo.toml              # Hugo configuration
+│   ├── README.md              # Docs development guide
+│   ├── content/               # Markdown documentation pages
+│   │   ├── _index.md          # Documentation index
+│   │   ├── getting-started.md # Installation and quickstart
+│   │   ├── server.md          # Server configuration
+│   │   ├── api-reference.md   # Complete API documentation
+│   │   ├── examples.md        # Examples guide
+│   │   ├── tutorial.md        # Step-by-step tutorial
+│   │   └── e2e-testing.md     # E2E testing guide
+│   └── static/                # Static assets
 └── examples/                  # Multi-language client examples
     ├── python/                # Python examples
     ├── go/                    # Go examples (in cmd/ subdirectories)
@@ -316,14 +320,25 @@ Authentication (all use OIDC trusted publishing):
 
 ## Documentation
 
-User-facing documentation is in the `docs/` directory:
+User-facing documentation is a Hugo static site in the `docs/` directory, deployed to GitHub Pages.
+
+**Published site:** https://dougcalobrisi.github.io/linuxcnc-grpc/
 
 | Document | Description |
 |----------|-------------|
-| [docs/README.md](docs/README.md) | Documentation index and overview |
-| [docs/getting-started.md](docs/getting-started.md) | Installation and quickstart |
-| [docs/server.md](docs/server.md) | Server configuration and setup |
-| [docs/api-reference.md](docs/api-reference.md) | Complete API documentation |
-| [docs/examples.md](docs/examples.md) | Examples guide and walkthroughs |
-| [docs/tutorial.md](docs/tutorial.md) | Step-by-step tutorial |
-| [docs/e2e-testing.md](docs/e2e-testing.md) | E2E testing with LinuxCNC simulator |
+| [docs/content/_index.md](docs/content/_index.md) | Documentation index and overview |
+| [docs/content/getting-started.md](docs/content/getting-started.md) | Installation and quickstart |
+| [docs/content/server.md](docs/content/server.md) | Server configuration and setup |
+| [docs/content/api-reference.md](docs/content/api-reference.md) | Complete API documentation |
+| [docs/content/examples.md](docs/content/examples.md) | Examples guide and walkthroughs |
+| [docs/content/tutorial.md](docs/content/tutorial.md) | Step-by-step tutorial |
+| [docs/content/e2e-testing.md](docs/content/e2e-testing.md) | E2E testing with LinuxCNC simulator |
+
+### Local docs development
+
+```bash
+make docs-serve    # Downloads theme + starts live-reload server at localhost:1313
+make docs-build    # Production build to docs/public/
+```
+
+The Hugo theme (hugo-geekdoc) is downloaded at build time and gitignored. The GitHub Actions workflow (`.github/workflows/docs.yml`) builds and deploys on push to main when `docs/**` changes.

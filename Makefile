@@ -1,6 +1,6 @@
 # linuxcnc-grpc Makefile
 
-.PHONY: all setup install install-dev proto proto-go proto-rust proto-node proto-all clean lint test test-cov test-go test-node test-all run run-debug dist help build build-python build-node build-rust build-all publish publish-python publish-node publish-rust publish-all publish-dry-run sync-version readme
+.PHONY: all setup install install-dev proto proto-go proto-rust proto-node proto-all clean lint test test-cov test-go test-node test-all run run-debug dist help build build-python build-node build-rust build-all publish publish-python publish-node publish-rust publish-all publish-dry-run sync-version readme docs-setup docs-serve docs-build
 
 all: proto
 
@@ -131,6 +131,11 @@ help:
 	@echo "  sync-version   Sync version across packages (VERSION=x.y.z)"
 	@echo "  readme         Generate package READMEs for npm/crates.io"
 	@echo ""
+	@echo "Documentation:"
+	@echo "  docs-setup     Download Hugo theme"
+	@echo "  docs-serve     Serve docs locally with live reload"
+	@echo "  docs-build     Build docs for production"
+	@echo ""
 	@echo "  help         Show this help"
 
 # --- Build targets ---
@@ -180,3 +185,18 @@ readme:
 sync-version:
 	@test -n "$(VERSION)" || (echo "Usage: make sync-version VERSION=x.y.z" && exit 1)
 	./scripts/sync-versions.sh $(VERSION)
+
+# --- Documentation ---
+
+# Download Hugo theme (one-time setup)
+docs-setup:
+	mkdir -p docs/themes/hugo-geekdoc
+	curl -L https://github.com/thegeeklab/hugo-geekdoc/releases/download/v3.0.0/hugo-geekdoc.tar.gz | tar -xz -C docs/themes/hugo-geekdoc/
+
+# Serve docs locally with live reload
+docs-serve: docs-setup
+	hugo server --source docs --buildDrafts
+
+# Build docs for production
+docs-build: docs-setup
+	hugo --minify --source docs

@@ -69,8 +69,11 @@ env.bak/
 venv.bak/
 .python-version
 
-# Sphinx documentation
-docs/_build/
+# Hugo documentation
+docs/themes/
+docs/public/
+docs/resources/_gen/
+docs/.hugo_build.lock
 
 # PyBuilder
 .pybuilder/

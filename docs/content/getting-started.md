@@ -1,51 +1,29 @@
-# Getting Started
+---
+title: "Client Quickstart"
+weight: 10
+---
 
-This guide covers installation and basic usage of linuxcnc-grpc.
-
-## Prerequisites
-
-- **LinuxCNC** running on a machine (or simulation)
-- **gRPC server** installed on the LinuxCNC machine
-- **Client library** for your language of choice
-
-## Server Installation
-
-Install the server on your LinuxCNC machine:
-
-```bash
-pip install linuxcnc-grpc
-```
-
-Start the server (LinuxCNC must already be running):
-
-```bash
-linuxcnc-grpc --host 0.0.0.0 --port 50051
-```
-
-See [Server Configuration](server.md) for auto-start setup and advanced options.
+Install a client library and make your first API calls. This guide assumes you already have a [running gRPC server](server-setup.md).
 
 ## Client Installation
 
-### Python
-
+{{%  tabs "client-install"  %}}
+{{%  tab "Python"  %}}
 ```bash
 pip install linuxcnc-grpc
 ```
-
-### Go
-
+{{%  /tab  %}}
+{{%  tab "Go"  %}}
 ```bash
 go get github.com/dougcalobrisi/linuxcnc-grpc
 ```
-
-### Node.js / TypeScript
-
+{{%  /tab  %}}
+{{%  tab "Node.js / TypeScript"  %}}
 ```bash
 npm install linuxcnc-grpc
 ```
-
-### Rust
-
+{{%  /tab  %}}
+{{%  tab "Rust"  %}}
 Add to `Cargo.toml`:
 
 ```toml
@@ -54,11 +32,13 @@ linuxcnc-grpc = "1.0"
 tokio = { version = "1", features = ["full"] }
 tonic = "0.12"
 ```
+{{%  /tab  %}}
+{{%  /tabs  %}}
 
 ## Quick Start Examples
 
-### Python
-
+{{%  tabs "quickstart"  %}}
+{{%  tab "Python"  %}}
 ```python
 import grpc
 from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
@@ -80,9 +60,8 @@ print(f"State: {linuxcnc_pb2.TaskState.Name(status.task.task_state)}")
 
 channel.close()
 ```
-
-### Go
-
+{{%  /tab  %}}
+{{%  tab "Go"  %}}
 ```go
 package main
 
@@ -118,9 +97,8 @@ func main() {
     fmt.Printf("Position: X=%.3f Y=%.3f Z=%.3f\n", pos.X, pos.Y, pos.Z)
 }
 ```
-
-### Node.js / TypeScript
-
+{{%  /tab  %}}
+{{%  tab "Node.js / TypeScript"  %}}
 ```typescript
 import * as grpc from "@grpc/grpc-js";
 import { LinuxCNCServiceClient, GetStatusRequest, TaskMode, TaskState } from "linuxcnc-grpc";
@@ -147,9 +125,8 @@ client.getStatus(GetStatusRequest.create(), (err, status) => {
   console.log(`State: ${TaskState[status!.task!.taskState]}`);
 });
 ```
-
-### Rust
-
+{{%  /tab  %}}
+{{%  tab "Rust"  %}}
 ```rust
 use linuxcnc_grpc::linuxcnc::linux_cnc_service_client::LinuxCncServiceClient;
 use linuxcnc_grpc::linuxcnc::GetStatusRequest;
@@ -173,6 +150,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+{{%  /tab  %}}
+{{%  /tabs  %}}
 
 ## Sending Commands
 
@@ -243,8 +222,8 @@ def jog_stop(stub, axis):
 
 Instead of polling, subscribe to real-time updates:
 
-### Python
-
+{{%  tabs "streaming"  %}}
+{{%  tab "Python"  %}}
 ```python
 def stream_status(stub):
     request = linuxcnc_pb2.StreamStatusRequest(interval_ms=100)
@@ -253,9 +232,8 @@ def stream_status(stub):
         pos = status.position.actual_position
         print(f"X={pos.x:.3f} Y={pos.y:.3f} Z={pos.z:.3f}")
 ```
-
-### Go
-
+{{%  /tab  %}}
+{{%  tab "Go"  %}}
 ```go
 func streamStatus(client pb.LinuxCNCServiceClient) {
     stream, err := client.StreamStatus(context.Background(),
@@ -274,6 +252,8 @@ func streamStatus(client pb.LinuxCNCServiceClient) {
     }
 }
 ```
+{{%  /tab  %}}
+{{%  /tabs  %}}
 
 ## HAL Queries
 

@@ -1,4 +1,7 @@
-# Server Configuration
+---
+title: "Server Configuration"
+weight: 30
+---
 
 The linuxcnc-grpc server runs on your LinuxCNC machine and exposes both LinuxCNCService and HalService over gRPC.
 
