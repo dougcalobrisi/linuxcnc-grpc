@@ -16,6 +16,12 @@ concurrency:
   group: "pages"
   cancel-in-progress: false
 
+# Force Node.js 24 for actions that still bundle Node 20 internally
+# (upload-pages-artifact@v4 pins upload-artifact to a Node 20 SHA)
+# Remove once upstream releases a Node 24 compatible version
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
