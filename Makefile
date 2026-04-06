@@ -190,8 +190,7 @@ sync-version:
 
 # Download Hugo theme (one-time setup)
 docs-setup:
-	mkdir -p docs/themes/hugo-geekdoc
-	curl -L https://github.com/thegeeklab/hugo-geekdoc/releases/download/v3.0.0/hugo-geekdoc.tar.gz | tar -xz -C docs/themes/hugo-geekdoc/
+	@test -d docs/themes/hugo-book || git clone --depth 1 https://github.com/alex-shpak/hugo-book.git docs/themes/hugo-book
 
 # Serve docs locally with live reload
 docs-serve: docs-setup

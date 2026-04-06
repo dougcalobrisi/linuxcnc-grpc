@@ -341,4 +341,4 @@ make docs-serve    # Downloads theme + starts live-reload server at localhost:13
 make docs-build    # Production build to docs/public/
 ```
 
-The Hugo theme (hugo-geekdoc) is downloaded at build time and gitignored. The GitHub Actions workflow (`.github/workflows/docs.yml`) builds and deploys on push to main when `docs/**` changes.
+The Hugo theme (hugo-book) is downloaded at build time and gitignored. The GitHub Actions workflow (`.github/workflows/docs.yml`) builds and deploys on push to main when `docs/**` changes.
