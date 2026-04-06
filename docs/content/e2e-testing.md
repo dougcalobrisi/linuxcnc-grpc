@@ -1,4 +1,7 @@
-# End-to-End Testing
+---
+title: "End-to-End Testing"
+weight: 60
+---
 
 The e2e test suite (`tests/test_e2e.py`) runs against a real LinuxCNC simulator
 instance, validating that the gRPC server works correctly with actual LinuxCNC

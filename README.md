@@ -187,7 +187,7 @@ credentials = grpc.ssl_channel_credentials(root_certificates)
 channel = grpc.secure_channel('your-machine:50051', credentials)
 ```
 
-See [Server Configuration](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/docs/server.md#security-considerations) for complete TLS setup instructions.
+See [Server Configuration](https://dougcalobrisi.github.io/linuxcnc-grpc/server/#security-considerations) for complete TLS setup instructions.
 
 ## Development
 

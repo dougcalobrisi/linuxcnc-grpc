@@ -1,4 +1,7 @@
-# Examples Guide
+---
+title: "Examples Guide"
+weight: 50
+---
 
 Walkthrough of the example code provided with linuxcnc-grpc.
 
@@ -61,8 +64,8 @@ examples/
 2. gRPC server running on the LinuxCNC machine
 3. Language-specific dependencies installed
 
-### Python
-
+{{%  tabs "run-examples"  %}}
+{{%  tab "Python"  %}}
 ```bash
 cd examples/python
 
@@ -72,9 +75,8 @@ pip install grpcio linuxcnc-grpc
 # Run an example
 python get_status.py --host localhost --port 50051
 ```
-
-### Go
-
+{{%  /tab  %}}
+{{%  tab "Go"  %}}
 ```bash
 cd examples/go
 
@@ -84,9 +86,8 @@ go mod download
 # Run an example
 go run ./cmd/get_status --host localhost --port 50051
 ```
-
-### Node.js / TypeScript
-
+{{%  /tab  %}}
+{{%  tab "Node.js / TypeScript"  %}}
 ```bash
 cd examples/node
 
@@ -96,9 +97,8 @@ npm install
 # Run an example
 npx tsx get_status.ts --host localhost --port 50051
 ```
-
-### Rust
-
+{{%  /tab  %}}
+{{%  tab "Rust"  %}}
 ```bash
 cd examples/rust
 
@@ -111,6 +111,8 @@ cargo run --bin get_status -- --host localhost --port 50051
 # Or run the built binary directly
 ./target/release/get_status --host localhost --port 50051
 ```
+{{%  /tab  %}}
+{{%  /tabs  %}}
 
 ---
 
@@ -181,8 +183,10 @@ Real-time status streaming instead of polling.
 - Processing a continuous stream of updates
 - Calculating update rate
 
-### Key code (Python)
+### Key code
 
+{{%  tabs "stream-key-code"  %}}
+{{%  tab "Python"  %}}
 ```python
 # Start streaming with 100ms interval
 request = linuxcnc_pb2.StreamStatusRequest(interval_ms=100)
@@ -191,9 +195,8 @@ for status in stub.StreamStatus(request):
     pos = status.position.actual_position
     print(f"\rX={pos.x:8.3f} Y={pos.y:8.3f} Z={pos.z:8.3f}", end="")
 ```
-
-### Key code (Go)
-
+{{%  /tab  %}}
+{{%  tab "Go"  %}}
 ```go
 stream, err := client.StreamStatus(ctx, &pb.StreamStatusRequest{
     IntervalMs: 100,
@@ -208,6 +211,8 @@ for {
     fmt.Printf("X=%.3f Y=%.3f Z=%.3f\n", pos.X, pos.Y, pos.Z)
 }
 ```
+{{%  /tab  %}}
+{{%  /tabs  %}}
 
 ### Output
 

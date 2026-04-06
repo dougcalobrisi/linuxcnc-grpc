@@ -1,0 +1,26 @@
+baseURL = "https://dougcalobrisi.github.io/linuxcnc-grpc/"
+title = "LinuxCNC gRPC"
+theme = "hugo-book"
+
+disablePathToLower = true
+enableGitInfo = false
+
+# Required for shortcodes
+[markup.goldmark.renderer]
+  unsafe = true
+
+[markup.tableOfContents]
+  startLevel = 1
+
+[markup.highlight]
+  style = "dracula"
+  tabWidth = 4
+
+[params]
+  BookTheme = "auto"
+  BookSection = "/"
+  BookSearch = true
+  BookComments = false
+  BookEditLink = "https://github.com/dougcalobrisi/linuxcnc-grpc/edit/main/docs/content/{{ .Path }}"
+  BookPortableLinks = "warning"
+  BookToC = true

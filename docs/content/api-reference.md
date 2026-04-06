@@ -1,4 +1,7 @@
-# API Reference
+---
+title: "API Reference"
+weight: 40
+---
 
 Complete API documentation for LinuxCNC gRPC services.
 
@@ -639,9 +642,9 @@ message PositionStatus {
   Position actual_position = 2;  // Actual/feedback position
   Position probed_position = 3;  // Probe trip position
   Position dtg = 4;              // Distance to go
-  Position g5x_offset = 5;       // Work offset (G54-G59.3)
-  Position g92_offset = 6;       // G92 offset
-  Position tool_offset = 7;      // Tool offset
+  Position g5x_offset = 5;      // Work offset (G54-G59.3)
+  Position g92_offset = 6;      // G92 offset
+  Position tool_offset = 7;     // Tool offset
   int32 g5x_index = 8;           // Work coordinate index
 }
 ```
@@ -722,5 +725,5 @@ message HalValue {
 
 The complete proto definitions are in the `proto/` directory:
 
-- [`proto/linuxcnc.proto`](../proto/linuxcnc.proto) - LinuxCNCService
-- [`proto/hal.proto`](../proto/hal.proto) - HalService
+- [`proto/linuxcnc.proto`](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/proto/linuxcnc.proto) - LinuxCNCService
+- [`proto/hal.proto`](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/main/proto/hal.proto) - HalService

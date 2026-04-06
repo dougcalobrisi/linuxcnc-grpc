@@ -1,4 +1,7 @@
-# Step-by-Step Tutorial
+---
+title: "Step-by-Step Tutorial"
+weight: 20
+---
 
 A hands-on guide to connecting to a remote LinuxCNC machine from your development box using any of the supported client languages.
 
@@ -779,7 +782,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - See the full [API Reference](api-reference.md) for all available RPCs and message types
 - Check out the [Examples Guide](examples.md) for more advanced examples (jogging, HAL queries)
 - Read [Server Configuration](server.md) for production setup (auto-start, TLS)
-- Browse the complete example code in the [`examples/`](../examples/) directory
+- Browse the complete example code in the [`examples/`](https://github.com/dougcalobrisi/linuxcnc-grpc/tree/main/examples) directory
 
 ## Troubleshooting
 
