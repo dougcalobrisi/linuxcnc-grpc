@@ -1,4 +1,4 @@
-baseURL = "https://dougcalobrisi.github.io/linuxcnc-grpc/"
+baseURL = "https://doug.sh/docs/linuxcnc-grpc/"
 title = "LinuxCNC gRPC"
 theme = "hugo-book"
 

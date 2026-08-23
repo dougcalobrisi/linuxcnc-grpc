@@ -2,7 +2,7 @@
 
 This directory contains the Hugo source for the LinuxCNC gRPC documentation site.
 
-**Published site:** https://dougcalobrisi.github.io/linuxcnc-grpc/
+**Published site:** https://doug.sh/docs/linuxcnc-grpc/
 
 ## Local Development
 
