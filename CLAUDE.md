@@ -322,7 +322,7 @@ Authentication (all use OIDC trusted publishing):
 
 User-facing documentation is a Hugo static site in the `docs/` directory, deployed to GitHub Pages.
 
-**Published site:** https://dougcalobrisi.github.io/linuxcnc-grpc/
+**Published site:** https://doug.sh/docs/linuxcnc-grpc/
 
 | Document | Description |
 |----------|-------------|
