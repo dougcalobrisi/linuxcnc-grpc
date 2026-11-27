@@ -5,7 +5,15 @@ All notable changes to linuxcnc-grpc (the server and the Python, Go, Node.js and
 ## Unreleased
 
 ### Fixed
+- **`WaitComplete` no longer blocks other RPCs.** It used to hold the server's global lock for the whole wait (5 s by default), so every other call, including an estop, queued behind it. It now polls status and releases the lock between polls, and its own waits for the lock end at the request's timeout: if another RPC holds the lock past the deadline, the answer is `RCS_EXEC`, as for any timeout. Its results are otherwise unchanged: it still waits on the latest command sent through the server and ignores `request.serial`.
+- **`WaitComplete` follows LinuxCNC's own `wait_complete()` rule.** It returns `RCS_DONE` at once when a later command has already been echoed or when nothing has been sent since the server connected, and it keeps working if the server reconnects to LinuxCNC during the wait.
+- **`WaitComplete` after a command that failed part-way.** If a command made of several LinuxCNC messages (`coolant`, `set_limit`, `override_config`, `program_options`) fails after the first message went out, `WaitComplete` now waits on that message instead of reporting on the previous command.
+- **`SendCommand` no longer sends a command it cannot track.** This only concerns LinuxCNC bindings without `command.serial` (2.8, 2.9 and master have it). There the server polls status before each command to have a baseline for `WaitComplete`; if that poll fails, `SendCommand` now answers `RCS_ERROR` and sends nothing. It used to ignore the failure and send the command.
 - **`scripts/wait-for-linuxcnc.py` could wait forever.** If its first attempt came before LinuxCNC was up, no later attempt in the same process could succeed. Each attempt now runs in its own process. `--timeout` is a deadline for the whole run: the first check (that the `linuxcnc` module can be imported), every attempt and every pause between attempts stop at it.
+- **A failed reconnect no longer leaves the server half-connected.** The status, command and error channels are replaced together, and only once the new connection has answered a poll.
+- **The server's own response serial wraps.** The counter behind `CommandResponse.serial` (used when the request's serial is 0), and the one in the HAL service, went on past the int32 range, where building the response failed. Both now wrap to 1 after 2147483647.
+- **`WaitComplete` with a very large or infinite timeout waits** instead of failing with `UNKNOWN`. A NaN timeout means the default.
+- **Uploads just over the cap get a clear error.** `UploadFile` refuses content longer than 10 MiB (10,485,760 characters) with `INVALID_ARGUMENT`, but the gRPC receive limit was 10 MiB too, so the transport rejected such a request with `RESOURCE_EXHAUSTED` first. The receive limit is now 11 MiB. A request larger than that (possible below the character cap with non-ASCII text, which takes more than one byte per character) still gets `RESOURCE_EXHAUSTED`.
 
 ### Maintainer tooling
 These do not affect users of the packages.

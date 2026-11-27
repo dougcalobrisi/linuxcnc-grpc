@@ -107,6 +107,74 @@ it before `sleep` and `yield` to avoid blocking other threads.
 **Command Dispatch**: `SendCommand` uses an explicit `_command_handlers` dict mapping
 command type strings to handler methods (no dynamic `getattr` dispatch).
 
+**Command Response Semantics**: `SendCommand` returns `RCS_DONE` as soon as the handler
+has dispatched the command; that means "dispatched", not "finished". `CommandResponse.serial`
+is `request.serial` or, when that is 0, the servicer's own counter (`_next_serial`). It is
+never LinuxCNC's serial and must not be compared with `echo_serial_number`. Changing either
+of these is a breaking change. The counter wraps to 1 after `MAX_RESPONSE_SERIAL`
+(2147483647, the field is an int32). `HalServiceServicer._next_serial` does the same with its
+own `MAX_RESPONSE_SERIAL` (defined in `hal_service.py`, because importing
+`linuxcnc_service` needs the `linuxcnc` module) and its own small lock.
+
+**Latest Dispatch Tracking**: after a handler succeeds, and inside the same lock hold,
+`SendCommand` calls `_record_dispatch`, which stores a `DispatchRecord` in
+`_latest_dispatch_record`. Only the latest dispatch is kept; there is no per-serial map.
+- Normally the record holds LinuxCNC's real serial, read from `linuxcnc.command().serial`
+  (a read-only member in LinuxCNC 2.8, 2.9 and master). It is read with `getattr` and
+  accepted only if it is a real `int`.
+- If `.serial` is unavailable, the record instead holds `stat.echo_serial_number` sampled
+  *before* the handler ran (`_sample_echo_serial_for_fallback`). It has to be before:
+  LinuxCNC's send blocks until the echo serial catches up, so a later sample never advances.
+- A dispatch that failed before sending anything does not replace the record. A handler that
+  fails *after* sending a message (the multi-message handlers: coolant, set_limit,
+  override_config, program_options) does: `SendCommand` compares `command.serial` before and
+  after, and records the message that went out, because LinuxCNC is now working on it.
+- In the fallback path a failed pre-dispatch poll is not swallowed: the command is refused
+  with `RCS_ERROR` rather than dispatched without a record. A partial dispatch cannot be
+  detected in the fallback path.
+
+**Connecting**: `_connect()` holds the lock throughout (as it always did). It creates the
+new `stat`, `command` and `error_channel` in locals and polls the new `stat` first. Only if
+all of that succeeds does it publish the three channels, reset `_latest_dispatch_record` to
+`None` and increment `_connection_generation`. A failed attempt changes nothing.
+
+**WaitComplete**: waits on the latest command this server dispatched and **ignores
+`request.serial`** (legacy semantics, same as 1.0.0; the serial is only echoed back). Do not
+make it target a specific serial: that changes results for existing clients (after send A,
+send B, a wait on A's serial must report B).
+It does not call `linuxcnc.command().wait_complete()` and does not hold the lock while
+waiting. It takes `_latest_dispatch_record` once, then loops: take the lock, `stat.poll()`,
+read `echo_serial_number` and `state`, release, decide in `_completion_state`, sleep
+`WAIT_COMPLETE_POLL_INTERVAL` (50 ms). An estop sent meanwhile is not blocked.
+The rule in `_completion_state`, checked in this order (it mirrors LinuxCNC's own
+`wait_complete`):
+1. No record at all (nothing sent since connecting, or a reconnect reset it):
+   `RCS_DONE` immediately, whatever `state` is.
+2. Record with a LinuxCNC serial, echo serial **past** it: `RCS_DONE` immediately, whatever
+   `state` is. Anything executing or in error belongs to a later command.
+3. Record with a LinuxCNC serial, echo serial **equal** to it: `state` if it is `RCS_DONE`
+   or `RCS_ERROR`; keep waiting while it is `RCS_EXEC`.
+4. Record with a LinuxCNC serial, echo serial **behind** it: keep waiting.
+5. Fallback record (no `.serial`): `state` once the echo serial is past the pre-dispatch
+   sample and `state` is `RCS_DONE` or `RCS_ERROR`; otherwise keep waiting.
+
+Other behaviour:
+- Each poll compares `_connection_generation` with the value seen when the record was
+  taken; if it changed, the wait drops its stale record and takes
+  `_latest_dispatch_record` again (rule 1 applies if nothing was sent since).
+- Timeout (default `DEFAULT_WAIT_COMPLETE_TIMEOUT` = 5 s) or a cancelled RPC returns
+  `RCS_EXEC` with an empty message. `linuxcnc.error` returns `RCS_ERROR` with its text.
+- `request.timeout` of 0, a negative number or NaN means the default (NaN fails the `> 0`
+  test). An infinite timeout is allowed: the wait then ends when the command finishes or the
+  client goes away.
+- `_acquire_lock_until` takes the lock in pieces of at most `threading.TIMEOUT_MAX`:
+  `Lock.acquire` raises `OverflowError` for a larger timeout, which a very long or infinite
+  deadline would give it (that surfaced as gRPC `UNKNOWN`).
+- Every lock acquisition in WaitComplete goes through `_acquire_lock_until(deadline)`:
+  taking the record, and each poll. If another RPC holds the lock past the
+  deadline the wait returns `RCS_EXEC`, like any timeout, so it cannot overrun its timeout
+  behind a slow lock holder. At or past the deadline a free lock is still taken.
+
 **Input Validation**: Handler methods validate indices before dispatching to LinuxCNC:
 - `_validate_joint_index(index, is_joint)` checks bounds against `stat.joint`/`stat.axis`; index -1 is only valid for joint operations (home/unhome all).
 - `_validate_spindle_index(index)` checks bounds against `stat.spindle`.

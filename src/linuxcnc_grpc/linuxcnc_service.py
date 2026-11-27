@@ -10,7 +10,7 @@ import time
 import logging
 import threading
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, NamedTuple
 
 import grpc
 import linuxcnc
@@ -27,8 +27,42 @@ MAX_RECONNECT_INTERVAL = 30  # seconds
 MAX_MDI_COMMAND_LENGTH = 10000  # characters
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 
+# WaitComplete polling
+DEFAULT_WAIT_COMPLETE_TIMEOUT = 5.0  # seconds, used when the request gives none
+WAIT_COMPLETE_POLL_INTERVAL = 0.05  # seconds slept between polls, lock released
+
+# CommandResponse.serial is an int32; the server's own counter wraps to 1
+# after this value.
+MAX_RESPONSE_SERIAL = 2**31 - 1
+
 # Default allowed NC file directory (override with LINUXCNC_NC_FILES env var)
 DEFAULT_NC_FILES_DIR = "/home/linuxcnc/linuxcnc/nc_files"
+
+
+class DispatchRecord(NamedTuple):
+    """
+    What WaitComplete needs to know about one dispatched command.
+
+    Attributes:
+        linuxcnc_serial: LinuxCNC's own serial for the command, read from
+            ``linuxcnc.command().serial`` after dispatch. None when the
+            bindings don't expose it.
+        echo_serial_before_dispatch: ``stat.echo_serial_number`` sampled just
+            before dispatch. Only recorded when ``linuxcnc_serial`` is None,
+            as the fallback baseline.
+    """
+
+    linuxcnc_serial: int | None
+    echo_serial_before_dispatch: int | None
+
+
+def _as_plain_int(value) -> int | None:
+    """Return value if it is a real int (not bool, not a stand-in object), else None."""
+    # Serials get compared and subtracted, so anything that merely looks like
+    # a number (a bool, or a mock's auto-created attribute) must not get through.
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
 
 
 class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
@@ -54,6 +88,14 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         self._command_serial = 0
         self._connected = False
         self._nc_files_dir = nc_files_dir
+
+        # Dispatch bookkeeping for WaitComplete (guarded by self._lock):
+        # what LinuxCNC knows the most recent command this server dispatched
+        # as. Reset whenever we reconnect.
+        self._latest_dispatch_record: DispatchRecord | None = None
+        # Incremented by every _connect(), so a WaitComplete in progress can
+        # tell that the command channel it resolved its target on is gone.
+        self._connection_generation = 0
 
         self._command_handlers = {
             "state": self._handle_state_cmd,
@@ -96,11 +138,24 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _connect(self) -> None:
         """Establish connection to LinuxCNC."""
         with self._lock:
-            self._stat = linuxcnc.stat()
-            self._command = linuxcnc.command()
-            self._error_channel = linuxcnc.error_channel()
-            self._stat.poll()
+            # Build and prove the new channels in locals before touching
+            # anything shared. If any of this raises, the servicer keeps its
+            # previous channels, its latest dispatch record and its
+            # connection generation, so a WaitComplete in progress is not
+            # left comparing an old serial against a half-replaced connection.
+            new_stat = linuxcnc.stat()
+            new_command = linuxcnc.command()
+            new_error_channel = linuxcnc.error_channel()
+            new_stat.poll()
+
+            self._stat = new_stat
+            self._command = new_command
+            self._error_channel = new_error_channel
             self._connected = True
+            # A new command channel starts its own serial bookkeeping, so the
+            # record made through the previous one no longer means anything.
+            self._latest_dispatch_record = None
+            self._connection_generation += 1
 
     def _reconnect(self) -> bool:
         """
@@ -126,10 +181,114 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         return False
 
     def _next_serial(self) -> int:
-        """Get next command serial number."""
+        """Get next command serial number, within 1..MAX_RESPONSE_SERIAL."""
         with self._lock:
-            self._command_serial += 1
+            self._command_serial = self._command_serial % MAX_RESPONSE_SERIAL + 1
             return self._command_serial
+
+    def _acquire_lock_until(self, deadline: float) -> bool:
+        """
+        Take self._lock, giving up at deadline (a time.monotonic() value).
+
+        Returns whether the lock was taken; the caller releases it. At or
+        past the deadline the lock is still taken if it is free.
+        """
+        while True:
+            seconds_remaining = max(0.0, deadline - time.monotonic())
+            # acquire() raises OverflowError for a timeout above TIMEOUT_MAX,
+            # which a very long or infinite deadline would give it, so such
+            # a wait is made in pieces.
+            if self._lock.acquire(timeout=min(seconds_remaining, threading.TIMEOUT_MAX)):
+                return True
+            if seconds_remaining <= threading.TIMEOUT_MAX:
+                return False
+
+    def _read_linuxcnc_command_serial(self) -> int | None:
+        """
+        Read LinuxCNC's serial for the command most recently sent.
+
+        ``linuxcnc.command`` exposes it as the read-only ``serial`` member
+        (LinuxCNC 2.8+). Returns None if the attribute is missing or isn't an
+        int. Caller must hold self._lock.
+        """
+        return _as_plain_int(getattr(self._command, "serial", None))
+
+    def _sample_echo_serial_for_fallback(self) -> int | None:
+        """
+        Sample the echo serial before a dispatch, for the WaitComplete fallback.
+
+        Only needed when the bindings don't expose ``command.serial``; returns
+        None otherwise so the normal path costs no extra poll. It has to be
+        taken *before* the handler runs: LinuxCNC's send blocks until the echo
+        serial has caught up, so a sample taken afterwards would never be seen
+        to advance. Caller must hold self._lock.
+
+        A failed poll is not swallowed: without the sample the command could
+        not be tracked, and WaitComplete would report on an older command or
+        on none. The exception reaches SendCommand, which answers RCS_ERROR
+        without dispatching.
+        """
+        if self._read_linuxcnc_command_serial() is not None:
+            return None
+        self._stat.poll()
+        return _as_plain_int(self._stat.echo_serial_number)
+
+    def _record_dispatch(self, echo_serial_before_dispatch: int | None) -> None:
+        """
+        Remember the command just dispatched as the one WaitComplete waits on.
+
+        Call only after the handler succeeded, in the same lock hold, so the
+        serial read here belongs to this command. Caller must hold self._lock.
+        """
+        linuxcnc_serial = self._read_linuxcnc_command_serial()
+        if linuxcnc_serial is None and echo_serial_before_dispatch is None:
+            return
+        self._latest_dispatch_record = DispatchRecord(
+            linuxcnc_serial=linuxcnc_serial,
+            echo_serial_before_dispatch=(
+                None if linuxcnc_serial is not None else echo_serial_before_dispatch
+            ),
+        )
+
+    @staticmethod
+    def _completion_state(
+        dispatch_record: DispatchRecord | None,
+        echo_serial_number: int,
+        task_rcs_state: int,
+    ) -> int | None:
+        """
+        Decide whether the awaited command has finished.
+
+        Returns linuxcnc.RCS_DONE or linuxcnc.RCS_ERROR once it has, or None
+        while the wait should go on.
+        """
+        if dispatch_record is None:
+            # Nothing this server sent is being tracked (nothing sent yet, or
+            # a reconnect cleared the records), so there is no command to
+            # wait for: report done straight away, whatever the task is
+            # doing. linuxcnc's own wait_complete() behaves the same way on a
+            # command channel that has not sent anything.
+            return linuxcnc.RCS_DONE
+
+        task_is_idle = task_rcs_state in (linuxcnc.RCS_DONE, linuxcnc.RCS_ERROR)
+
+        if dispatch_record.linuxcnc_serial is not None:
+            serials_ahead = echo_serial_number - dispatch_record.linuxcnc_serial
+            if serials_ahead > 0:
+                # A later command has been echoed, so ours is finished.
+                # Whatever the task is doing now (executing, or in error)
+                # belongs to that later command. Same rule as linuxcnc's
+                # own wait_complete().
+                return linuxcnc.RCS_DONE
+            if serials_ahead == 0 and task_is_idle:
+                return task_rcs_state
+            return None  # not picked up yet, or still executing ours
+
+        # Fallback: no LinuxCNC serial, so wait for the echo serial to move
+        # past where it was before we dispatched, and for the task to be idle.
+        if echo_serial_number > dispatch_record.echo_serial_before_dispatch and task_is_idle:
+            return task_rcs_state
+        return None
 
     def _validate_joint_index(self, index: int, is_joint: bool = False) -> None:
         """Validate joint or axis index is within bounds."""
@@ -220,6 +379,13 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         Send a command to LinuxCNC.
 
         Dispatches to the appropriate command handler based on the command type.
+
+        RCS_DONE in the response means the command was *dispatched* to
+        LinuxCNC, not that it finished executing. The response serial is
+        request.serial if the client set one, otherwise this server's own
+        counter; it is not LinuxCNC's serial and must not be compared with
+        echo_serial_number. WaitComplete ignores it and always waits on the
+        most recent command dispatched.
         """
         serial = request.serial or self._next_serial()
         command_type = request.WhichOneof("command")
@@ -229,7 +395,24 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             handler = self._command_handlers.get(command_type)
             if handler:
                 with self._lock:
-                    handler(request)
+                    echo_serial_before_dispatch = self._sample_echo_serial_for_fallback()
+                    linuxcnc_serial_before_dispatch = self._read_linuxcnc_command_serial()
+                    try:
+                        handler(request)
+                    except Exception:
+                        # Some handlers send several LinuxCNC messages
+                        # (coolant, set_limit, override_config, ...). If one
+                        # fails after an earlier one went out, LinuxCNC has
+                        # still been given something new to do, and that is
+                        # what WaitComplete must wait on from now on.
+                        linuxcnc_serial_after_failure = self._read_linuxcnc_command_serial()
+                        if (
+                            linuxcnc_serial_after_failure is not None
+                            and linuxcnc_serial_after_failure != linuxcnc_serial_before_dispatch
+                        ):
+                            self._record_dispatch(None)
+                        raise
+                    self._record_dispatch(echo_serial_before_dispatch)
                 return linuxcnc_pb2.CommandResponse(
                     serial=serial,
                     status=linuxcnc_pb2.RCS_DONE,
@@ -526,14 +709,73 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         """
         Wait for command completion.
 
-        Calls linuxcnc.command().wait_complete() and returns the result status.
+        Polls LinuxCNC status until the most recent command this server
+        dispatched has finished, or the timeout expires. The lock is held
+        only for each individual poll and released while sleeping, so other
+        RPCs (an estop in particular) are never blocked behind a wait.
+
+        request.serial is ignored, as it always has been: the wait is on the
+        latest command dispatched when the call arrives, and the serial is
+        only echoed back in the response. If there is no such command
+        (nothing sent since connecting), it returns RCS_DONE at once.
+
+        Returns RCS_DONE or RCS_ERROR ("Command failed") on completion, and
+        RCS_EXEC with an empty error_message on timeout.
+
+        request.timeout of 0, a negative number or NaN means the default. An
+        infinite timeout waits until the command finishes or the client goes
+        away.
         """
-        timeout = request.timeout if request.timeout > 0 else 5.0
+        # NaN fails the comparison, so it gets the default like 0 does.
+        timeout = request.timeout if request.timeout > 0 else DEFAULT_WAIT_COMPLETE_TIMEOUT
+        deadline = time.monotonic() + timeout
+        # Every lock acquisition below gives up at the deadline, so a wait
+        # cannot overrun its timeout behind another RPC that holds the lock.
+        # Running out of time that way is reported like any other timeout.
+        timed_out_response = linuxcnc_pb2.CommandResponse(
+            serial=request.serial,
+            status=linuxcnc_pb2.RCS_EXEC,
+            error_message="",
+        )
+
         logger.debug(f"WaitComplete called - serial={request.serial}, timeout={timeout}")
 
         try:
-            with self._lock:
-                result = self._command.wait_complete(timeout)
+            if not self._acquire_lock_until(deadline):
+                return timed_out_response
+            try:
+                dispatch_record = self._latest_dispatch_record
+                resolved_connection_generation = self._connection_generation
+            finally:
+                self._lock.release()
+
+            result = None
+            while True:
+                if not self._acquire_lock_until(deadline):
+                    break
+                try:
+                    if self._connection_generation != resolved_connection_generation:
+                        # Reconnected while we were waiting: the record we
+                        # took belongs to the old command channel. Wait on
+                        # the latest command sent since, if any.
+                        dispatch_record = self._latest_dispatch_record
+                        resolved_connection_generation = self._connection_generation
+                    self._stat.poll()
+                    echo_serial_number = self._stat.echo_serial_number
+                    task_rcs_state = self._stat.state
+                finally:
+                    self._lock.release()
+
+                result = self._completion_state(
+                    dispatch_record, echo_serial_number, task_rcs_state
+                )
+                if result is not None:
+                    break
+
+                seconds_remaining = deadline - time.monotonic()
+                if seconds_remaining <= 0 or not context.is_active():
+                    break
+                time.sleep(min(WAIT_COMPLETE_POLL_INTERVAL, seconds_remaining))
 
             if result == linuxcnc.RCS_DONE:
                 status = linuxcnc_pb2.RCS_DONE
@@ -541,7 +783,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             elif result == linuxcnc.RCS_ERROR:
                 status = linuxcnc_pb2.RCS_ERROR
                 error_message = "Command failed"
-            else:  # RCS_EXEC - still executing
+            else:  # timed out (or client went away) - still executing
                 status = linuxcnc_pb2.RCS_EXEC
                 error_message = ""
 

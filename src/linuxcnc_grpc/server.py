@@ -22,8 +22,11 @@ import grpc
 
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from linuxcnc_pb import linuxcnc_pb2_grpc, hal_pb2_grpc
-from .linuxcnc_service import LinuxCNCServiceServicer
+from .linuxcnc_service import MAX_UPLOAD_SIZE, LinuxCNCServiceServicer
 from .hal_service import HalServiceServicer
+
+# Upload cap plus 1 MB for the filename and protobuf framing.
+MAX_RECEIVE_MESSAGE_BYTES = MAX_UPLOAD_SIZE + 1024 * 1024
 
 # Configure logging
 logging.basicConfig(
@@ -66,7 +69,10 @@ def create_server(
         options=[
             ('grpc.keepalive_time_ms', 30000),
             ('grpc.keepalive_timeout_ms', 10000),
-            ('grpc.max_receive_message_length', 10 * 1024 * 1024),  # 10MB
+            # Headroom above the 10 MB upload cap, so a too-large or near-limit upload reaches
+            # UploadFile's own size check (a clear INVALID_ARGUMENT) instead of being rejected
+            # by the transport with a bare RESOURCE_EXHAUSTED.
+            ('grpc.max_receive_message_length', MAX_RECEIVE_MESSAGE_BYTES),
         ]
     )
 

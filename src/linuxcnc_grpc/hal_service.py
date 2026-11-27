@@ -8,6 +8,7 @@ no component creation or modification is supported.
 import time
 import logging
 import fnmatch
+import threading
 from typing import Iterator, Dict, Any
 
 import grpc
@@ -25,6 +26,10 @@ from linuxcnc_pb import hal_pb2, hal_pb2_grpc
 from .hal_mapper import HalMapper
 
 logger = logging.getLogger(__name__)
+
+# The serial fields in the responses are int32; the server's own counter
+# wraps to 1 after this value.
+MAX_RESPONSE_SERIAL = 2**31 - 1
 
 
 class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
@@ -53,6 +58,7 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
             RuntimeError: If HAL is not accessible.
         """
         self._command_serial = 0
+        self._serial_lock = threading.Lock()
         self._component = None
 
         # Create a HAL component for introspection access
@@ -66,9 +72,10 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
             raise RuntimeError(f"Failed to access HAL: {e}") from e
 
     def _next_serial(self) -> int:
-        """Get next command serial number."""
-        self._command_serial += 1
-        return self._command_serial
+        """Get next command serial number, within 1..MAX_RESPONSE_SERIAL."""
+        with self._serial_lock:
+            self._command_serial = self._command_serial % MAX_RESPONSE_SERIAL + 1
+            return self._command_serial
 
     def _get_hal_data(self):
         """Fetch current HAL data from all introspection APIs."""
