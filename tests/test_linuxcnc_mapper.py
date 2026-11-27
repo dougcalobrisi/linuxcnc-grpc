@@ -295,3 +295,315 @@ class TestLinuxCNCMapperLimits:
             assert len(status.limits.homed) == 3
             # All joints homed in mock
             assert all(h == 1 for h in status.limits.homed)
+
+    def test_misc_error_carries_the_real_values(self, mock_linuxcnc_module, mock_linuxcnc_stat):
+        """misc_error is LinuxCNC's own list, not one zero per joint."""
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+            # The binding returns a tuple of ints, longer than the joint list.
+            mock_linuxcnc_stat.misc_error = (0, 7, 0, -3, 0, 0, 0, 0)
+
+            status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto()
+
+            assert list(status.limits.misc_error) == [0, 7, 0, -3, 0, 0, 0, 0]
+
+
+# Status attributes LinuxCNC 2.9 has and 2.8 does not.
+ATTRIBUTES_MISSING_IN_LINUXCNC_2_8 = (
+    "ini_filename", "num_extrajoints", "tool_from_pocket", "motion_id", "misc_error",
+)
+
+
+def status_shaped_like_linuxcnc_2_8(mock_linuxcnc_stat):
+    """
+    A strict copy of the status fixture with only the attributes 2.8 has.
+
+    Unlike the fixture (a MagicMock, which invents any attribute asked for),
+    reading anything that was not set raises AttributeError, as the real
+    status object does. 2.8 reports the motion id as ``id``.
+    """
+    from types import SimpleNamespace
+
+    attributes_the_fixture_set = {
+        attribute_name: attribute_value
+        for attribute_name, attribute_value in vars(mock_linuxcnc_stat).items()
+        if not attribute_name.startswith("_mock") and attribute_name != "method_calls"
+    }
+    for attribute_name in ATTRIBUTES_MISSING_IN_LINUXCNC_2_8:
+        del attributes_the_fixture_set[attribute_name]
+    attributes_the_fixture_set["id"] = 42
+    return SimpleNamespace(**attributes_the_fixture_set)
+
+
+class TestLinuxCNCMapperOnLinuxCNC28:
+    """A status without the attributes LinuxCNC 2.8 lacks still maps."""
+
+    def test_parts_that_2_8_also_has_map_the_same(self, mock_linuxcnc_module, mock_linuxcnc_stat):
+        """The mapper reads nothing else that the 2.8-shaped status lacks."""
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+            status_2_8 = status_shaped_like_linuxcnc_2_8(mock_linuxcnc_stat)
+            for attribute_name in ATTRIBUTES_MISSING_IN_LINUXCNC_2_8:
+                assert not hasattr(status_2_8, attribute_name)
+
+            mapped_2_8 = LinuxCNCMapper(status_2_8).map_to_proto()
+            mapped_2_9 = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto()
+
+            assert mapped_2_8.position == mapped_2_9.position
+            assert mapped_2_8.joints == mapped_2_9.joints
+            assert mapped_2_8.io == mapped_2_9.io
+
+    def test_missing_attributes_become_proto_defaults(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+            status = LinuxCNCMapper(
+                status_shaped_like_linuxcnc_2_8(mock_linuxcnc_stat)
+            ).map_to_proto()
+
+            assert status.task.ini_filename == ""
+            assert status.trajectory.num_extrajoints == 0
+            assert status.tool.tool_from_pocket == 0
+            assert list(status.limits.misc_error) == []
+            # The rest of the status is still there.
+            assert status.trajectory.joints == 3
+            assert status.tool.tool_in_spindle == 1
+            assert len(status.limits.homed) == 3
+
+    def test_motion_id_falls_back_to_the_name_2_8_uses(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+            status = LinuxCNCMapper(
+                status_shaped_like_linuxcnc_2_8(mock_linuxcnc_stat)
+            ).map_to_proto()
+
+            assert status.trajectory.motion_id == 42
+
+    def test_motion_id_prefers_the_2_9_name(self, mock_linuxcnc_module, mock_linuxcnc_stat):
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+            mock_linuxcnc_stat.motion_id = 17
+            mock_linuxcnc_stat.id = 99
+
+            status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto()
+
+            assert status.trajectory.motion_id == 17
+
+
+# LinuxCNC's status always carries this many joint and spindle entries,
+# whatever the machine has (measured on the 2.9 simulator).
+STAT_JOINT_ENTRIES = 16
+STAT_SPINDLE_ENTRIES = 8
+
+
+def give_stat_full_length_arrays(mock_linuxcnc_stat, real_joint_count, real_spindle_count):
+    """Shape the stand-in status like LinuxCNC's: 16 joint and 8 spindle entries."""
+    mock_linuxcnc_stat.joint = [
+        dict(mock_linuxcnc_stat.joint[0]) for _ in range(STAT_JOINT_ENTRIES)
+    ]
+    mock_linuxcnc_stat.spindle = [
+        dict(mock_linuxcnc_stat.spindle[0]) for _ in range(STAT_SPINDLE_ENTRIES)
+    ]
+    # The last real joint sits on its upper hard limit and the slots after it
+    # claim to be homed, so a slot that leaks through would show.
+    mock_linuxcnc_stat.joint[real_joint_count - 1]["max_hard_limit"] = True
+    mock_linuxcnc_stat.homed = tuple(
+        0 if joint_index < real_joint_count else 1
+        for joint_index in range(STAT_JOINT_ENTRIES)
+    )
+    mock_linuxcnc_stat.joints = real_joint_count
+    mock_linuxcnc_stat.spindles = real_spindle_count
+
+
+class TestOnlyRealJointsAndSpindles:
+    """The status lists the machine's joints and spindles, not LinuxCNC's spare slots."""
+
+    def test_joints_and_spindles_stop_at_the_machine_counts(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        give_stat_full_length_arrays(
+            mock_linuxcnc_stat, real_joint_count=3, real_spindle_count=1
+        )
+
+        status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto()
+
+        assert [joint.joint_number for joint in status.joints] == [0, 1, 2]
+        assert [spindle.spindle_number for spindle in status.spindles] == [0]
+        assert status.trajectory.joints == 3
+        assert status.trajectory.spindles == 1
+
+    def test_per_joint_limit_lists_stop_at_the_joint_count(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        give_stat_full_length_arrays(
+            mock_linuxcnc_stat, real_joint_count=3, real_spindle_count=1
+        )
+
+        status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto()
+
+        assert list(status.limits.limit_flags) == [0, 0, 2]
+        assert list(status.limits.homed) == [False, False, False]
+
+    def test_misc_error_and_axes_keep_their_own_length(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        give_stat_full_length_arrays(
+            mock_linuxcnc_stat, real_joint_count=2, real_spindle_count=1
+        )
+        mock_linuxcnc_stat.misc_error = (0, 7, 0, -3, 0, 0, 0, 0)
+
+        status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto()
+
+        assert len(status.joints) == 2
+        assert list(status.limits.misc_error) == [0, 7, 0, -3, 0, 0, 0, 0]
+        assert len(status.axes) == len(mock_linuxcnc_stat.axis)
+
+    def test_a_machine_using_every_slot_lists_them_all(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        give_stat_full_length_arrays(
+            mock_linuxcnc_stat,
+            real_joint_count=STAT_JOINT_ENTRIES, real_spindle_count=STAT_SPINDLE_ENTRIES,
+        )
+
+        status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto()
+
+        assert len(status.joints) == STAT_JOINT_ENTRIES
+        assert len(status.spindles) == STAT_SPINDLE_ENTRIES
+        assert len(status.limits.limit_flags) == STAT_JOINT_ENTRIES
+        assert len(status.limits.homed) == STAT_JOINT_ENTRIES
+
+    @pytest.mark.parametrize("unusable_count", [0, -1, 17, 99])
+    def test_a_count_that_cannot_be_right_keeps_the_full_lists(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, unusable_count
+    ):
+        """Better to list spare slots than to drop a joint the machine has."""
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        give_stat_full_length_arrays(
+            mock_linuxcnc_stat, real_joint_count=3, real_spindle_count=1
+        )
+        mock_linuxcnc_stat.joints = unusable_count
+        mock_linuxcnc_stat.spindles = unusable_count
+
+        status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto()
+
+        assert len(status.joints) == STAT_JOINT_ENTRIES
+        assert len(status.spindles) == STAT_SPINDLE_ENTRIES
+        assert len(status.limits.limit_flags) == STAT_JOINT_ENTRIES
+        assert len(status.limits.homed) == STAT_JOINT_ENTRIES
+
+    @pytest.mark.parametrize("not_a_plain_int", [True, 3.0, "3", None, MagicMock()])
+    def test_a_count_that_is_not_a_plain_int_means_the_full_list(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, not_a_plain_int
+    ):
+        from linuxcnc_grpc.linuxcnc_mapper import real_entry_count
+
+        assert real_entry_count(not_a_plain_int, STAT_JOINT_ENTRIES) == STAT_JOINT_ENTRIES
+
+    def test_a_status_without_the_count_attributes_means_the_full_lists(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from types import SimpleNamespace
+
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        give_stat_full_length_arrays(
+            mock_linuxcnc_stat, real_joint_count=3, real_spindle_count=1
+        )
+        status_without_counts = SimpleNamespace(
+            joint=mock_linuxcnc_stat.joint,
+            spindle=mock_linuxcnc_stat.spindle,
+            homed=mock_linuxcnc_stat.homed,
+            misc_error=(),
+        )
+        mapper = LinuxCNCMapper(status_without_counts)
+
+        assert len(mapper._real_joints()) == STAT_JOINT_ENTRIES
+        assert len(mapper._real_spindles()) == STAT_SPINDLE_ENTRIES
+        assert len(mapper._map_limit_status().homed) == STAT_JOINT_ENTRIES
+
+
+def tool_table_slot(tool_number, z_offset=0.0):
+    """One entry of LinuxCNC's tool table; tool number 0 is an empty slot."""
+    slot = MagicMock()
+    slot.id = tool_number
+    slot.xoffset = slot.yoffset = 0.0
+    slot.zoffset = z_offset
+    slot.aoffset = slot.boffset = slot.coffset = 0.0
+    slot.uoffset = slot.voffset = slot.woffset = 0.0
+    slot.diameter = 0.0
+    slot.frontangle = slot.backangle = 0.0
+    slot.orientation = 0
+    return slot
+
+
+class TestToolTableIndex:
+    """Each returned tool carries its index in LinuxCNC's table, which pocket_prepped refers to."""
+
+    def test_entries_keep_their_index_when_empty_slots_are_left_out(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        # Nothing in the spindle (slot 0), tools 5 and 9 with an empty slot between.
+        mock_linuxcnc_stat.tool_table = [
+            tool_table_slot(0), tool_table_slot(5, z_offset=1.5), tool_table_slot(0),
+            tool_table_slot(9, z_offset=2.5), tool_table_slot(0),
+        ]
+        mock_linuxcnc_stat.pocket_prepped = 3
+
+        tool_status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto().tool
+
+        assert [entry.id for entry in tool_status.tool_table] == [5, 9]
+        assert [entry.table_index for entry in tool_status.tool_table] == [1, 3]
+        assert tool_status.pocket_prepped == 3
+        prepped_tools = [
+            entry for entry in tool_status.tool_table
+            if entry.HasField("table_index") and entry.table_index == tool_status.pocket_prepped
+        ]
+        assert [entry.id for entry in prepped_tools] == [9]
+        assert prepped_tools[0].z_offset == 2.5
+
+    def test_index_zero_is_set_and_not_just_the_default(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        tool_status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto().tool
+
+        assert len(tool_status.tool_table) == 1
+        assert tool_status.tool_table[0].HasField("table_index")
+        assert tool_status.tool_table[0].table_index == 0
+
+    def test_a_prepped_empty_slot_matches_no_entry(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        mock_linuxcnc_stat.tool_table = [tool_table_slot(0), tool_table_slot(5)]
+        mock_linuxcnc_stat.pocket_prepped = 0
+
+        tool_status = LinuxCNCMapper(mock_linuxcnc_stat).map_to_proto().tool
+
+        assert [entry.table_index for entry in tool_status.tool_table] == [1]
+        assert all(
+            entry.table_index != tool_status.pocket_prepped
+            for entry in tool_status.tool_table
+        )

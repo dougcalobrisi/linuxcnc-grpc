@@ -210,6 +210,63 @@ class TestBuildMachineConfig:
         assert config.joint_count == 3
         assert len(config.joints) == 3
 
+    @staticmethod
+    def _give_full_size_lists(stat):
+        """Pad stat.joint to 16 entries and stat.spindle to 8, as LinuxCNC reports them."""
+        stat.joint = list(stat.joint) + [dict(stat.joint[0]) for _ in range(13)]
+        stat.spindle = list(stat.spindle) + [dict(stat.spindle[0]) for _ in range(7)]
+        assert (len(stat.joint), len(stat.spindle)) == (16, 8)
+
+    def test_spindle_count_is_the_reported_count(
+        self, machine_config_module, mock_linuxcnc_stat
+    ):
+        self._give_full_size_lists(mock_linuxcnc_stat)
+        mock_linuxcnc_stat.spindles = 2
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, MILL_INI_VALUES)
+
+        assert config.spindle_count == 2
+
+    @pytest.mark.parametrize(
+        "unusable_count",
+        [0, -1, 17, None, "3", 3.0, True],
+        ids=["zero", "negative", "above-the-list", "none", "text", "float", "bool"],
+    )
+    def test_unusable_counts_mean_the_full_lists_as_in_the_status(
+        self, machine_config_module, mock_linuxcnc_module, mock_linuxcnc_stat, unusable_count
+    ):
+        """The joints and spindles listed are the ones GetStatus lists."""
+        from linuxcnc_grpc.linuxcnc_mapper import LinuxCNCMapper
+
+        self._give_full_size_lists(mock_linuxcnc_stat)
+        mock_linuxcnc_stat.joints = unusable_count
+        mock_linuxcnc_stat.spindles = unusable_count
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, MILL_INI_VALUES)
+
+        assert config.joint_count == 16
+        assert [joint.joint_number for joint in config.joints] == list(range(16))
+        assert config.spindle_count == 8
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            status_mapper = LinuxCNCMapper(mock_linuxcnc_stat, version="2.9")
+            assert len(status_mapper._real_joints()) == config.joint_count
+            assert len(status_mapper._real_spindles()) == config.spindle_count
+
+    def test_missing_counts_mean_the_full_lists(
+        self, machine_config_module, mock_linuxcnc_stat
+    ):
+        """A status without joints and spindles attributes still builds."""
+        self._give_full_size_lists(mock_linuxcnc_stat)
+        # Deleting an attribute of a MagicMock makes reading it raise AttributeError.
+        del mock_linuxcnc_stat.joints
+        del mock_linuxcnc_stat.spindles
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, MILL_INI_VALUES)
+
+        assert config.joint_count == 16
+        assert len(config.joints) == 16
+        assert config.spindle_count == 8
+
     def test_lathe_lists_only_axes_in_the_mask(
         self, machine_config_module, mock_linuxcnc_stat
     ):
@@ -415,6 +472,19 @@ class TestBuildMachineConfig:
         assert [axis.letter for axis in config.axes] == ["X", "Y", "Z"]
         assert config.linear_units_name == "mm"
 
+    def test_status_without_ini_filename_reports_an_empty_name(
+        self, machine_config_module, mock_linuxcnc_stat
+    ):
+        """LinuxCNC 2.8's status has no ini_filename; the rest is still built."""
+        del mock_linuxcnc_stat.ini_filename
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, None)
+
+        assert config.ini_filename == ""
+        assert config.ini_readable is False
+        assert config.joint_count == 3
+        assert [axis.letter for axis in config.axes] == ["X", "Y", "Z"]
+
     def test_non_numeric_ini_values_become_zero(
         self, machine_config_module, mock_linuxcnc_stat
     ):
@@ -571,6 +641,29 @@ class TestGetMachineConfigRpc:
             linuxcnc_pb2.GetMachineConfigRequest(), mock_grpc_context
         )
 
+        assert config.ini_readable is False
+        assert config.joint_count == 3
+        mock_grpc_context.abort.assert_not_called()
+
+    def test_status_without_ini_filename_is_not_an_error(
+        self, make_service, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, tmp_path
+    ):
+        """On LinuxCNC 2.8 there is no INI name to open: ini_readable is False."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        del mock_linuxcnc_stat.ini_filename
+        # Opening an empty file name fails in LinuxCNC.
+        mock_linuxcnc_module.ini.side_effect = mock_linuxcnc_module.error(
+            "inifile.open() failed"
+        )
+        service = make_service(tmp_path)
+
+        config = service.GetMachineConfig(
+            linuxcnc_pb2.GetMachineConfigRequest(), mock_grpc_context
+        )
+
+        mock_linuxcnc_module.ini.assert_called_once_with("")
+        assert config.ini_filename == ""
         assert config.ini_readable is False
         assert config.joint_count == 3
         mock_grpc_context.abort.assert_not_called()

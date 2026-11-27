@@ -47,6 +47,17 @@ logger = logging.getLogger(__name__)
 # Mock Data - Same as conftest.py but standalone
 # =============================================================================
 
+# The HAL values below are fixed test data, repeated in
+# tests/fixtures/hal_status.json and checked by the client tests in every
+# language. A real server differs in these fields:
+# - HalComponentInfo: ready, type and pid are never set and id is 0; only
+#   name, pins and params are filled in.
+# - HalPinInfo: signal is always empty, and has_writer is HAL's own answer
+#   for the pin (not true for every pin).
+# - HalSignalInfo: readers is always empty and reader_count is 0.
+# - HalSystemStatus: is_sim, is_rt, is_userspace, kernel_version and
+#   message_level are read from HAL.
+
 MOCK_HAL_PINS = [
     {
         "name": "axis.x.pos-cmd",
@@ -166,6 +177,31 @@ MOCK_READABLE_FILES = {
 
 # The message the mock's StreamErrors replays when asked for buffered messages.
 MOCK_BUFFERED_ERROR_TEXT = "mock buffered error"
+
+# Streaming RPCs poll at the interval the client asks for, within the same
+# bounds as the real server.
+MOCK_DEFAULT_STREAM_INTERVAL_MS = 100
+MOCK_MAX_STREAM_INTERVAL_MS = 60_000
+
+
+def stream_interval_seconds(interval_ms):
+    """Zero or less means the default; anything above the maximum is clamped to it."""
+    if interval_ms <= 0:
+        interval_ms = MOCK_DEFAULT_STREAM_INTERVAL_MS
+    return min(interval_ms, MOCK_MAX_STREAM_INTERVAL_MS) / 1000.0
+
+
+def watch_for_cancellation(context):
+    """
+    Return an event that is set when the RPC ends (cancel, disconnect, deadline).
+
+    A stream waits on it between updates instead of sleeping, so a cancelled
+    stream gives its worker thread back at once, as on the real server.
+    """
+    cancelled = threading.Event()
+    if not context.add_callback(cancelled.set):
+        cancelled.set()
+    return cancelled
 
 
 def _finite_error(field_name, value):
@@ -398,12 +434,12 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         )
 
     def StreamStatus(self, request, context):
-        """Stream status updates at requested interval."""
-        interval_ms = request.interval_ms if request.interval_ms > 0 else 100
-        interval = interval_ms / 1000.0
-        while context.is_active():
+        """Stream status updates at the requested interval until the client goes away."""
+        interval = stream_interval_seconds(request.interval_ms)
+        cancelled = watch_for_cancellation(context)
+        while not cancelled.is_set() and context.is_active():
             yield self._build_status()
-            time.sleep(interval)
+            cancelled.wait(interval)
 
     def StreamErrors(self, request, context):
         """Replay one fixed buffered message if asked, then stay connected."""
@@ -682,6 +718,7 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 id=1,
                 z_offset=1.5,
                 diameter=6.0,
+                table_index=0,
             )],
         ))
 
@@ -721,6 +758,20 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 # Mock HAL Service
 # =============================================================================
 
+# HAL SendCommand cannot return query results; these commands have their own RPC.
+MOCK_DEDICATED_RPC_FOR_HAL_COMMAND = {
+    "get_value": "GetValue",
+    "query_pins": "QueryPins",
+    "query_signals": "QuerySignals",
+    "query_params": "QueryParams",
+    "query_components": "QueryComponents",
+}
+
+
+# The most distinct names one WatchValues call takes, as on the real server.
+MOCK_MAX_WATCHED_NAMES = 1000
+
+
 class MockHalServicer(hal_pb2_grpc.HalServiceServicer):
     """Mock HAL gRPC service returning deterministic responses."""
 
@@ -729,8 +780,24 @@ class MockHalServicer(hal_pb2_grpc.HalServiceServicer):
         return self._build_system_status()
 
     def SendCommand(self, request, context):
-        """Accept commands and return success."""
-        logger.info(f"HAL command: {request.WhichOneof('command')}")
+        """
+        Accept commands and return success.
+
+        As on the real server, get_value and the query_* commands fail with
+        the name of the RPC that returns their result.
+        """
+        command_type = request.WhichOneof("command")
+        logger.info(f"HAL command: {command_type}")
+        dedicated_rpc = MOCK_DEDICATED_RPC_FOR_HAL_COMMAND.get(command_type)
+        if dedicated_rpc is not None:
+            return hal_pb2.HalCommandResponse(
+                serial=request.serial,
+                success=False,
+                error=(
+                    f"Command '{command_type}' returns no result through "
+                    f"SendCommand. Call the {dedicated_rpc} RPC instead."
+                ),
+            )
         return hal_pb2.HalCommandResponse(
             serial=request.serial,
             success=True,
@@ -787,24 +854,50 @@ class MockHalServicer(hal_pb2_grpc.HalServiceServicer):
         )
 
     def StreamStatus(self, request, context):
-        """Stream HAL status updates."""
-        interval_ms = request.interval_ms if request.interval_ms > 0 else 100
-        interval = interval_ms / 1000.0
-        while context.is_active():
+        """Stream HAL status updates until the client goes away."""
+        interval = stream_interval_seconds(request.interval_ms)
+        cancelled = watch_for_cancellation(context)
+        while not cancelled.is_set() and context.is_active():
             yield self._build_system_status()
-            time.sleep(interval)
+            cancelled.wait(interval)
 
     def WatchValues(self, request, context):
-        """Watch for value changes (mock: no changes)."""
-        interval_ms = request.interval_ms if request.interval_ms > 0 else 100
-        interval = interval_ms / 1000.0
-        while context.is_active():
-            # In mock, values don't change, so just yield empty batches
-            yield hal_pb2.ValueChangeBatch(
-                timestamp=int(time.time() * 1000),
-                changes=[],
+        """
+        Watch for value changes (mock: the values never change).
+
+        As on the real server: names are de-duplicated; no names, more than
+        MOCK_MAX_WATCHED_NAMES of them, or a name that cannot be read is
+        INVALID_ARGUMENT; and a batch is sent only when a value changed.
+        Nothing changes here, so an accepted stream sends nothing and stays
+        open until the client goes away.
+        """
+        interval = stream_interval_seconds(request.interval_ms)
+        names = list(dict.fromkeys(request.names))
+        if not names:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT, "At least one name must be specified"
             )
-            time.sleep(interval)
+        if len(names) > MOCK_MAX_WATCHED_NAMES:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"Too many names to watch: {len(names)} "
+                f"(the limit is {MOCK_MAX_WATCHED_NAMES})",
+            )
+        readable_names = {
+            item["name"] for item in MOCK_HAL_PINS + MOCK_HAL_SIGNALS + MOCK_HAL_PARAMS
+        }
+        for name in names:
+            if name not in readable_names:
+                # The real server appends HAL's own error text after the name.
+                context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    f"Cannot watch '{name}': no pin, signal or parameter has that name",
+                )
+        cancelled = watch_for_cancellation(context)
+        while not cancelled.is_set() and context.is_active():
+            cancelled.wait(interval)
+        # A generator function, so that this is a stream handler.
+        yield from ()
 
     def _filter_by_pattern(self, items, pattern):
         """Filter items by glob pattern."""

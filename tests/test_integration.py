@@ -620,6 +620,35 @@ class TestLinuxCNCServiceIntegration:
         for status in updates:
             assert status.task.task_mode == linuxcnc_pb2.MODE_MANUAL
 
+    def test_cancelled_streams_release_their_worker_threads(self, linuxcnc_client, hal_client):
+        """
+        A cancelled stream ends at once, whatever interval it asked for.
+
+        More streams than the mock has worker threads are opened with an
+        interval of an hour, then cancelled. A stream that slept through its
+        interval would keep its thread, and the call after them would wait.
+        """
+        an_hour_ms = 3_600_000
+        streams = []
+        for _ in range(6):
+            streams.append(linuxcnc_client.StreamStatus(
+                linuxcnc_pb2.StreamStatusRequest(interval_ms=an_hour_ms)
+            ))
+            streams.append(hal_client.StreamStatus(
+                hal_pb2.HalStreamStatusRequest(interval_ms=an_hour_ms)
+            ))
+            streams.append(hal_client.WatchValues(
+                hal_pb2.WatchRequest(names=["axis.x.pos-cmd"], interval_ms=an_hour_ms)
+            ))
+        # Give the server time to start serving as many as it has threads for.
+        time.sleep(0.5)
+        for stream in streams:
+            stream.cancel()
+
+        status = linuxcnc_client.GetStatus(linuxcnc_pb2.GetStatusRequest(), timeout=5)
+
+        assert status.task.task_mode == linuxcnc_pb2.MODE_MANUAL
+
 
 # =============================================================================
 # HAL Service Tests
@@ -709,12 +738,39 @@ class TestHalServiceIntegration:
         """Test SendCommand returns success."""
         command = hal_pb2.HalCommand(
             serial=200,
-            get_value=hal_pb2.GetValueCommand(name="axis.x.pos-cmd"),
+            component_exists=hal_pb2.ComponentExistsCommand(name="axis"),
         )
         response = hal_client.SendCommand(command)
 
         assert response.success
         assert response.serial == 200
+
+    @pytest.mark.parametrize(
+        "command_fields, dedicated_rpc",
+        [
+            ({"get_value": hal_pb2.GetValueCommand(name="axis.x.pos-cmd")}, "GetValue"),
+            ({"query_pins": hal_pb2.QueryPinsCommand(pattern="*")}, "QueryPins"),
+            ({"query_signals": hal_pb2.QuerySignalsCommand(pattern="*")}, "QuerySignals"),
+            ({"query_params": hal_pb2.QueryParamsCommand(pattern="*")}, "QueryParams"),
+            (
+                {"query_components": hal_pb2.QueryComponentsCommand(pattern="*")},
+                "QueryComponents",
+            ),
+        ],
+    )
+    def test_send_command_refuses_queries_and_names_their_rpc(
+        self, hal_client, command_fields, dedicated_rpc
+    ):
+        """SendCommand has no field for a result, so query commands fail."""
+        command_type = next(iter(command_fields))
+        response = hal_client.SendCommand(hal_pb2.HalCommand(serial=201, **command_fields))
+
+        assert not response.success
+        assert response.serial == 201
+        assert response.error == (
+            f"Command '{command_type}' returns no result through "
+            f"SendCommand. Call the {dedicated_rpc} RPC instead."
+        )
 
     def test_stream_status(self, hal_client):
         """Test StreamStatus returns multiple updates."""
@@ -730,6 +786,78 @@ class TestHalServiceIntegration:
         assert len(updates) == 3
         for status in updates:
             assert status.is_sim is True
+
+
+    def test_watch_values_refuses_no_names(self, hal_client):
+        """Watching nothing is INVALID_ARGUMENT, as on the real server."""
+        stream = hal_client.WatchValues(hal_pb2.WatchRequest(names=[]))
+
+        with pytest.raises(grpc.RpcError) as error_info:
+            next(stream)
+
+        assert error_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert error_info.value.details() == "At least one name must be specified"
+
+    def test_watch_values_refuses_more_than_the_name_limit(self, hal_client):
+        """One distinct name over the limit is INVALID_ARGUMENT with the server's message."""
+        too_many_names = [f"watched.pin-{pin_number}" for pin_number in range(1001)]
+        stream = hal_client.WatchValues(hal_pb2.WatchRequest(names=too_many_names))
+
+        with pytest.raises(grpc.RpcError) as error_info:
+            next(stream)
+
+        assert error_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert error_info.value.details() == (
+            "Too many names to watch: 1001 (the limit is 1000)"
+        )
+
+    def test_watch_values_counts_distinct_names(self, hal_client):
+        """
+        Repeats of a name do not count toward the limit.
+
+        Every name the mock knows, 200 times over: 1600 names in the request,
+        8 distinct ones. The stream is accepted, which shows as the deadline
+        passing with nothing sent; a refusal would arrive at once.
+        """
+        known_names = [
+            "axis.x.pos-cmd", "spindle.0.speed-out", "iocontrol.0.emc-enable-in",
+            "x-pos-cmd", "spindle-speed",
+            "pid.x.Pgain", "stepgen.0.maxvel", "motion.servo.overruns",
+        ]
+        stream = hal_client.WatchValues(
+            hal_pb2.WatchRequest(names=known_names * 200), timeout=1.0
+        )
+
+        with pytest.raises(grpc.RpcError) as error_info:
+            next(stream)
+
+        assert error_info.value.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+
+    def test_watch_values_refuses_a_name_it_cannot_read(self, hal_client):
+        """An unknown name is INVALID_ARGUMENT at the start, as on the real server."""
+        stream = hal_client.WatchValues(
+            hal_pb2.WatchRequest(names=["axis.x.pos-cmd", "no.such-pin"])
+        )
+
+        with pytest.raises(grpc.RpcError) as error_info:
+            next(stream)
+
+        assert error_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert error_info.value.details().startswith("Cannot watch 'no.such-pin': ")
+
+    def test_watch_values_sends_nothing_while_nothing_changes(self, hal_client):
+        """Batches are sent on change only; the mock's values never change."""
+        stream = hal_client.WatchValues(
+            hal_pb2.WatchRequest(names=["axis.x.pos-cmd"], interval_ms=10), timeout=1.0
+        )
+        received_batches = []
+
+        with pytest.raises(grpc.RpcError) as error_info:
+            for batch in stream:
+                received_batches.append(batch)
+
+        assert error_info.value.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+        assert received_batches == []
 
 
 # =============================================================================

@@ -9,7 +9,7 @@ import time
 import logging
 import fnmatch
 import threading
-from typing import Iterator, Dict, Any
+from typing import Iterator, Dict, Any, List, Optional
 
 import grpc
 
@@ -23,13 +23,68 @@ except ImportError as e:
     ) from e
 
 from linuxcnc_pb import hal_pb2, hal_pb2_grpc
-from .hal_mapper import HalMapper
+from .hal_mapper import (
+    HalMapper,
+    HalSystemInfo,
+    read_hal_message_level,
+    read_hal_system_info,
+    read_hal_type_constants,
+    values_differ,
+)
 
 logger = logging.getLogger(__name__)
 
 # The serial fields in the responses are int32; the server's own counter
 # wraps to 1 after this value.
 MAX_RESPONSE_SERIAL = 2**31 - 1
+
+# Streaming RPCs poll at the interval the client asks for, within these bounds.
+DEFAULT_STREAM_INTERVAL_MS = 100
+MAX_STREAM_INTERVAL_SECONDS = 60.0
+
+# A stream ends with an error status after this many failed polls in a row.
+MAX_CONSECUTIVE_POLL_ERRORS = 5
+
+# Most names one WatchValues call may watch; every name is read on every poll.
+MAX_WATCHED_NAMES = 1000
+
+# StreamStatus asks HAL which pins have a writer at most this often. Each
+# answer costs a walk of HAL's pin list, and links rarely change.
+PIN_WRITERS_REFRESH_SECONDS = 2.0
+
+# SendCommand cannot return query results; these commands have their own RPC.
+DEDICATED_RPC_FOR_COMMAND = {
+    'get_value': 'GetValue',
+    'query_pins': 'QueryPins',
+    'query_signals': 'QuerySignals',
+    'query_params': 'QueryParams',
+    'query_components': 'QueryComponents',
+}
+
+
+def stream_interval_seconds(interval_ms: int) -> float:
+    """
+    Turn a requested poll interval into seconds.
+
+    Zero or less means the default (100 ms). Anything above
+    MAX_STREAM_INTERVAL_SECONDS is clamped to it, not rejected.
+    """
+    if interval_ms <= 0:
+        interval_ms = DEFAULT_STREAM_INTERVAL_MS
+    return min(interval_ms / 1000.0, MAX_STREAM_INTERVAL_SECONDS)
+
+
+def watch_for_cancellation(context: grpc.ServicerContext) -> threading.Event:
+    """
+    Return an event that is set when the RPC ends (cancel, disconnect, deadline).
+
+    Waiting on it instead of sleeping lets a stream give its worker thread
+    back at once. It is already set if the RPC ended before this call.
+    """
+    cancelled = threading.Event()
+    if not context.add_callback(cancelled.set):
+        cancelled.set()
+    return cancelled
 
 
 class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
@@ -41,10 +96,10 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
     not supported and will return errors.
     """
 
-    # Commands allowed in introspection-only mode
+    # Commands SendCommand answers; the other query commands are refused
+    # with the name of their own RPC (DEDICATED_RPC_FOR_COMMAND).
     READ_ONLY_COMMANDS = {
-        'get_value', 'query_pins', 'query_signals', 'query_params',
-        'query_components', 'component_exists', 'component_ready', 'pin_has_writer'
+        'component_exists', 'component_ready', 'pin_has_writer'
     }
 
     def __init__(self):
@@ -71,6 +126,10 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         except Exception as e:
             raise RuntimeError(f"Failed to access HAL: {e}") from e
 
+        # Module constants, fixed for the life of the process.
+        self._type_constants = read_hal_type_constants(hal)
+        self._system_info = read_hal_system_info(hal)
+
     def _next_serial(self) -> int:
         """Get next command serial number, within 1..MAX_RESPONSE_SERIAL."""
         with self._serial_lock:
@@ -84,22 +143,92 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         params = hal.get_info_params()
         return pins, signals, params
 
-    def _get_type_for_name(self, name: str) -> int:
-        """Look up HAL type for a pin, signal, or param by name."""
-        # Check pins first (HAL uses UPPERCASE keys)
-        for pin in hal.get_info_pins():
-            if HalMapper._get(pin, 'name') == name:
-                return HalMapper._get(pin, 'type', HalMapper.HAL_FLOAT)
-        # Check signals
-        for sig in hal.get_info_signals():
-            if HalMapper._get(sig, 'name') == name:
-                return HalMapper._get(sig, 'type', HalMapper.HAL_FLOAT)
-        # Check params (no TYPE field, infer from value)
-        for param in hal.get_info_params():
-            if HalMapper._get(param, 'name') == name:
-                value = HalMapper._get(param, 'value', 0)
-                return HalMapper([], [], [])._infer_type_from_value(value)
-        return HalMapper.HAL_FLOAT
+    def _read_pin_writers(self, pins: List[Dict[str, Any]]) -> Dict[str, bool]:
+        """
+        Ask HAL, pin by pin, whether the pin's signal has a writer.
+
+        A pin that cannot be asked (it went away since the listing) is left
+        out; the mapper then falls back to what the signal list shows.
+        """
+        pin_writers: Dict[str, bool] = {}
+        for pin in pins:
+            try:
+                name = HalMapper._get(pin, 'name', '')
+                # A name that cannot be a key cannot be looked up either.
+                hash(name)
+            except Exception as e:
+                # One odd item must not cost the client the whole listing.
+                logger.warning(f"Skipping HAL pin whose name cannot be read ({pin!r}): {e}")
+                continue
+            try:
+                has_writer = hal.pin_has_writer(name)
+            except Exception:
+                continue
+            if isinstance(has_writer, bool):
+                pin_writers[name] = has_writer
+        return pin_writers
+
+    @staticmethod
+    def _items_with_name_matching(
+        items: List[Dict[str, Any]], pattern: str
+    ) -> List[Dict[str, Any]]:
+        """
+        The items whose name matches the glob pattern.
+
+        An item whose name cannot be matched (the item is not a dict, or the
+        name is not a string) is left out and logged, as the mapper's
+        map_each does, so it does not fail the query for the other items.
+        """
+        matching_items = []
+        for item in items:
+            try:
+                name_matches = fnmatch.fnmatch(HalMapper._get(item, 'name', ''), pattern)
+            except Exception as e:
+                logger.warning(f"Skipping HAL item whose name cannot be matched ({item!r}): {e}")
+                continue
+            if name_matches:
+                matching_items.append(item)
+        return matching_items
+
+    def _current_system_info(self) -> HalSystemInfo:
+        """The module constants plus the message level as it is now."""
+        return HalSystemInfo(
+            message_level=read_hal_message_level(hal),
+            is_sim=self._system_info.is_sim,
+            is_rt=self._system_info.is_rt,
+            is_userspace=self._system_info.is_userspace,
+            kernel_version=self._system_info.kernel_version,
+        )
+
+    def _new_mapper(
+        self,
+        pins: List[Dict[str, Any]],
+        signals: List[Dict[str, Any]],
+        params: List[Dict[str, Any]],
+        pin_writers: Optional[Dict[str, bool]] = None,
+        system_info: Optional[HalSystemInfo] = None,
+    ) -> HalMapper:
+        """Create a mapper that uses this HAL's type numbers."""
+        return HalMapper(
+            pins, signals, params,
+            type_constants=self._type_constants,
+            pin_writers=pin_writers,
+            system_info=system_info,
+        )
+
+    def _build_system_status(
+        self, pin_writers: Optional[Dict[str, bool]] = None
+    ) -> hal_pb2.HalSystemStatus:
+        """Read everything from HAL and map it to a HalSystemStatus."""
+        pins, signals, params = self._get_hal_data()
+        if pin_writers is None:
+            pin_writers = self._read_pin_writers(pins)
+        mapper = self._new_mapper(
+            pins, signals, params,
+            pin_writers=pin_writers,
+            system_info=self._current_system_info(),
+        )
+        return mapper.map_to_proto()
 
     # =========================================================================
     # GetSystemStatus RPC
@@ -113,13 +242,11 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         """Get complete HAL system status."""
         logger.debug("GetSystemStatus called")
         try:
-            pins, signals, params = self._get_hal_data()
-            mapper = HalMapper(pins, signals, params)
-            status = mapper.map_to_proto()
-            return status
+            return self._build_system_status()
         except Exception as e:
             logger.error(f"GetSystemStatus failed: {e}")
             context.abort(grpc.StatusCode.INTERNAL, str(e))
+            return hal_pb2.HalSystemStatus()
 
     # =========================================================================
     # SendCommand RPC (Introspection-only)
@@ -134,12 +261,25 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         Handle HAL commands.
 
         This service is introspection-only, so modification commands
-        will return an error. Query commands are supported but should
-        preferably use the dedicated Query* RPCs.
+        return an error. Only component_exists, component_ready and
+        pin_has_writer are answered here. The response has no field for a
+        value or a list, so get_value and the query_* commands fail with the
+        name of the RPC to call instead.
         """
         serial = request.serial or self._next_serial()
         command_type = request.WhichOneof("command")
         logger.debug(f"SendCommand: {command_type} (serial={serial})")
+
+        dedicated_rpc = DEDICATED_RPC_FOR_COMMAND.get(command_type)
+        if dedicated_rpc is not None:
+            return hal_pb2.HalCommandResponse(
+                serial=serial,
+                success=False,
+                error=(
+                    f"Command '{command_type}' returns no result through "
+                    f"SendCommand. Call the {dedicated_rpc} RPC instead."
+                )
+            )
 
         # Reject modification commands
         if command_type not in self.READ_ONLY_COMMANDS:
@@ -179,20 +319,13 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
                         success=False,
                         error=f"Component '{name}' does not exist"
                     )
-            elif command_type == 'pin_has_writer':
+            else:
                 name = request.pin_has_writer.name
                 has_writer = hal.pin_has_writer(name)
                 return hal_pb2.HalCommandResponse(
                     serial=serial,
                     success=True,
                     error="" if has_writer else f"Pin '{name}' has no writer"
-                )
-            else:
-                # Other read-only commands should use dedicated RPCs
-                return hal_pb2.HalCommandResponse(
-                    serial=serial,
-                    success=True,
-                    error=""
                 )
         except Exception as e:
             logger.error(f"SendCommand error for {command_type}: {e}")
@@ -216,18 +349,19 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
 
         try:
             value = hal.get_value(request.name)
-            hal_type = self._get_type_for_name(request.name)
-
-            # Create mapper for value conversion
-            mapper = HalMapper([], [], [])
-            hal_value = mapper.map_value(value, hal_type)
+            mapper = self._new_mapper(*self._get_hal_data())
+            # Where HAL lists no type for the name (a parameter in
+            # LinuxCNC 2.9), the type is worked out from the value just read.
+            value_type, hal_value = mapper.describe_value(
+                value, mapper.declared_types().get(request.name)
+            )
 
             return hal_pb2.GetValueResponse(
                 serial=self._next_serial(),
                 success=True,
                 error="",
                 value=hal_value,
-                type=mapper._map_hal_type(hal_type)
+                type=value_type
             )
         except Exception as e:
             logger.error(f"GetValue failed for {request.name}: {e}")
@@ -254,15 +388,16 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
 
         try:
             all_pins = hal.get_info_pins()
-            mapper = HalMapper(all_pins, [], [])
 
             if pattern == "*":
                 matching = all_pins
             else:
-                matching = [p for p in all_pins
-                           if fnmatch.fnmatch(HalMapper._get(p, 'name', ''), pattern)]
+                matching = self._items_with_name_matching(all_pins, pattern)
 
-            pins = [mapper.map_pin(p) for p in matching]
+            mapper = self._new_mapper(
+                all_pins, [], [], pin_writers=self._read_pin_writers(matching)
+            )
+            pins = mapper.map_each(mapper.map_pin, matching)
 
             return hal_pb2.QueryPinsResponse(
                 serial=self._next_serial(),
@@ -295,15 +430,14 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         try:
             all_pins = hal.get_info_pins()
             all_signals = hal.get_info_signals()
-            mapper = HalMapper(all_pins, all_signals, [])
+            mapper = self._new_mapper(all_pins, all_signals, [])
 
             if pattern == "*":
                 matching = all_signals
             else:
-                matching = [s for s in all_signals
-                           if fnmatch.fnmatch(HalMapper._get(s, 'name', ''), pattern)]
+                matching = self._items_with_name_matching(all_signals, pattern)
 
-            signals = [mapper.map_signal(s) for s in matching]
+            signals = mapper.map_each(mapper.map_signal, matching)
 
             return hal_pb2.QuerySignalsResponse(
                 serial=self._next_serial(),
@@ -335,15 +469,14 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
 
         try:
             all_params = hal.get_info_params()
-            mapper = HalMapper([], [], all_params)
+            mapper = self._new_mapper([], [], all_params)
 
             if pattern == "*":
                 matching = all_params
             else:
-                matching = [p for p in all_params
-                           if fnmatch.fnmatch(HalMapper._get(p, 'name', ''), pattern)]
+                matching = self._items_with_name_matching(all_params, pattern)
 
-            params = [mapper.map_param(p) for p in matching]
+            params = mapper.map_each(mapper.map_param, matching)
 
             return hal_pb2.QueryParamsResponse(
                 serial=self._next_serial(),
@@ -369,13 +502,20 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         request: hal_pb2.QueryComponentsCommand,
         context: grpc.ServicerContext
     ) -> hal_pb2.QueryComponentsResponse:
-        """Query components matching a pattern."""
+        """
+        Query components matching a pattern.
+
+        The hal module has no component list, so components are inferred
+        from pin and parameter names (the part before the last dot). Only
+        name, pins and params are filled in; ready, type and pid are not known
+        and stay at their defaults.
+        """
         pattern = request.pattern or "*"
         logger.debug(f"QueryComponents called - pattern={pattern}")
 
         try:
             pins, signals, params = self._get_hal_data()
-            mapper = HalMapper(pins, signals, params)
+            mapper = self._new_mapper(pins, signals, params)
 
             # Get all components from the mapper's derived list
             all_components = list(mapper._components.values())
@@ -383,10 +523,9 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
             if pattern == "*":
                 matching = all_components
             else:
-                matching = [c for c in all_components
-                           if fnmatch.fnmatch(c.get('name', ''), pattern)]
+                matching = self._items_with_name_matching(all_components, pattern)
 
-            components = [mapper.map_component(c) for c in matching]
+            components = mapper.map_each(mapper.map_component, matching)
 
             return hal_pb2.QueryComponentsResponse(
                 serial=self._next_serial(),
@@ -412,36 +551,53 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         request: hal_pb2.HalStreamStatusRequest,
         context: grpc.ServicerContext
     ) -> Iterator[hal_pb2.HalSystemStatus]:
-        """Stream HAL system status updates."""
-        interval_ms = request.interval_ms if request.interval_ms > 0 else 100
-        interval = interval_ms / 1000.0
-        logger.info(f"StreamStatus started - interval={interval_ms}ms")
+        """
+        Stream HAL system status updates.
+
+        interval_ms of 0 means 100 ms; an interval above 60 s is clamped to
+        60 s. The wait between polls ends at once when the client cancels or
+        disconnects. has_writer is refreshed every 2 s, not on every poll.
+        """
+        interval = stream_interval_seconds(request.interval_ms)
+        cancelled = watch_for_cancellation(context)
+        logger.info(f"StreamStatus started - interval={interval}s")
 
         consecutive_errors = 0
-        max_consecutive_errors = 5
+        abort_details = None
+        pin_writers: Dict[str, bool] = {}
+        pin_writers_read_at = None
 
         try:
-            while context.is_active():
+            while not cancelled.is_set() and context.is_active():
                 try:
-                    pins, signals, params = self._get_hal_data()
-                    mapper = HalMapper(pins, signals, params)
-                    status = mapper.map_to_proto()
-                    yield status
-                    consecutive_errors = 0
+                    if (
+                        pin_writers_read_at is None
+                        or time.monotonic() - pin_writers_read_at >= PIN_WRITERS_REFRESH_SECONDS
+                    ):
+                        pin_writers = self._read_pin_writers(hal.get_info_pins())
+                        pin_writers_read_at = time.monotonic()
+                    status = self._build_system_status(pin_writers)
                 except Exception as e:
                     consecutive_errors += 1
-                    logger.error(f"StreamStatus poll error ({consecutive_errors}/{max_consecutive_errors}): {e}")
-                    if consecutive_errors >= max_consecutive_errors:
-                        context.abort(grpc.StatusCode.INTERNAL, f"Too many consecutive errors: {e}")
-                        return
-                time.sleep(interval)
-        except grpc.RpcError:
-            pass  # Client disconnected; normal shutdown
-        except Exception as e:
-            logger.error(f"StreamStatus error: {e}")
-            context.abort(grpc.StatusCode.INTERNAL, f"Stream failed: {e}")
+                    logger.error(
+                        f"StreamStatus poll error "
+                        f"({consecutive_errors}/{MAX_CONSECUTIVE_POLL_ERRORS}): {e}"
+                    )
+                    if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
+                        abort_details = f"Too many consecutive errors: {e}"
+                        break
+                else:
+                    consecutive_errors = 0
+                    yield status
+                cancelled.wait(interval)
         finally:
             logger.info("StreamStatus ended")
+
+        # Outside the try: abort raises, and nothing may catch that and
+        # replace the status with another one.
+        if abort_details is not None:
+            context.abort(grpc.StatusCode.INTERNAL, abort_details)
+            return
 
     # =========================================================================
     # WatchValues RPC
@@ -452,10 +608,20 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
         request: hal_pb2.WatchRequest,
         context: grpc.ServicerContext
     ) -> Iterator[hal_pb2.ValueChangeBatch]:
-        """Watch for value changes using polling-based change detection."""
-        interval_ms = request.interval_ms if request.interval_ms > 0 else 100
-        interval = interval_ms / 1000.0
-        names = list(request.names) if request.names else []
+        """
+        Watch for value changes using polling-based change detection.
+
+        Names are de-duplicated; more than MAX_WATCHED_NAMES distinct names
+        is INVALID_ARGUMENT, as is a name that cannot be read at the start.
+        interval_ms of 0 means 100 ms; an interval above 60 s is clamped to
+        60 s. The wait between polls ends at once when the client cancels or
+        disconnects. If a watched name cannot be read for
+        MAX_CONSECUTIVE_POLL_ERRORS polls in a row (it was removed, say), the
+        stream ends with INTERNAL and names it; changes of the other names
+        are still sent until then. Two NaN readings count as unchanged.
+        """
+        interval = stream_interval_seconds(request.interval_ms)
+        names = list(dict.fromkeys(request.names))
 
         if not names:
             logger.warning("WatchValues called with no names to watch")
@@ -463,45 +629,66 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
             context.set_details("At least one name must be specified")
             return
 
-        logger.info(f"WatchValues started - names={names}, interval={interval_ms}ms")
+        if len(names) > MAX_WATCHED_NAMES:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"Too many names to watch: {len(names)} (the limit is {MAX_WATCHED_NAMES})"
+            )
+            return
 
-        # Track previous values for change detection
-        previous_values: Dict[str, Any] = {}
-        previous_types: Dict[str, int] = {}
+        cancelled = watch_for_cancellation(context)
+        logger.info(f"WatchValues started - {len(names)} names, interval={interval}s")
+
+        # One read of the HAL lists gives the type of every watched name.
+        try:
+            mapper = self._new_mapper(*self._get_hal_data())
+            declared_types = mapper.declared_types()
+        except Exception as e:
+            logger.error(f"WatchValues could not read HAL: {e}")
+            context.abort(grpc.StatusCode.INTERNAL, f"Cannot read HAL: {e}")
+            return
 
         # Initialize with current values - fail fast on invalid names
+        previous_values: Dict[str, Any] = {}
         for name in names:
+            if cancelled.is_set() or not context.is_active():
+                return
             try:
                 previous_values[name] = hal.get_value(name)
-                previous_types[name] = self._get_type_for_name(name)
             except Exception as e:
                 logger.error(f"Invalid watch target '{name}': {e}")
                 context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Cannot watch '{name}': {e}")
                 return
 
-        # Create mapper for value conversion
-        mapper = HalMapper([], [], [])
+        consecutive_errors = 0
+        abort_details = None
 
         try:
-            while context.is_active():
+            while not cancelled.is_set() and context.is_active():
                 changes = []
+                poll_error = None
 
                 for name in names:
                     try:
                         current = hal.get_value(name)
-                        hal_type = previous_types.get(name, HalMapper.HAL_FLOAT)
+                        previous = previous_values[name]
 
-                        if name in previous_values and current != previous_values[name]:
+                        if values_differ(previous, current):
+                            hal_type = declared_types.get(name)
+                            if hal_type is None:
+                                hal_type = mapper.infer_type_from_values(previous, current)
                             changes.append(hal_pb2.ValueChange(
                                 timestamp=int(time.time() * 1e9),
                                 name=name,
-                                old_value=mapper.map_value(previous_values[name], hal_type),
+                                old_value=mapper.map_value(previous, hal_type),
                                 new_value=mapper.map_value(current, hal_type)
                             ))
 
                         previous_values[name] = current
                     except Exception as e:
                         logger.warning(f"Error polling {name}: {e}")
+                        if poll_error is None:
+                            poll_error = f"cannot read '{name}': {e}"
 
                 if changes:
                     yield hal_pb2.ValueChangeBatch(
@@ -509,11 +696,20 @@ class HalServiceServicer(hal_pb2_grpc.HalServiceServicer):
                         changes=changes
                     )
 
-                time.sleep(interval)
-        except grpc.RpcError:
-            pass  # Client disconnected; normal shutdown
-        except Exception as e:
-            logger.error(f"WatchValues error: {e}")
-            context.abort(grpc.StatusCode.INTERNAL, f"Stream failed: {e}")
+                if poll_error is None:
+                    consecutive_errors = 0
+                else:
+                    consecutive_errors += 1
+                    if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
+                        abort_details = f"Too many consecutive errors: {poll_error}"
+                        break
+
+                cancelled.wait(interval)
         finally:
             logger.info("WatchValues ended")
+
+        # Outside the try: abort raises, and nothing may catch that and
+        # replace the status with another one.
+        if abort_details is not None:
+            context.abort(grpc.StatusCode.INTERNAL, abort_details)
+            return

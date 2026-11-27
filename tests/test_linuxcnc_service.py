@@ -2604,6 +2604,30 @@ class TestResponseSerialCounter:
         assert linuxcnc_pb2.CommandResponse(serial=service._next_serial()).serial == 3
 
 
+def record_stream_waits(mock_grpc_context):
+    """
+    Record how long a StreamStatus call waits between updates, without waiting.
+
+    The stream hands its wake-up event's set() to context.add_callback. This
+    takes the event from there and replaces its wait() with one that records
+    the timeout and reports "not woken". Returns the list of timeouts.
+    """
+    waited_seconds = []
+
+    def capture_wake_event(wake_callback):
+        wake_event = wake_callback.__self__
+
+        def record_wait(timeout=None):
+            waited_seconds.append(timeout)
+            return False
+
+        wake_event.wait = record_wait
+        return True
+
+    mock_grpc_context.add_callback.side_effect = capture_wake_event
+    return waited_seconds
+
+
 class TestStreamStatus:
     """Test StreamStatus RPC."""
 
@@ -2645,14 +2669,13 @@ class TestStreamStatus:
             from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
             from linuxcnc_pb import linuxcnc_pb2
 
-            # Patch time.sleep after import
-            with patch("linuxcnc_grpc.linuxcnc_service.time.sleep") as mock_sleep:
-                service = LinuxCNCServiceServicer()
-                request = linuxcnc_pb2.StreamStatusRequest(interval_ms=0)
+            service = LinuxCNCServiceServicer()
+            waited_seconds = record_stream_waits(mock_grpc_context)
+            request = linuxcnc_pb2.StreamStatusRequest(interval_ms=0)
 
-                list(service.StreamStatus(request, mock_grpc_context))
+            list(service.StreamStatus(request, mock_grpc_context))
 
-                mock_sleep.assert_called_with(0.1)
+            assert waited_seconds == [0.1]
 
 
 class TestOverrideLimitsCommand:
@@ -4003,3 +4026,437 @@ class TestWaitCompleteTimeoutValues:
 
         assert acquired
         service._lock.release()
+
+
+class TestStreamStatusWaiting:
+    """How StreamStatus waits between updates, and what ends the wait."""
+
+    @staticmethod
+    def _make_service(mock_linuxcnc_module, mock_linuxcnc_stat):
+        return make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, MagicMock())
+
+    @pytest.mark.parametrize(
+        "requested_interval_ms, expected_wait_seconds",
+        [
+            (250, 0.25),
+            (60_000, 60.0),
+            (60_001, 60.0),
+            (2_147_483_647, 60.0),
+            (-5, 0.1),
+        ],
+    )
+    def test_interval_is_bounded(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+        requested_interval_ms, expected_wait_seconds,
+    ):
+        """An interval above the maximum is shortened to it, not refused."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        import time
+
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat)
+        mock_grpc_context.is_active.side_effect = [True, True, False]
+        waited_seconds = record_stream_waits(mock_grpc_context)
+
+        # A stream that slept instead of waiting on its event would stall
+        # the test run for the whole interval; make that fail quickly.
+        with patch.object(time, "sleep") as unexpected_sleep:
+            statuses = list(
+                service.StreamStatus(
+                    linuxcnc_pb2.StreamStatusRequest(interval_ms=requested_interval_ms),
+                    mock_grpc_context,
+                )
+            )
+
+        unexpected_sleep.assert_not_called()
+        assert len(statuses) == 2
+        mock_grpc_context.abort.assert_not_called()
+        assert waited_seconds == [expected_wait_seconds, expected_wait_seconds]
+
+    @staticmethod
+    def _stream_in_a_thread(service, mock_grpc_context, interval_ms):
+        """
+        Start a stream on its own thread, as a server worker would run it.
+
+        Returns the thread, the list its statuses are appended to, an event
+        set once the first status has arrived, and the list that receives
+        the callback the stream registered for the end of the RPC.
+        """
+        import threading
+        from linuxcnc_pb import linuxcnc_pb2
+
+        registered_callbacks = []
+
+        def register_callback(rpc_ended_callback):
+            registered_callbacks.append(rpc_ended_callback)
+            return True
+
+        mock_grpc_context.add_callback.side_effect = register_callback
+        received_statuses = []
+        first_status_received = threading.Event()
+
+        def consume_stream():
+            for status in service.StreamStatus(
+                linuxcnc_pb2.StreamStatusRequest(interval_ms=interval_ms), mock_grpc_context
+            ):
+                received_statuses.append(status)
+                first_status_received.set()
+
+        stream_thread = threading.Thread(target=consume_stream, daemon=True)
+        stream_thread.start()
+        return stream_thread, received_statuses, first_status_received, registered_callbacks
+
+    def test_client_cancelling_ends_a_long_wait_at_once(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat)
+        stream_thread, received_statuses, first_status_received, registered_callbacks = (
+            self._stream_in_a_thread(service, mock_grpc_context, interval_ms=60_000)
+        )
+        assert first_status_received.wait(10)
+
+        # What gRPC does when the client cancels or its connection drops.
+        registered_callbacks[0]()
+        stream_thread.join(10)
+
+        assert not stream_thread.is_alive(), "the stream kept waiting after the RPC ended"
+        assert len(received_statuses) == 1
+        assert service._stream_wake_events == set()
+
+    def test_closing_the_servicer_ends_a_long_wait_at_once(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat)
+        stream_thread, received_statuses, first_status_received, _ = (
+            self._stream_in_a_thread(service, mock_grpc_context, interval_ms=60_000)
+        )
+        assert first_status_received.wait(10)
+
+        service.close()
+        stream_thread.join(10)
+
+        assert not stream_thread.is_alive(), "the stream kept waiting after close()"
+        assert len(received_statuses) == 1
+
+    def test_stream_started_after_close_sends_nothing(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        import time
+
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat)
+        service.close()
+        # Bounded, so a stream that did start ends instead of running on.
+        mock_grpc_context.is_active.side_effect = [True, False]
+
+        with patch.object(time, "sleep"):
+            statuses = list(
+                service.StreamStatus(
+                    linuxcnc_pb2.StreamStatusRequest(interval_ms=60_000), mock_grpc_context
+                )
+            )
+
+        assert statuses == []
+        assert service._stream_wake_events == set()
+
+    def test_rpc_that_is_already_over_sends_nothing(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """add_callback returns False when the RPC has already ended."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        import time
+
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat)
+        mock_grpc_context.add_callback.return_value = False
+        # Bounded, so a stream that did start ends instead of running on.
+        mock_grpc_context.is_active.side_effect = [True, False]
+
+        with patch.object(time, "sleep"):
+            statuses = list(
+                service.StreamStatus(
+                    linuxcnc_pb2.StreamStatusRequest(interval_ms=60_000), mock_grpc_context
+                )
+            )
+
+        assert statuses == []
+        assert service._stream_wake_events == set()
+
+
+def context_whose_abort_raises():
+    """
+    A context that behaves like real gRPC: abort() raises a bare Exception.
+
+    Every abort is still recorded, so a test can check that an RPC aborted
+    exactly once and that no handler caught the abort and aborted again.
+    """
+    context = MagicMock(spec=grpc.ServicerContext)
+    context.is_active.return_value = True
+    context.abort.side_effect = Exception()
+    return context
+
+
+def abort_codes(context):
+    """The status code of every abort the context received, in order."""
+    return [abort_call.args[0] for abort_call in context.abort.call_args_list]
+
+
+NULL_WITHOUT_EXCEPTION = "error return without exception set"
+
+
+class TestUnexpectedPollErrors:
+    """
+    A status poll that fails with something other than linuxcnc.error.
+
+    The RPCs that poll answer INTERNAL (WaitComplete: RCS_ERROR) instead of
+    letting the exception reach the client as UNKNOWN, and their deliberate
+    aborts keep their own status codes.
+    """
+
+    @pytest.fixture
+    def service(self, mock_linuxcnc_module, mock_linuxcnc_stat, tmp_path):
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            sys.modules.pop("linuxcnc_grpc.linuxcnc_service", None)
+            sys.modules.pop("linuxcnc_grpc.machine_config", None)
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+
+            servicer = LinuxCNCServiceServicer(nc_files_dir=str(tmp_path))
+        # A reconnect would hide the result under test and must not happen.
+        servicer._reconnect = MagicMock(return_value=False)
+        yield servicer
+        servicer.close()
+
+    @staticmethod
+    def _assert_single_internal_abort(context, rpc_name, error_type_name, error_text):
+        assert abort_codes(context) == [grpc.StatusCode.INTERNAL]
+        details = context.abort.call_args.args[1]
+        assert details == f"{rpc_name} failed: {error_type_name}: {error_text}"
+
+    # ---- GetStatus -------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "unexpected_error",
+        [SystemError(NULL_WITHOUT_EXCEPTION), ValueError("unknown task mode 99")],
+    )
+    def test_get_status_is_internal(self, service, mock_linuxcnc_stat, unexpected_error):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = unexpected_error
+
+        with pytest.raises(Exception) as raised:
+            service.GetStatus(linuxcnc_pb2.GetStatusRequest(), context)
+
+        # What left the RPC is the abort, not the poll's exception.
+        assert raised.value is context.abort.side_effect
+        self._assert_single_internal_abort(
+            context, "GetStatus", type(unexpected_error).__name__, str(unexpected_error)
+        )
+        service._reconnect.assert_not_called()
+
+    def test_get_status_linuxcnc_error_is_still_unavailable(
+        self, service, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = mock_linuxcnc_module.error("NML gone")
+
+        with pytest.raises(Exception):
+            service.GetStatus(linuxcnc_pb2.GetStatusRequest(), context)
+
+        assert abort_codes(context) == [grpc.StatusCode.UNAVAILABLE]
+
+    def test_get_status_while_disconnected_is_still_unavailable(self, service):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        service._connected = False
+
+        with pytest.raises(Exception):
+            service.GetStatus(linuxcnc_pb2.GetStatusRequest(), context)
+
+        assert abort_codes(context) == [grpc.StatusCode.UNAVAILABLE]
+
+    # ---- WaitComplete ----------------------------------------------------
+
+    def test_wait_complete_is_rcs_error(self, service, mock_linuxcnc_stat):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = SystemError(NULL_WITHOUT_EXCEPTION)
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=7, timeout=1.0), context
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.serial == 7
+        assert response.error_message == (
+            f"WaitComplete failed: SystemError: {NULL_WITHOUT_EXCEPTION}"
+        )
+        context.abort.assert_not_called()
+        service._reconnect.assert_not_called()
+
+    def test_wait_complete_while_disconnected_is_still_unavailable(self, service):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        service._connected = False
+
+        with pytest.raises(Exception):
+            service.WaitComplete(linuxcnc_pb2.WaitCompleteRequest(timeout=1.0), context)
+
+        assert abort_codes(context) == [grpc.StatusCode.UNAVAILABLE]
+
+    # ---- StreamStatus ----------------------------------------------------
+
+    def test_stream_status_is_internal_after_the_statuses_already_sent(
+        self, service, mock_linuxcnc_stat
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = [None, SystemError(NULL_WITHOUT_EXCEPTION)]
+        stream = service.StreamStatus(linuxcnc_pb2.StreamStatusRequest(interval_ms=1), context)
+
+        first_status = next(stream)
+        with pytest.raises(Exception) as raised:
+            next(stream)
+
+        assert first_status.timestamp > 0
+        assert raised.value is context.abort.side_effect
+        self._assert_single_internal_abort(
+            context, "StreamStatus", "SystemError", NULL_WITHOUT_EXCEPTION
+        )
+        service._reconnect.assert_not_called()
+        assert service._stream_wake_events == set()
+
+    def test_stream_status_linuxcnc_error_is_still_unavailable(
+        self, service, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = mock_linuxcnc_module.error("NML gone")
+        stream = service.StreamStatus(linuxcnc_pb2.StreamStatusRequest(interval_ms=1), context)
+
+        with pytest.raises(Exception):
+            next(stream)
+
+        assert abort_codes(context) == [grpc.StatusCode.UNAVAILABLE]
+        assert service._stream_wake_events == set()
+
+    def test_stream_status_os_error_keeps_its_message(self, service, mock_linuxcnc_stat):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = OSError("pipe closed")
+        stream = service.StreamStatus(linuxcnc_pb2.StreamStatusRequest(interval_ms=1), context)
+
+        with pytest.raises(Exception):
+            next(stream)
+
+        assert context.abort.call_args_list == [
+            call(grpc.StatusCode.INTERNAL, "Stream failed: pipe closed")
+        ]
+
+    # ---- ResolveFile -----------------------------------------------------
+
+    def test_resolve_file_os_error_keeps_its_message(self, service, mock_linuxcnc_stat):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = OSError("pipe closed")
+
+        with pytest.raises(Exception):
+            service.ResolveFile(linuxcnc_pb2.ResolveFileRequest(filename="part.ngc"), context)
+
+        assert context.abort.call_args_list == [
+            call(grpc.StatusCode.INTERNAL, "Failed to resolve file: pipe closed")
+        ]
+
+    def test_resolve_file_is_internal(self, service, mock_linuxcnc_stat):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = SystemError(NULL_WITHOUT_EXCEPTION)
+
+        with pytest.raises(Exception) as raised:
+            service.ResolveFile(linuxcnc_pb2.ResolveFileRequest(filename="part.ngc"), context)
+
+        assert raised.value is context.abort.side_effect
+        self._assert_single_internal_abort(
+            context, "ResolveFile", "SystemError", NULL_WITHOUT_EXCEPTION
+        )
+        service._reconnect.assert_not_called()
+
+    def test_resolve_file_deliberate_aborts_keep_their_codes(
+        self, service, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        bad_name_context = context_whose_abort_raises()
+        with pytest.raises(Exception):
+            service.ResolveFile(
+                linuxcnc_pb2.ResolveFileRequest(filename="../outside.ngc"), bad_name_context
+            )
+        assert abort_codes(bad_name_context) == [grpc.StatusCode.INVALID_ARGUMENT]
+
+        linuxcnc_error_context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = mock_linuxcnc_module.error("NML gone")
+        with pytest.raises(Exception):
+            service.ResolveFile(
+                linuxcnc_pb2.ResolveFileRequest(filename="part.ngc"), linuxcnc_error_context
+            )
+        assert abort_codes(linuxcnc_error_context) == [grpc.StatusCode.UNAVAILABLE]
+
+        disconnected_context = context_whose_abort_raises()
+        service._connected = False
+        with pytest.raises(Exception):
+            service.ResolveFile(
+                linuxcnc_pb2.ResolveFileRequest(filename="part.ngc"), disconnected_context
+            )
+        assert abort_codes(disconnected_context) == [grpc.StatusCode.UNAVAILABLE]
+
+    # ---- GetMachineConfig ------------------------------------------------
+
+    def test_get_machine_config_is_internal(self, service, mock_linuxcnc_stat):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = SystemError(NULL_WITHOUT_EXCEPTION)
+
+        with pytest.raises(Exception) as raised:
+            service.GetMachineConfig(linuxcnc_pb2.GetMachineConfigRequest(), context)
+
+        assert raised.value is context.abort.side_effect
+        self._assert_single_internal_abort(
+            context, "GetMachineConfig", "SystemError", NULL_WITHOUT_EXCEPTION
+        )
+        service._reconnect.assert_not_called()
+
+    def test_get_machine_config_deliberate_aborts_keep_their_codes(
+        self, service, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        linuxcnc_error_context = context_whose_abort_raises()
+        mock_linuxcnc_stat.poll.side_effect = mock_linuxcnc_module.error("NML gone")
+        with pytest.raises(Exception):
+            service.GetMachineConfig(
+                linuxcnc_pb2.GetMachineConfigRequest(), linuxcnc_error_context
+            )
+        assert abort_codes(linuxcnc_error_context) == [grpc.StatusCode.UNAVAILABLE]
+
+        disconnected_context = context_whose_abort_raises()
+        service._connected = False
+        with pytest.raises(Exception):
+            service.GetMachineConfig(
+                linuxcnc_pb2.GetMachineConfigRequest(), disconnected_context
+            )
+        assert abort_codes(disconnected_context) == [grpc.StatusCode.UNAVAILABLE]

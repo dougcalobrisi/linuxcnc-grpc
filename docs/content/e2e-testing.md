@@ -9,7 +9,7 @@ state, commands, HAL data, and file management.
 
 ## What E2E Tests Cover
 
-The suite has ~50 tests organized into these areas:
+The suite has about 60 tests organized into these areas:
 
 - **Status** — version, joints, INI filename, positions, task state
 - **State transitions** — estop/recovery, on/off, mode changes

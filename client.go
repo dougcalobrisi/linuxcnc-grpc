@@ -261,6 +261,7 @@ type (
 	HalValue_U32Value   = pb.HalValue_U32Value
 	HalValue_S64Value   = pb.HalValue_S64Value
 	HalValue_U64Value   = pb.HalValue_U64Value
+	HalValue_PortValue  = pb.HalValue_PortValue
 )
 
 // =============================================================================
@@ -470,6 +471,10 @@ type (
 	// Unimplemented server types (for embedding)
 	UnimplementedLinuxCNCServiceServer = pb.UnimplementedLinuxCNCServiceServer
 	UnimplementedHalServiceServer      = pb.UnimplementedHalServiceServer
+
+	// Unsafe server types (embedding one opts out of forward compatibility)
+	UnsafeLinuxCNCServiceServer = pb.UnsafeLinuxCNCServiceServer
+	UnsafeHalServiceServer      = pb.UnsafeHalServiceServer
 )
 
 // =============================================================================

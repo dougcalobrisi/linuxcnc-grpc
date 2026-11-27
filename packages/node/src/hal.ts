@@ -32,11 +32,11 @@ export enum HalType {
   HAL_S32 = 3,
   /** HAL_U32 - Unsigned 32-bit integer */
   HAL_U32 = 4,
-  /** HAL_S64 - Signed 64-bit integer */
+  /** HAL_S64 - Signed integer; only reported for a value that does not fit 32 bits */
   HAL_S64 = 5,
-  /** HAL_U64 - Unsigned 64-bit integer */
+  /** HAL_U64 - Unsigned integer; only reported for a value that does not fit 32 bits */
   HAL_U64 = 6,
-  /** HAL_PORT - Port type (advanced) */
+  /** HAL_PORT - Port type (advanced); the server reports port pins with no value */
   HAL_PORT = 7,
   UNRECOGNIZED = -1,
 }
@@ -264,12 +264,18 @@ export interface HalValue {
   bitValue?: boolean | undefined;
   floatValue?: number | undefined;
   s32Value?: number | undefined;
-  u32Value?: number | undefined;
+  u32Value?:
+    | number
+    | undefined;
+  /**
+   * The two 64-bit values are numbers in the Node.js/TypeScript client:
+   * exact up to 2^53, the nearest number beyond that.
+   */
   s64Value?: number | undefined;
   u64Value?:
     | number
     | undefined;
-  /** Port type (advanced) */
+  /** Port type (advanced); never set by the server */
   portValue?: string | undefined;
 }
 
@@ -289,9 +295,12 @@ export interface HalPinInfo {
   value:
     | HalValue
     | undefined;
-  /** Connected signal name (empty if none) */
+  /** Always empty: LinuxCNC's HAL Python module does not expose the connected signal */
   signal: string;
-  /** True if pin has a writer */
+  /**
+   * True if the pin's signal has a writer. In StreamStatus this is refreshed
+   * every 2 seconds, not with every update.
+   */
   hasWriter: boolean;
 }
 
@@ -329,17 +338,22 @@ export interface HalParamInfo {
   value: HalValue | undefined;
 }
 
-/** Information about a HAL component */
+/**
+ * Information about a HAL component. LinuxCNC's HAL Python module has no
+ * component list, so the server infers components from pin and parameter
+ * names (the part before the last dot). Only name, pins and params are filled
+ * in.
+ */
 export interface HalComponentInfo {
   /** Component name */
   name: string;
-  /** Component ID */
+  /** Component ID; always 0 */
   id: number;
-  /** True if component is ready */
+  /** Never set by the server */
   ready: boolean;
-  /** Component type (RT, user, etc) */
+  /** Never set by the server */
   type: number;
-  /** Process ID (for userspace components) */
+  /** Never set by the server */
   pid: number;
   /** List of pin names */
   pins: string[];
@@ -357,9 +371,9 @@ export interface HalSystemStatus {
   signals: HalSignalInfo[];
   /** All parameters */
   params: HalParamInfo[];
-  /** All components */
+  /** Components inferred from pin and parameter names */
   components: HalComponentInfo[];
-  /** Current message level */
+  /** RTAPI message level of the server process */
   messageLevel: MessageLevel;
   /** Running in simulation */
   isSim: boolean;
@@ -367,7 +381,7 @@ export interface HalSystemStatus {
   isRt: boolean;
   /** Userspace HAL */
   isUserspace: boolean;
-  /** Kernel version */
+  /** Kernel version as HAL reports it; "Not Available" on uspace builds */
   kernelVersion: string;
 }
 
@@ -564,7 +578,13 @@ export interface HalCommand {
   disconnect?:
     | DisconnectCommand
     | undefined;
-  /** Query commands */
+  /**
+   * Query commands. SendCommand answers only component_exists,
+   * component_ready and pin_has_writer. It refuses get_value and the
+   * query_* commands (its response cannot carry a result) and names the RPC
+   * to call instead: GetValue, QueryPins, QuerySignals, QueryParams or
+   * QueryComponents.
+   */
   getValue?: GetValueCommand | undefined;
   queryPins?: QueryPinsCommand | undefined;
   querySignals?: QuerySignalsCommand | undefined;
@@ -642,9 +662,12 @@ export interface QueryComponentsResponse {
 
 /** Subscribe to value changes */
 export interface WatchRequest {
-  /** Pin/signal/param names to watch */
+  /** Pin/signal/param names to watch; duplicates are ignored, at most 1000 names */
   names: string[];
-  /** Minimum update interval in milliseconds (default: 100) */
+  /**
+   * Minimum update interval in milliseconds (default: 100). Values above
+   * 60000 are treated as 60000.
+   */
   intervalMs: number;
 }
 
@@ -673,9 +696,12 @@ export interface GetSystemStatusRequest {
 }
 
 export interface HalStreamStatusRequest {
-  /** Update interval in milliseconds (default: 100) */
+  /**
+   * Update interval in milliseconds (default: 100). Values above 60000 are
+   * treated as 60000.
+   */
   intervalMs: number;
-  /** Optional: only include these components */
+  /** Currently ignored by the server: every component is included */
   filter: string[];
 }
 
@@ -1528,7 +1554,7 @@ export const HalSystemStatus: MessageFns<HalSystemStatus> = {
             break;
           }
 
-          message.timestamp = longToNumber(reader.int64());
+          message.timestamp = timestampToNumber(reader.int64());
           continue;
         }
         case 2: {
@@ -3329,7 +3355,7 @@ export const HalCommand: MessageFns<HalCommand> = {
             break;
           }
 
-          message.timestamp = longToNumber(reader.int64());
+          message.timestamp = timestampToNumber(reader.int64());
           continue;
         }
         case 2: {
@@ -4587,7 +4613,7 @@ export const ValueChange: MessageFns<ValueChange> = {
             break;
           }
 
-          message.timestamp = longToNumber(reader.int64());
+          message.timestamp = timestampToNumber(reader.int64());
           continue;
         }
         case 2: {
@@ -4693,7 +4719,7 @@ export const ValueChangeBatch: MessageFns<ValueChangeBatch> = {
             break;
           }
 
-          message.timestamp = longToNumber(reader.int64());
+          message.timestamp = timestampToNumber(reader.int64());
           continue;
         }
         case 2: {
@@ -5128,7 +5154,21 @@ type KeysOfUnion<T> = T extends T ? keyof T : never;
 type Exact<P, I extends P> = P extends Builtin ? P
   : P & { [K in keyof P]: Exact<P[K], I[K]> } & { [K in Exclude<keyof I, KeysOfUnion<P>>]: never };
 
+/**
+ * A 64-bit integer that is a value, not a timestamp. Beyond 2^53 the result
+ * is the nearest number, so the low digits are lost; it is never scaled.
+ * (Patched in by scripts/generate-protos.sh.)
+ */
 function longToNumber(int64: { toString(): string }): number {
+  return globalThis.Number(int64.toString());
+}
+
+/**
+ * A timestamp. The server sends nanoseconds, which do not fit a number, so a
+ * value beyond the safe integer range is scaled to milliseconds.
+ * (Patched in by scripts/generate-protos.sh.)
+ */
+function timestampToNumber(int64: { toString(): string }): number {
   const num = globalThis.Number(int64.toString());
   if (num > globalThis.Number.MAX_SAFE_INTEGER) {
     return Math.floor(num / 1e6);

@@ -206,6 +206,120 @@ class TestE2EStatus:
         # joints is a repeated JointStatus at the top level
         assert len(status.joints) >= 3
 
+    def test_get_status_lists_only_the_machines_joints_and_spindles(self, linuxcnc_stub):
+        status = linuxcnc_stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
+        # LinuxCNC's own status has 16 joint and 8 spindle entries whatever
+        # the machine has; the server reports the real ones only.
+        assert status.trajectory.joints >= 3
+        assert status.trajectory.spindles >= 1
+        assert len(status.joints) == status.trajectory.joints
+        assert [joint.joint_number for joint in status.joints] == list(
+            range(status.trajectory.joints)
+        )
+        assert len(status.spindles) == status.trajectory.spindles
+        assert len(status.limits.limit_flags) == status.trajectory.joints
+        assert len(status.limits.homed) == status.trajectory.joints
+
+    def test_get_status_tool_table_entries_carry_their_table_index(self, linuxcnc_stub):
+        """
+        table_index is the index pocket_prepped refers to.
+
+        Measured on the sim/axis configuration: ids [-1, 1, 2, 3, 99999, 4]
+        at indices 0..5, and pocket_prepped 5 after "T4". So after preparing
+        a tool, the one entry whose table_index equals pocket_prepped must
+        carry that tool's id; an index shifted by any constant would name
+        another entry or none.
+        """
+        status = linuxcnc_stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
+        tool_table = list(status.tool.tool_table)
+        table_summary = [(tool_entry.table_index, tool_entry.id) for tool_entry in tool_table]
+        assert tool_table, "the simulator's tool table came back empty"
+        assert all(tool_entry.HasField("table_index") for tool_entry in tool_table)
+        table_indices = [tool_entry.table_index for tool_entry in tool_table]
+        # Indices follow LinuxCNC's table order and no two entries share one.
+        assert table_indices == sorted(set(table_indices)), table_summary
+        assert all(tool_entry.id != 0 for tool_entry in tool_table), table_summary
+
+        # A tool that is not the one already prepared or loaded, so that
+        # preparing it changes pocket_prepped. Preferably one whose id differs
+        # from its index (the last such entry: tool 4 at index 5 in sim/axis),
+        # so that the two cannot be mistaken for each other.
+        pocket_prepped_before = status.tool.pocket_prepped
+        candidate_entries = [
+            tool_entry for tool_entry in tool_table
+            if tool_entry.id > 0
+            and tool_entry.table_index != pocket_prepped_before
+            and tool_entry.id != status.tool.tool_in_spindle
+        ]
+        assert candidate_entries, (
+            f"no tool to prepare: table (index, id) = {table_summary}, "
+            f"pocket_prepped = {pocket_prepped_before}, "
+            f"tool_in_spindle = {status.tool.tool_in_spindle}"
+        )
+        entries_with_id_unlike_index = [
+            tool_entry for tool_entry in candidate_entries
+            if tool_entry.id != tool_entry.table_index
+        ]
+        chosen_entry = (entries_with_id_unlike_index or candidate_entries)[-1]
+        chosen_tool_id = chosen_entry.id
+
+        home_all(linuxcnc_stub)
+        try:
+            mode_response = send_mode_command(linuxcnc_stub, linuxcnc_pb2.MODE_MDI)
+            assert mode_response.status != linuxcnc_pb2.RCS_ERROR, mode_response.error_message
+            wait_for_condition(
+                linuxcnc_stub,
+                lambda s: s.task.task_mode == linuxcnc_pb2.MODE_MDI,
+                description="MDI mode for the tool prepare",
+            )
+
+            prepare_response = linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+                mdi=linuxcnc_pb2.MdiCommand(command=f"T{chosen_tool_id}")
+            ))
+            assert prepare_response.status != linuxcnc_pb2.RCS_ERROR, (
+                prepare_response.error_message
+            )
+            assert prepare_response.HasField("linuxcnc_serial")
+            completion = linuxcnc_stub.WaitComplete(linuxcnc_pb2.WaitCompleteRequest(
+                linuxcnc_serial=prepare_response.linuxcnc_serial, timeout=15.0
+            ))
+            assert completion.status == linuxcnc_pb2.RCS_DONE, (
+                f"T{chosen_tool_id}: WaitComplete returned {completion.status}: "
+                f"{completion.error_message}"
+            )
+
+            # The prepare can reach the status a little after the command is done.
+            status_after = wait_for_condition(
+                linuxcnc_stub,
+                lambda s: s.tool.pocket_prepped != pocket_prepped_before,
+                description=(
+                    f"pocket_prepped to change from {pocket_prepped_before} "
+                    f"after T{chosen_tool_id}"
+                ),
+            )
+            pocket_prepped_after = status_after.tool.pocket_prepped
+            table_summary_after = [
+                (tool_entry.table_index, tool_entry.id)
+                for tool_entry in status_after.tool.tool_table
+            ]
+            ids_at_the_prepped_index = [
+                tool_entry.id for tool_entry in status_after.tool.tool_table
+                if tool_entry.table_index == pocket_prepped_after
+            ]
+            assert ids_at_the_prepped_index == [chosen_tool_id], (
+                f"after T{chosen_tool_id}: pocket_prepped went from "
+                f"{pocket_prepped_before} to {pocket_prepped_after}, "
+                f"table (index, id) = {table_summary_after}"
+            )
+        finally:
+            # Back to the mode the other tests start from.
+            send_mode_command(linuxcnc_stub, linuxcnc_pb2.MODE_MANUAL)
+            wait_for_condition(
+                linuxcnc_stub,
+                lambda s: s.task.task_mode == linuxcnc_pb2.MODE_MANUAL,
+                description="manual mode after the tool prepare",
+            )
+
     def test_get_status_has_ini_filename(self, linuxcnc_stub):
         status = linuxcnc_stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
         assert status.task.ini_filename != ""

@@ -30,9 +30,9 @@ const (
 	HalType_HAL_FLOAT            HalType = 2 // Double precision float
 	HalType_HAL_S32              HalType = 3 // Signed 32-bit integer
 	HalType_HAL_U32              HalType = 4 // Unsigned 32-bit integer
-	HalType_HAL_S64              HalType = 5 // Signed 64-bit integer
-	HalType_HAL_U64              HalType = 6 // Unsigned 64-bit integer
-	HalType_HAL_PORT             HalType = 7 // Port type (advanced)
+	HalType_HAL_S64              HalType = 5 // Signed integer; only reported for a value that does not fit 32 bits
+	HalType_HAL_U64              HalType = 6 // Unsigned integer; only reported for a value that does not fit 32 bits
+	HalType_HAL_PORT             HalType = 7 // Port type (advanced); the server reports port pins with no value
 )
 
 // Enum value maps for HalType.
@@ -389,6 +389,8 @@ type HalValue_U32Value struct {
 }
 
 type HalValue_S64Value struct {
+	// The two 64-bit values are numbers in the Node.js/TypeScript client:
+	// exact up to 2^53, the nearest number beyond that.
 	S64Value int64 `protobuf:"varint,5,opt,name=s64_value,json=s64Value,proto3,oneof"`
 }
 
@@ -397,7 +399,7 @@ type HalValue_U64Value struct {
 }
 
 type HalValue_PortValue struct {
-	PortValue string `protobuf:"bytes,7,opt,name=port_value,json=portValue,proto3,oneof"` // Port type (advanced)
+	PortValue string `protobuf:"bytes,7,opt,name=port_value,json=portValue,proto3,oneof"` // Port type (advanced); never set by the server
 }
 
 func (*HalValue_BitValue) isHalValue_Value() {}
@@ -416,15 +418,17 @@ func (*HalValue_PortValue) isHalValue_Value() {}
 
 // Information about a HAL pin
 type HalPinInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                                  // Full pin name (component.pin)
-	ShortName     string                 `protobuf:"bytes,2,opt,name=short_name,json=shortName,proto3" json:"short_name,omitempty"`       // Pin name without component prefix
-	Component     string                 `protobuf:"bytes,3,opt,name=component,proto3" json:"component,omitempty"`                        // Parent component name
-	Type          HalType                `protobuf:"varint,4,opt,name=type,proto3,enum=hal.HalType" json:"type,omitempty"`                // Data type
-	Direction     PinDirection           `protobuf:"varint,5,opt,name=direction,proto3,enum=hal.PinDirection" json:"direction,omitempty"` // Pin direction
-	Value         *HalValue              `protobuf:"bytes,6,opt,name=value,proto3" json:"value,omitempty"`                                // Current value
-	Signal        string                 `protobuf:"bytes,7,opt,name=signal,proto3" json:"signal,omitempty"`                              // Connected signal name (empty if none)
-	HasWriter     bool                   `protobuf:"varint,8,opt,name=has_writer,json=hasWriter,proto3" json:"has_writer,omitempty"`      // True if pin has a writer
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Name      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                                  // Full pin name (component.pin)
+	ShortName string                 `protobuf:"bytes,2,opt,name=short_name,json=shortName,proto3" json:"short_name,omitempty"`       // Pin name without component prefix
+	Component string                 `protobuf:"bytes,3,opt,name=component,proto3" json:"component,omitempty"`                        // Parent component name
+	Type      HalType                `protobuf:"varint,4,opt,name=type,proto3,enum=hal.HalType" json:"type,omitempty"`                // Data type
+	Direction PinDirection           `protobuf:"varint,5,opt,name=direction,proto3,enum=hal.PinDirection" json:"direction,omitempty"` // Pin direction
+	Value     *HalValue              `protobuf:"bytes,6,opt,name=value,proto3" json:"value,omitempty"`                                // Current value
+	Signal    string                 `protobuf:"bytes,7,opt,name=signal,proto3" json:"signal,omitempty"`                              // Always empty: LinuxCNC's HAL Python module does not expose the connected signal
+	// True if the pin's signal has a writer. In StreamStatus this is refreshed
+	// every 2 seconds, not with every update.
+	HasWriter     bool `protobuf:"varint,8,opt,name=has_writer,json=hasWriter,proto3" json:"has_writer,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -685,14 +689,17 @@ func (x *HalParamInfo) GetValue() *HalValue {
 	return nil
 }
 
-// Information about a HAL component
+// Information about a HAL component. LinuxCNC's HAL Python module has no
+// component list, so the server infers components from pin and parameter
+// names (the part before the last dot). Only name, pins and params are filled
+// in.
 type HalComponentInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`     // Component name
-	Id            int32                  `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`        // Component ID
-	Ready         bool                   `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`  // True if component is ready
-	Type          int32                  `protobuf:"varint,4,opt,name=type,proto3" json:"type,omitempty"`    // Component type (RT, user, etc)
-	Pid           int32                  `protobuf:"varint,5,opt,name=pid,proto3" json:"pid,omitempty"`      // Process ID (for userspace components)
+	Id            int32                  `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`        // Component ID; always 0
+	Ready         bool                   `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`  // Never set by the server
+	Type          int32                  `protobuf:"varint,4,opt,name=type,proto3" json:"type,omitempty"`    // Never set by the server
+	Pid           int32                  `protobuf:"varint,5,opt,name=pid,proto3" json:"pid,omitempty"`      // Never set by the server
 	Pins          []string               `protobuf:"bytes,6,rep,name=pins,proto3" json:"pins,omitempty"`     // List of pin names
 	Params        []string               `protobuf:"bytes,7,rep,name=params,proto3" json:"params,omitempty"` // List of parameter names
 	unknownFields protoimpl.UnknownFields
@@ -785,12 +792,12 @@ type HalSystemStatus struct {
 	Pins          []*HalPinInfo          `protobuf:"bytes,2,rep,name=pins,proto3" json:"pins,omitempty"`                                                            // All pins
 	Signals       []*HalSignalInfo       `protobuf:"bytes,3,rep,name=signals,proto3" json:"signals,omitempty"`                                                      // All signals
 	Params        []*HalParamInfo        `protobuf:"bytes,4,rep,name=params,proto3" json:"params,omitempty"`                                                        // All parameters
-	Components    []*HalComponentInfo    `protobuf:"bytes,5,rep,name=components,proto3" json:"components,omitempty"`                                                // All components
-	MessageLevel  MessageLevel           `protobuf:"varint,6,opt,name=message_level,json=messageLevel,proto3,enum=hal.MessageLevel" json:"message_level,omitempty"` // Current message level
+	Components    []*HalComponentInfo    `protobuf:"bytes,5,rep,name=components,proto3" json:"components,omitempty"`                                                // Components inferred from pin and parameter names
+	MessageLevel  MessageLevel           `protobuf:"varint,6,opt,name=message_level,json=messageLevel,proto3,enum=hal.MessageLevel" json:"message_level,omitempty"` // RTAPI message level of the server process
 	IsSim         bool                   `protobuf:"varint,7,opt,name=is_sim,json=isSim,proto3" json:"is_sim,omitempty"`                                            // Running in simulation
 	IsRt          bool                   `protobuf:"varint,8,opt,name=is_rt,json=isRt,proto3" json:"is_rt,omitempty"`                                               // Running real-time
 	IsUserspace   bool                   `protobuf:"varint,9,opt,name=is_userspace,json=isUserspace,proto3" json:"is_userspace,omitempty"`                          // Userspace HAL
-	KernelVersion string                 `protobuf:"bytes,10,opt,name=kernel_version,json=kernelVersion,proto3" json:"kernel_version,omitempty"`                    // Kernel version
+	KernelVersion string                 `protobuf:"bytes,10,opt,name=kernel_version,json=kernelVersion,proto3" json:"kernel_version,omitempty"`                    // Kernel version as HAL reports it; "Not Available" on uspace builds
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2341,7 +2348,11 @@ type HalCommand_Disconnect struct {
 }
 
 type HalCommand_GetValue struct {
-	// Query commands
+	// Query commands. SendCommand answers only component_exists,
+	// component_ready and pin_has_writer. It refuses get_value and the
+	// query_* commands (its response cannot carry a result) and names the RPC
+	// to call instead: GetValue, QueryPins, QuerySignals, QueryParams or
+	// QueryComponents.
 	GetValue *GetValueCommand `protobuf:"bytes,60,opt,name=get_value,json=getValue,proto3,oneof"`
 }
 
@@ -2904,9 +2915,11 @@ func (x *QueryComponentsResponse) GetComponents() []*HalComponentInfo {
 
 // Subscribe to value changes
 type WatchRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Names         []string               `protobuf:"bytes,1,rep,name=names,proto3" json:"names,omitempty"`                              // Pin/signal/param names to watch
-	IntervalMs    int32                  `protobuf:"varint,2,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"` // Minimum update interval in milliseconds (default: 100)
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Names []string               `protobuf:"bytes,1,rep,name=names,proto3" json:"names,omitempty"` // Pin/signal/param names to watch; duplicates are ignored, at most 1000 names
+	// Minimum update interval in milliseconds (default: 100). Values above
+	// 60000 are treated as 60000.
+	IntervalMs    int32 `protobuf:"varint,2,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3114,9 +3127,11 @@ func (*GetSystemStatusRequest) Descriptor() ([]byte, []int) {
 }
 
 type HalStreamStatusRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	IntervalMs    int32                  `protobuf:"varint,1,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"` // Update interval in milliseconds (default: 100)
-	Filter        []string               `protobuf:"bytes,2,rep,name=filter,proto3" json:"filter,omitempty"`                            // Optional: only include these components
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Update interval in milliseconds (default: 100). Values above 60000 are
+	// treated as 60000.
+	IntervalMs    int32    `protobuf:"varint,1,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"`
+	Filter        []string `protobuf:"bytes,2,rep,name=filter,proto3" json:"filter,omitempty"` // Currently ignored by the server: every component is included
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
