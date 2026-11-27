@@ -12,6 +12,8 @@
 use clap::Parser;
 use linuxcnc_grpc::linuxcnc::linux_cnc_service_client::LinuxCncServiceClient;
 use linuxcnc_grpc::linuxcnc::{GetStatusRequest, LinuxCncStatus, TaskMode, TaskState};
+use std::time::Duration;
+use tonic::transport::Endpoint;
 
 #[derive(Parser, Debug)]
 #[command(name = "get_status")]
@@ -162,9 +164,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let addr = format!("http://{}:{}", args.host, args.port);
 
-    let mut client = LinuxCncServiceClient::connect(addr).await?;
+    // Deadlines for connecting and for the request itself.
+    let channel = Endpoint::from_shared(addr)?
+        .connect_timeout(Duration::from_secs(5))
+        .connect()
+        .await?;
+    let mut client = LinuxCncServiceClient::new(channel);
 
-    let request = tonic::Request::new(GetStatusRequest {});
+    let mut request = tonic::Request::new(GetStatusRequest {});
+    request.set_timeout(Duration::from_secs(5));
     let response = client.get_status(request).await?;
     let status = response.into_inner();
 

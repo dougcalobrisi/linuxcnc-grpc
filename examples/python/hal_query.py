@@ -27,6 +27,13 @@ except ImportError:
     from linuxcnc_pb import hal_pb2, hal_pb2_grpc
 
 
+RPC_TIMEOUT = 5.0  # seconds, for every query
+
+# The server accepts watch intervals up to 60 seconds.
+MIN_INTERVAL_MS = 1
+MAX_INTERVAL_MS = 60000
+
+
 def format_value(value: hal_pb2.HalValue) -> str:
     """Format a HAL value for display."""
     which = value.WhichOneof("value")
@@ -51,9 +58,8 @@ def format_type(hal_type: hal_pb2.HalType) -> str:
 
 
 def format_direction(direction) -> str:
-    """Format pin/param direction for display."""
-    name = hal_pb2.PinDirection.Name(direction) if hasattr(direction, 'DESCRIPTOR') else str(direction)
-    return name.replace("HAL_", "").replace("PIN_DIR_", "")
+    """Format pin direction for display."""
+    return hal_pb2.PinDirection.Name(direction).replace("HAL_", "").replace("PIN_DIR_", "")
 
 
 def query_pins(stub: hal_pb2_grpc.HalServiceStub, pattern: str = "*"):
@@ -61,10 +67,10 @@ def query_pins(stub: hal_pb2_grpc.HalServiceStub, pattern: str = "*"):
     request = hal_pb2.QueryPinsCommand()
     request.pattern = pattern
 
-    response = stub.QueryPins(request)
+    response = stub.QueryPins(request, timeout=RPC_TIMEOUT)
     if not response.success:
         print(f"Error: {response.error}", file=sys.stderr)
-        return
+        sys.exit(1)
 
     print(f"Found {len(response.pins)} pins matching '{pattern}':\n")
     print(f"{'Name':<50} {'Type':<6} {'Dir':<4} {'Value':<15} {'Signal'}")
@@ -83,10 +89,10 @@ def query_signals(stub: hal_pb2_grpc.HalServiceStub, pattern: str = "*"):
     request = hal_pb2.QuerySignalsCommand()
     request.pattern = pattern
 
-    response = stub.QuerySignals(request)
+    response = stub.QuerySignals(request, timeout=RPC_TIMEOUT)
     if not response.success:
         print(f"Error: {response.error}", file=sys.stderr)
-        return
+        sys.exit(1)
 
     print(f"Found {len(response.signals)} signals matching '{pattern}':\n")
     print(f"{'Name':<40} {'Type':<6} {'Value':<15} {'Driver':<30} Readers")
@@ -105,10 +111,10 @@ def query_params(stub: hal_pb2_grpc.HalServiceStub, pattern: str = "*"):
     request = hal_pb2.QueryParamsCommand()
     request.pattern = pattern
 
-    response = stub.QueryParams(request)
+    response = stub.QueryParams(request, timeout=RPC_TIMEOUT)
     if not response.success:
         print(f"Error: {response.error}", file=sys.stderr)
-        return
+        sys.exit(1)
 
     print(f"Found {len(response.params)} parameters matching '{pattern}':\n")
     print(f"{'Name':<50} {'Type':<6} {'Mode':<4} {'Value'}")
@@ -126,18 +132,19 @@ def query_components(stub: hal_pb2_grpc.HalServiceStub, pattern: str = "*"):
     request = hal_pb2.QueryComponentsCommand()
     request.pattern = pattern
 
-    response = stub.QueryComponents(request)
+    response = stub.QueryComponents(request, timeout=RPC_TIMEOUT)
     if not response.success:
         print(f"Error: {response.error}", file=sys.stderr)
-        return
+        sys.exit(1)
 
     print(f"Found {len(response.components)} components matching '{pattern}':\n")
-    print(f"{'Name':<30} {'ID':<6} {'Ready':<6} {'Pins':<6} {'Params'}")
-    print("-" * 60)
+    # The server infers components from pin and parameter names, so the name
+    # and the pin and parameter lists are all it reports about one.
+    print(f"{'Name':<30} {'Pins':<6} {'Params'}")
+    print("-" * 45)
 
     for comp in sorted(response.components, key=lambda c: c.name):
-        ready = "Yes" if comp.ready else "No"
-        print(f"{comp.name:<30} {comp.id:<6} {ready:<6} {len(comp.pins):<6} {len(comp.params)}")
+        print(f"{comp.name:<30} {len(comp.pins):<6} {len(comp.params)}")
 
 
 def watch_values(stub: hal_pb2_grpc.HalServiceStub, names: list[str], interval_ms: int = 500):
@@ -150,6 +157,8 @@ def watch_values(stub: hal_pb2_grpc.HalServiceStub, names: list[str], interval_m
     print("Press Ctrl+C to stop\n")
 
     try:
+        # No deadline here: the watch runs until Ctrl+C, and the server only
+        # sends something when a value changes.
         for batch in stub.WatchValues(request):
             for change in batch.changes:
                 old_val = format_value(change.old_value)
@@ -158,11 +167,11 @@ def watch_values(stub: hal_pb2_grpc.HalServiceStub, names: list[str], interval_m
                 print(f"[{ts}] {change.name}: {old_val} -> {new_val}")
 
     except grpc.RpcError as e:
-        if e.code() == grpc.StatusCode.CANCELLED:
-            pass
-        else:
-            print(f"\ngRPC error: {e.code()}: {e.details()}", file=sys.stderr)
-            sys.exit(1)
+        # This program never cancels the watch itself (Ctrl+C arrives as
+        # KeyboardInterrupt), so CANCELLED here came from the server and is a
+        # failure like any other status.
+        print(f"\ngRPC error: {e.code()}: {e.details()}", file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         pass
 
@@ -170,7 +179,7 @@ def watch_values(stub: hal_pb2_grpc.HalServiceStub, names: list[str], interval_m
 def get_system_status(stub: hal_pb2_grpc.HalServiceStub):
     """Get and display overall HAL system status."""
     request = hal_pb2.GetSystemStatusRequest()
-    status = stub.GetSystemStatus(request)
+    status = stub.GetSystemStatus(request, timeout=RPC_TIMEOUT)
 
     print("HAL System Status")
     print("=" * 40)
@@ -207,7 +216,8 @@ def main():
 
     watch_parser = subparsers.add_parser("watch", help="Watch values for changes")
     watch_parser.add_argument("names", nargs="+", help="Pin/signal/param names to watch")
-    watch_parser.add_argument("--interval", type=int, default=500, help="Update interval in ms")
+    watch_parser.add_argument("--interval", type=int, default=500,
+                              help="Update interval in ms, 1 to 60000 (default: 500)")
 
     subparsers.add_parser("status", help="Get HAL system status")
 
@@ -220,6 +230,11 @@ def main():
         print('  python hal_query.py signals')
         print('  python hal_query.py components')
         print('  python hal_query.py watch spindle.0.speed-out axis.x.pos-cmd')
+        sys.exit(1)
+
+    if args.command == "watch" and not MIN_INTERVAL_MS <= args.interval <= MAX_INTERVAL_MS:
+        print("Error: --interval must be a whole number of milliseconds from 1 to 60000",
+              file=sys.stderr)
         sys.exit(1)
 
     channel = grpc.insecure_channel(f"{args.host}:{args.port}")

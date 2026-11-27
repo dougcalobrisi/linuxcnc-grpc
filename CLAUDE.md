@@ -82,6 +82,16 @@ Each language directory contains equivalent implementations:
 - `hal_query` - HAL pin/signal/parameter querying
 - `upload_file` - Upload, list, and delete G-code files
 
+The two motion examples (`jog_axis`, `mdi_command`) require a machine that is already on and
+homed. They do not reset E-stop, power the machine on or home it, and they stop with a message
+otherwise. Keep it that way: an example must not take a machine out of E-stop. `jog_axis`
+sends its jog stop on every exit path (Ctrl+C, SIGTERM, an error). Every unary RPC in the
+examples has a deadline; the streams run until interrupted.
+
+Measured on the 2.9 simulator: a continuous jog at velocity 1 moved 0.53 units in 0.5 s, so
+**jog velocity is in machine units per second** (the examples once used 100 and 50, labelled
+units per minute). The examples use 1.
+
 Run examples:
 ```bash
 # Python

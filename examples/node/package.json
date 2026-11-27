@@ -9,7 +9,8 @@
     "stream-status": "npx tsx stream_status.ts",
     "jog-axis": "npx tsx jog_axis.ts",
     "mdi-command": "npx tsx mdi_command.ts",
-    "hal-query": "npx tsx hal_query.ts"
+    "hal-query": "npx tsx hal_query.ts",
+    "upload-file": "npx tsx upload_file.ts"
   },
   "dependencies": {
     "linuxcnc-grpc": "file:../../packages/node",

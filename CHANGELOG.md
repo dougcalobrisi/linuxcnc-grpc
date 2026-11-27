@@ -25,6 +25,7 @@ Everything in this release is additive on the wire: 1.0 clients work with a 1.1 
 - **`ToolEntry.table_index`.** Each entry of `tool.tool_table` now carries its index in LinuxCNC's own tool table. `tool.pocket_prepped` is an index into that table, and `tool_table` leaves out empty slots, so `pocket_prepped` could not be used to find the prepared tool in the list. The prepared tool is the entry whose `table_index` equals `pocket_prepped`. The list itself is unchanged.
 - **`SPINDLE_CMD_CONSTANT` is implemented.** It sends LinuxCNC's `SPINDLE_CONSTANT`. It used to be answered `RCS_ERROR` ("Unknown spindle command").
 - **Go: three more names in the root package.** `HalValue_PortValue`, `UnsafeLinuxCNCServiceServer` and `UnsafeHalServiceServer` are re-exported from the generated package like the rest.
+- **Examples:** `mdi_command --wait-timeout` sets how long to wait for a command, `upload_file --filename` chooses the name to upload under, and the Rust examples have a README.
 
 ### Changed
 - **The server starts without LinuxCNC.** It used to exit with status 1 if LinuxCNC was not running. It now starts, reports `NOT_SERVING` on the gRPC health service, answers `UNAVAILABLE` on the RPCs that need LinuxCNC, and connects when LinuxCNC comes up (it looks after 1, 2 and 4 seconds, then every 5). `UploadFile`, `ListFiles`, `ReadFile` and `DeleteFile` and the HAL service work meanwhile; `ResolveFile` needs LinuxCNC. `--require-linuxcnc` restores the old fail-fast behaviour. `LinuxCNCServiceServicer()` constructed directly still raises unless given `require_linuxcnc=False`.
@@ -95,6 +96,16 @@ Everything in this release is additive on the wire: 1.0 clients work with a 1.1 
 - **HAL `SendCommand` no longer reports success for commands it cannot answer.** `get_value` and the `query_*` commands returned `success = true` and no result; they now return `success = false` and name the RPC to call.
 - **`is_sim`, `is_rt`, `is_userspace`, `kernel_version` and `message_level` are read from HAL.** They were fixed values (not a simulation, real-time, `MSG_INFO`).
 - **A HAL status stream that fails reports the cause.** After five failed polls it ends with `INTERNAL` and the last error.
+- **Examples: `jog_axis` always sends the jog stop**, also on Ctrl+C, on SIGTERM and after an error, and sends it before printing anything. The Python example's signal handler no longer takes a lock.
+- **Examples: `jog_axis` and `mdi_command` no longer reset E-stop or power the machine on.** They require a machine that is on and homed and stop with a message otherwise. Mode and teleop changes are waited for and checked in the status instead of sleeping.
+- **Examples: jog velocities are in machine units per second.** The old examples used 100 and 50 and labelled them units per minute. On the 2.9 simulator a jog at velocity 1 moved 0.53 units in 0.5 seconds. The examples now use 1.
+- **Examples: `mdi_command` waits on the command's `linuxcnc_serial`** and reports a timeout as a timeout, not as completion. In interactive mode it exits non-zero if any command failed.
+- **Examples: `upload_file` does not overwrite an existing file**, and `--cleanup` deletes only the file that run uploaded.
+- **Examples: `hal_query` exits non-zero on failure** and no longer prints component columns the server does not fill in. Every unary RPC in the examples has a deadline; the streams run until interrupted.
+- **Examples: the Go README commands dropped `--`.** `go run ./cmd/x -- --flag` made Go's flag parser ignore every flag after the `--`.
+- **Examples: `mdi_command` and `jog_axis` check that the interpreter is idle before every command or jog**, also when the machine is already in the right mode, so a command is not sent on top of one that is still running. `--wait-timeout` must be greater than 0 and at most 86400 seconds and is checked before anything is sent.
+- **Examples: `stream_status` and `hal_query watch` exit non-zero when the server cancels the stream** (Python and Node exited 0). The `stream_status` idle timeout is the larger of 30 seconds and twice `--interval` plus 5 seconds, and `--interval` must be 1 to 60000. The Rust `stream_status` no longer hangs when the server accepts the connection but never answers.
+- **Examples: a jog stop that fails exits 1 in all four languages**, also after Ctrl+C, and is reported before a panic resumes in Go and Rust. The Go `mdi_command` reports an input read error instead of treating it as the end of input.
 - **Uploads just over the cap get a clear error.** `UploadFile` refuses content longer than 10 MiB (10,485,760 characters) with `INVALID_ARGUMENT`, but the gRPC receive limit was 10 MiB too, so the transport rejected such a request with `RESOURCE_EXHAUSTED` first. The receive limit is now 11 MiB. A request larger than that (possible below the character cap with non-ASCII text, which takes more than one byte per character) still gets `RESOURCE_EXHAUSTED`.
 
 ### Documentation
@@ -103,6 +114,7 @@ Everything in this release is additive on the wire: 1.0 clients work with a 1.1 
 - **Command semantics.** `RCS_DONE` from `SendCommand` means the command was dispatched, not that it finished. `CommandResponse.serial` is the server's own serial, not LinuxCNC's, and must not be compared with `echo_serial_number`. The `WaitComplete` rules are written out.
 - **Mode and teleop sequencing.** The API reference now says which task mode and teleop state each command needs, what LinuxCNC answers in the wrong state, how refused jogs and homes show up (still `RCS_DONE`), and why `inpos` cannot be used to wait for an axis jog. Measured on the LinuxCNC 2.9 simulator.
 - **Error delivery.** How error messages reach clients, and why reading them takes them from the machine's GUI.
+- **The examples guide matches the example code again**, and the package docstring's `serve()` example runs as written.
 - **API reference:** how many joints and spindles the status lists, how to find the prepared tool, that a tool table entry can have id -1 (an empty slot, such as the spindle with no tool loaded) and should be ignored unless its id is positive, how 64-bit integers arrive in Node.js, the command value checks, the spindle commands, the HAL fields the server does and does not fill in, HAL `SendCommand`, the `WatchValues` limits and error codes, and the stream interval cap.
 - **Requirements:** the server page and the setup page say LinuxCNC 2.9 or newer.
 

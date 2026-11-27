@@ -8,9 +8,17 @@
  *   npx tsx mdi_command.ts "G0 X10 Y10"
  *   npx tsx mdi_command.ts --interactive
  *
+ * Before it sends anything the example checks that the machine is on, that
+ * every joint is homed and that the interpreter is idle. It does not take the
+ * machine out of E-stop, power it on or home it: do that at the machine first.
+ * It then switches to MDI mode. The checks are repeated before every command,
+ * so in interactive mode a command is not sent while an earlier one is still
+ * running.
+ *
  * Safety Warning:
  *   MDI commands execute immediately on the machine. Understand what
- *   each command does before running it.
+ *   each command does before running it. Ctrl+C stops this program, not the
+ *   machine: a command that was already sent keeps running.
  */
 
 import * as readline from "readline";
@@ -25,7 +33,10 @@ import {
   Metadata,
   TaskMode,
   TaskState,
+  InterpState,
   RcsStatus,
+  taskStateToJSON,
+  interpStateToJSON,
   credentials,
 } from "linuxcnc-grpc";
 
@@ -35,12 +46,23 @@ program
   .option("--port <port>", "gRPC server port", "50051")
   .option("-i, --interactive", "Enter interactive MDI mode")
   .option("--no-wait", "Don't wait for command completion")
+  .option("--wait-timeout <seconds>", "Seconds to wait for a command to finish; more than 0 and at most 86400", "60")
   .parse();
 
 const opts = program.opts();
 const args = program.args;
 const command = args[0];
 const address = `${opts.host}:${opts.port}`;
+// Number(), not parseFloat(): "60abc" must not pass as 60.
+const waitTimeoutSeconds = opts.waitTimeout.trim() === "" ? NaN : Number(opts.waitTimeout);
+const waitTimeoutMs = waitTimeoutSeconds * 1000;
+
+// Deadlines, in milliseconds. Every RPC gets one.
+const RPC_TIMEOUT_MS = 5000; // GetStatus and SendCommand
+const STATE_CHANGE_TIMEOUT_MS = 5000; // A mode change must finish within this
+const WAIT_DEADLINE_MARGIN_MS = 5000; // WaitComplete's client deadline = its timeout + this
+const POLL_INTERVAL_MS = 50;
+const MAX_MDI_TIMEOUT_SECONDS = 86400; // Longest --wait-timeout accepted (one day)
 
 if (!command && !opts.interactive) {
   console.log("Usage: npx tsx mdi_command.ts [options] \"G-code command\"");
@@ -49,6 +71,16 @@ if (!command && !opts.interactive) {
   console.log('  npx tsx mdi_command.ts "G0 X10 Y10"');
   console.log('  npx tsx mdi_command.ts "G1 X20 F100"');
   console.log("  npx tsx mdi_command.ts --interactive");
+  process.exit(1);
+}
+// Checked before any RPC: 0 would make the server use its own default, and a
+// negative or huge value would give a client deadline that has already
+// expired or cannot be represented, after the command was dispatched.
+if (
+  !Number.isFinite(waitTimeoutSeconds) ||
+  !(waitTimeoutSeconds > 0 && waitTimeoutSeconds <= MAX_MDI_TIMEOUT_SECONDS)
+) {
+  console.error("Error: --wait-timeout must be a number of seconds greater than 0 and at most 86400");
   process.exit(1);
 }
 
@@ -62,41 +94,56 @@ const client = new LinuxCNCServiceClient(
   }
 );
 
-const RPC_DEADLINE = 5000;
-
 let serial = 0;
 
 function nextSerial(): number {
   return ++serial;
 }
 
+function deadlineIn(milliseconds: number): { deadline: Date } {
+  return { deadline: new Date(Date.now() + milliseconds) };
+}
+
 function getStatus(): Promise<LinuxCNCStatus> {
   return new Promise((resolve, reject) => {
-    client.getStatus(GetStatusRequest.create(), new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, status) => {
+    client.getStatus(GetStatusRequest.create(), new Metadata(), deadlineIn(RPC_TIMEOUT_MS), (err, status) => {
       if (err) reject(err);
       else resolve(status);
     });
   });
 }
 
+/** Send a command. RCS_DONE in the response means dispatched, not finished. */
 function sendCommand(cmd: LinuxCNCCommand): Promise<CommandResponse> {
   cmd.serial = nextSerial();
   cmd.timestamp = Date.now() * 1000000;
   return new Promise((resolve, reject) => {
-    client.sendCommand(cmd, new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, response) => {
+    client.sendCommand(cmd, new Metadata(), deadlineIn(RPC_TIMEOUT_MS), (err, response) => {
       if (err) reject(err);
       else resolve(response);
     });
   });
 }
 
-function waitComplete(cmdSerial: number, timeout: number): Promise<CommandResponse> {
+/**
+ * Wait until the command that `sent` answers has finished.
+ *
+ * The result is RCS_DONE (finished), RCS_ERROR (failed) or RCS_EXEC (the
+ * timeout expired and the command is still running).
+ */
+function waitComplete(sent: CommandResponse, timeoutMs: number): Promise<CommandResponse> {
   const request = WaitCompleteRequest.create();
-  request.serial = cmdSerial;
-  request.timeout = timeout;
-  const waitDeadline = new Date(Date.now() + (timeout * 1000) + 5000);
+  request.timeout = timeoutMs / 1000;
+  if (sent.linuxcncSerial !== undefined) {
+    // Wait on this command's serial. WaitCompleteRequest.serial would not
+    // do that: the server ignores it.
+    request.linuxcncSerial = sent.linuxcncSerial;
+  } else {
+    console.log("  Note: the server returned no linuxcnc_serial; waiting on the latest command sent by any client instead.");
+  }
+  // The client deadline must be longer than the wait asked of the server.
   return new Promise((resolve, reject) => {
-    client.waitComplete(request, new Metadata(), { deadline: waitDeadline }, (err, response) => {
+    client.waitComplete(request, new Metadata(), deadlineIn(timeoutMs + WAIT_DEADLINE_MARGIN_MS), (err, response) => {
       if (err) reject(err);
       else resolve(response);
     });
@@ -109,138 +156,161 @@ function setMode(mode: TaskMode): Promise<CommandResponse> {
   return sendCommand(cmd);
 }
 
-function setState(state: TaskState): Promise<CommandResponse> {
+/** Send an MDI command. */
+function mdi(gcode: string): Promise<CommandResponse> {
   const cmd = LinuxCNCCommand.create();
-  cmd.state = { state };
+  cmd.mdi = { command: gcode };
   return sendCommand(cmd);
 }
 
-async function mdi(gcode: string): Promise<{ response: CommandResponse; serial: number }> {
-  const cmd = LinuxCNCCommand.create();
-  cmd.mdi = { command: gcode };
-  const response = await sendCommand(cmd);
-  return { response, serial: cmd.serial };
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function ensureMDIReady(): Promise<boolean> {
-  let status = await getStatus();
-
-  // Check E-stop
-  let task = status.task;
-  if (!task) {
-    console.log("No task status available");
-    return false;
-  }
-  if (task.taskState === TaskState.STATE_ESTOP) {
-    console.log("Machine is in E-stop. Resetting...");
-    const resp = await setState(TaskState.STATE_ESTOP_RESET);
-    if (resp.status !== RcsStatus.RCS_DONE) {
-      console.log(`Failed to reset E-stop: ${resp.errorMessage}`);
-      return false;
-    }
-    await sleep(100);
+/** Check the machine is on, homed and idle, then make sure it is in MDI mode. */
+async function ensureMDIReady(): Promise<void> {
+  const status = await getStatus();
+  const task = status.task;
+  const trajectory = status.trajectory;
+  if (!task || !trajectory) {
+    throw new Error("The status has no task or trajectory section");
   }
 
-  // Power on
-  status = await getStatus();
-  task = status.task;
-  if (!task) {
-    console.log("No task status available");
-    return false;
-  }
+  // Never take the machine out of E-stop or power it on from here.
   if (task.taskState !== TaskState.STATE_ON) {
-    console.log("Powering on machine...");
-    const resp = await setState(TaskState.STATE_ON);
-    if (resp.status !== RcsStatus.RCS_DONE) {
-      console.log(`Failed to power on: ${resp.errorMessage}`);
-      return false;
-    }
-    await sleep(100);
+    throw new Error(
+      `The machine is not on (state ${taskStateToJSON(task.taskState)}). Take it out of E-stop ` +
+        "and turn it on at the machine, then run this again."
+    );
   }
 
-  // Set MDI mode
-  status = await getStatus();
-  task = status.task;
-  if (!task) {
-    console.log("No task status available");
-    return false;
-  }
-  if (task.taskMode !== TaskMode.MODE_MDI) {
-    console.log("Setting MDI mode...");
-    const resp = await setMode(TaskMode.MODE_MDI);
-    if (resp.status !== RcsStatus.RCS_DONE) {
-      console.log(`Failed to set MDI mode: ${resp.errorMessage}`);
-      return false;
-    }
-    await sleep(100);
+  // A 1.0 server lists 16 joint entries, of which only the first
+  // trajectory.joints are real. Newer servers list only those.
+  const unhomedJoints = status.joints
+    .slice(0, trajectory.joints)
+    .filter((joint) => !joint.homed)
+    .map((joint) => joint.jointNumber);
+  if (unhomedJoints.length > 0) {
+    throw new Error(
+      `Joints ${unhomedJoints.join(", ")} are not homed. Home the machine first; this example does not home it.`
+    );
   }
 
-  return true;
+  // Checked every time, also when the machine is already in MDI mode: a
+  // command whose wait timed out is still running, and so may a program be.
+  if (task.interpState !== InterpState.INTERP_IDLE) {
+    throw new Error(
+      "The interpreter is still busy with a previous command or a running program " +
+        `(state ${interpStateToJSON(task.interpState)}). Nothing was sent; wait for it to finish and try again.`
+    );
+  }
+
+  if (task.taskMode === TaskMode.MODE_MDI) {
+    return;
+  }
+
+  console.log("Setting MDI mode...");
+  const sent = await setMode(TaskMode.MODE_MDI);
+  if (sent.status !== RcsStatus.RCS_DONE) {
+    throw new Error(`MDI mode was refused: ${sent.errorMessage}`);
+  }
+
+  const finished = await waitComplete(sent, STATE_CHANGE_TIMEOUT_MS);
+  if (finished.status === RcsStatus.RCS_EXEC) {
+    throw new Error(`MDI mode had not finished after ${STATE_CHANGE_TIMEOUT_MS / 1000} s`);
+  }
+  if (finished.status !== RcsStatus.RCS_DONE) {
+    throw new Error(`MDI mode failed: ${finished.errorMessage}`);
+  }
+
+  // Finished is not the same as in effect: check the status, with a deadline.
+  const deadline = Date.now() + STATE_CHANGE_TIMEOUT_MS;
+  while ((await getStatus()).task?.taskMode !== TaskMode.MODE_MDI) {
+    if (Date.now() >= deadline) {
+      throw new Error(`MDI mode did not show in the status within ${STATE_CHANGE_TIMEOUT_MS / 1000} s`);
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
 }
 
-async function executeMDI(gcode: string, wait: boolean): Promise<boolean> {
+/** Send an MDI command and, if asked, wait until it has finished. */
+async function executeMDI(gcode: string, wait: boolean): Promise<void> {
   console.log(`Executing: ${gcode}`);
 
-  const { response, serial } = await mdi(gcode);
-  if (response.status === RcsStatus.RCS_ERROR) {
-    console.log(`  Error: ${response.errorMessage}`);
-    return false;
+  const sent = await mdi(gcode);
+  if (sent.status !== RcsStatus.RCS_DONE) {
+    throw new Error(`The command was refused: ${sent.errorMessage}`);
   }
 
-  if (wait) {
-    console.log("  Waiting for completion...");
-    const resp = await waitComplete(serial, 60.0);
-    if (resp.status === RcsStatus.RCS_ERROR) {
-      console.log(`  Error during execution: ${resp.errorMessage}`);
-      return false;
-    }
+  if (!wait) {
+    console.log("  Dispatched (not waiting for it to finish).");
+    return;
+  }
+
+  console.log("  Waiting for completion...");
+  const finished = await waitComplete(sent, waitTimeoutMs);
+  if (finished.status === RcsStatus.RCS_DONE) {
     console.log("  Done.");
+  } else if (finished.status === RcsStatus.RCS_EXEC) {
+    throw new Error(
+      `Timed out: the command was still running after ${waitTimeoutMs / 1000} s. It has not been cancelled.`
+    );
+  } else {
+    throw new Error(`The command failed: ${finished.errorMessage}`);
   }
-
-  return true;
 }
 
-async function interactiveMode(): Promise<void> {
+async function printPosition(): Promise<void> {
+  const position = (await getStatus()).position?.actualPosition;
+  if (!position) {
+    throw new Error("No position data available");
+  }
+  console.log(`Position: X=${position.x.toFixed(4)} Y=${position.y.toFixed(4)} Z=${position.z.toFixed(4)}`);
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Interactive MDI shell. Returns how many commands failed: a command that
+ * fails does not end the session, but it is counted, so the caller can exit
+ * non-zero. A failure to read the input is thrown.
+ */
+async function interactiveMode(): Promise<number> {
+  let failedCommandCount = 0;
   console.log("\nInteractive MDI Mode");
   console.log("Type G-code commands to execute. Type 'quit' or 'exit' to quit.");
   console.log("Type 'status' to show current position.\n");
 
-  const rl = readline.createInterface({
+  const lineReader = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
+    prompt: "MDI> ",
   });
 
-  const prompt = (): void => {
-    rl.question("MDI> ", async (input) => {
-      const cmd = input.trim();
+  // Input can end (Ctrl+D, or a piped script running out) while a command is
+  // still being waited for; prompting a closed reader throws.
+  let inputHasEnded = false;
+  lineReader.on("close", () => {
+    inputHasEnded = true;
+  });
 
-      if (!cmd) {
-        prompt();
-        return;
-      }
+  // A read error is not the end of the input: remember it, and fail below.
+  let inputError: Error | undefined;
+  process.stdin.on("error", (err: Error) => {
+    inputError = inputError ?? err;
+    lineReader.close();
+  });
 
-      const lower = cmd.toLowerCase();
+  lineReader.prompt();
+  try {
+    for await (const input of lineReader) {
+      const line = input.trim();
+      const lower = line.toLowerCase();
+
       if (lower === "quit" || lower === "exit" || lower === "q") {
-        rl.close();
-        return;
-      }
-
-      if (lower === "status") {
-        const status = await getStatus();
-        const position = status.position;
-        if (!position || !position.actualPosition) {
-          console.log("No position data available");
-          prompt();
-          return;
-        }
-        const pos = position.actualPosition;
-        console.log(`Position: X=${pos.x.toFixed(4)} Y=${pos.y.toFixed(4)} Z=${pos.z.toFixed(4)}`);
-        prompt();
-        return;
+        break;
       }
 
       if (lower === "help") {
@@ -248,71 +318,59 @@ async function interactiveMode(): Promise<void> {
         console.log("  <G-code>  - Execute G-code command");
         console.log("  status    - Show current position");
         console.log("  quit      - Exit interactive mode");
-        prompt();
-        return;
-      }
-
-      try {
-        // Ensure we're still in MDI mode
-        const status = await getStatus();
-        const task = status.task;
-        if (task && task.taskMode !== TaskMode.MODE_MDI) {
-          if (!(await ensureMDIReady())) {
-            console.log("Failed to re-enter MDI mode");
-            prompt();
-            return;
+      } else if (line) {
+        try {
+          if (lower === "status") {
+            await printPosition();
+          } else {
+            // The machine may have been turned off or switched to another
+            // mode since the last command, or the last command may still be
+            // running.
+            await ensureMDIReady();
+            await executeMDI(line, true);
           }
+        } catch (err) {
+          failedCommandCount += 1;
+          console.log(`  Error: ${errorText(err)}`);
         }
-
-        await executeMDI(cmd, true);
-      } catch (err) {
-        console.log(`Error: ${err}`);
       }
 
-      prompt();
-    });
-  };
+      if (!inputHasEnded) {
+        lineReader.prompt();
+      }
+    }
+  } catch (err) {
+    // Some Node.js versions pass the read error on through the line reader.
+    inputError = inputError ?? (err instanceof Error ? err : new Error(String(err)));
+  }
 
-  rl.on("close", () => {
-    console.log("\nExiting...");
-    client.close();
-    process.exit(0);
-  });
-
-  prompt();
+  lineReader.close();
+  if (inputError) {
+    console.log();
+    throw new Error(`Reading input failed: ${inputError.message}`);
+  }
+  console.log("\nExiting...");
+  return failedCommandCount;
 }
 
 async function main(): Promise<void> {
   try {
-    // Ensure machine is ready for MDI
-    if (!(await ensureMDIReady())) {
-      console.log("Could not prepare machine for MDI");
-      process.exit(1);
-    }
+    await ensureMDIReady();
 
     if (opts.interactive) {
-      await interactiveMode();
+      const failedCommandCount = await interactiveMode();
+      if (failedCommandCount > 0) {
+        throw new Error(`${failedCommandCount} command(s) failed in this session.`);
+      }
     } else {
-      const success = await executeMDI(command, opts.wait !== false);
-      if (!success) {
-        process.exit(1);
-      }
-
-      // Show final position
-      const status = await getStatus();
-      const position = status.position;
-      if (!position || !position.actualPosition) {
-        console.error("No position data available");
-      } else {
-        const pos = position.actualPosition;
-        console.log(`Position: X=${pos.x.toFixed(4)} Y=${pos.y.toFixed(4)} Z=${pos.z.toFixed(4)}`);
-      }
-      client.close();
+      await executeMDI(command, opts.wait !== false);
+      await printPosition();
     }
   } catch (err) {
-    console.error(`Error: ${err}`);
+    console.error(`Error: ${errorText(err)}`);
+    process.exitCode = 1;
+  } finally {
     client.close();
-    process.exit(1);
   }
 }
 
