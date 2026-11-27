@@ -289,9 +289,11 @@ All gRPC calls can raise `grpc.RpcError`. Common status codes:
 A rejected command is not a gRPC error. If the server rejects it before
 sending (a joint or spindle index out of range, an empty MDI command, an
 unknown command), `SendCommand` returns a normal `CommandResponse` with
-`RCS_ERROR` and the reason in `error_message`. If LinuxCNC rejects it
-afterwards, `WaitComplete` returns `RCS_ERROR` or LinuxCNC reports the problem
-as an error message (see [StreamErrors](api-reference.md#streamerrors)). So
+`RCS_ERROR` and the reason in `error_message`. `RCS_ERROR` can also follow a
+command that was partly sent (see
+[`RCS_ERROR` from `SendCommand`](server.md#rcs_error-from-sendcommand)).
+If LinuxCNC rejects it afterwards, `WaitComplete` returns `RCS_ERROR` or
+LinuxCNC reports the problem as an error message (see [StreamErrors](api-reference.md#streamerrors)). So
 check `response.status` as well as catching `grpc.RpcError`.
 
 ```python

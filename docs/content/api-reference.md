@@ -107,7 +107,7 @@ rpc SendCommand(LinuxCNCCommand) returns (CommandResponse)
 | Field | Type | Description |
 |-------|------|-------------|
 | `serial` | int32 | The request's `serial`, or one from the server's own counter if the request left it at 0 (the counter wraps to 1 after 2147483647). A label only: it is not LinuxCNC's serial (don't compare it with `echo_serial_number`) and `WaitComplete` ignores it |
-| `status` | RcsStatus | `RCS_DONE` if the command was dispatched, `RCS_ERROR` if it was rejected |
+| `status` | RcsStatus | `RCS_DONE` if the command was dispatched. `RCS_ERROR` if the server rejected it or a LinuxCNC call failed; a command made of several LinuxCNC messages may then be partly sent (see [`RCS_ERROR` from `SendCommand`](server.md#rcs_error-from-sendcommand)) |
 | `error_message` | string | Error details if status is RCS_ERROR |
 
 **Example (Python):**

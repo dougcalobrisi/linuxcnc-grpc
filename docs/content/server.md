@@ -256,6 +256,37 @@ homing sequence is usually still running when the response arrives. To know
 when it has finished, call `WaitComplete` or watch the status
 (`task.exec_state`, `task.interp_state`, `task.task_mode`).
 
+### `RCS_ERROR` from `SendCommand`
+
+`SendCommand` answers `RCS_ERROR`, with the reason in `error_message`, in two
+cases:
+
+- **The server rejected the command.** It checks some values itself: a joint
+  or spindle index, an MDI command that is empty or too long, the file name of
+  a program to open, an enum value it does not know. A command that fails a
+  check is not sent, and `error_message` is the server's own text, for example
+  `MDI command must not be empty`.
+- **A LinuxCNC call failed.** `error_message` is the text of that error.
+
+Most commands are one LinuxCNC message. Four are sent as several messages, one
+after the other:
+
+| Command | Messages, in order |
+|---------|--------------------|
+| `coolant` | Mist, flood |
+| `set_limit` | Minimum limit, maximum limit |
+| `override_config` | Feed override, spindle override, feed hold, adaptive feed |
+| `program_options` | Optional stop, block delete |
+
+If one of these messages fails, the ones before it have been sent and stay in
+effect, and the ones after it are not sent. The answer is `RCS_ERROR` all the
+same, and the response does not say how many messages went out. The server
+makes no checks of its own on these four commands, so `RCS_ERROR` for one of
+them always comes from a LinuxCNC call, the first or a later one.
+
+After `RCS_ERROR` from one of these four commands, read the status before you
+send the command again: part of it may have taken effect.
+
 ### The response serial is the server's, not LinuxCNC's
 
 `CommandResponse.serial` is the `serial` you set on the request or, if you
@@ -338,8 +369,8 @@ for what it does and how it uses this server.
 
 ### Log Levels
 
-- **INFO** (default) - Normal operation, connection events
-- **DEBUG** - Also one line per RPC with the method name, and for most RPCs a line with its main request fields (command type, file name, query pattern). Request and response contents are not logged
+- **INFO** (default) - Normal operation, connection events, and one line for each command sent to LinuxCNC with its main values. For an MDI command that line has the full command text, and for an operator message the message text
+- **DEBUG** - Also one line per RPC with the method name, and for most RPCs a line with its main request fields (command type, file name, query pattern). It adds no other request contents and no responses, with one exception: the full text of every MDI command is logged when it arrives, including one the server then rejects
 
 Enable debug logging:
 
