@@ -762,6 +762,195 @@ class TestWaitingForLinuxCNC:
         assert service._connected is True
 
 
+class TestCommandsAtShutdown:
+    """A command that waited for the servicer lock is not sent once it must not be."""
+
+    # name: (command as keyword arguments of LinuxCNCCommand, the linuxcnc.command
+    # method its handler calls). Built lazily: the proto module is imported in tests.
+    @staticmethod
+    def _commands():
+        from linuxcnc_pb import linuxcnc_pb2 as pb
+
+        stops = {
+            "estop": (pb.LinuxCNCCommand(state=pb.StateCommand(state=pb.STATE_ESTOP)), "state"),
+            "machine off": (
+                pb.LinuxCNCCommand(state=pb.StateCommand(state=pb.STATE_OFF)), "state"),
+            "program abort": (
+                pb.LinuxCNCCommand(program=pb.ProgramCommand(abort=True)), "abort"),
+            "program pause": (
+                pb.LinuxCNCCommand(program=pb.ProgramCommand(pause=True)), "auto"),
+            "jog stop": (
+                pb.LinuxCNCCommand(jog=pb.JogCommand(type=pb.JOG_STOP, index=0)), "jog"),
+            "spindle off": (
+                pb.LinuxCNCCommand(spindle=pb.SpindleControlCommand(
+                    command=pb.SPINDLE_CMD_OFF)), "spindle"),
+        }
+        others = {
+            "estop reset": pb.LinuxCNCCommand(
+                state=pb.StateCommand(state=pb.STATE_ESTOP_RESET)),
+            "machine on": pb.LinuxCNCCommand(state=pb.StateCommand(state=pb.STATE_ON)),
+            "mdi": pb.LinuxCNCCommand(mdi=pb.MdiCommand(command="G0 X1")),
+            "jog start": pb.LinuxCNCCommand(jog=pb.JogCommand(
+                type=pb.JOG_CONTINUOUS, index=0, velocity=1.0)),
+            "spindle forward": pb.LinuxCNCCommand(spindle=pb.SpindleControlCommand(
+                command=pb.SPINDLE_CMD_FORWARD, speed=100.0)),
+            "program resume": pb.LinuxCNCCommand(program=pb.ProgramCommand(resume=True)),
+            "program run": pb.LinuxCNCCommand(program=pb.ProgramCommand(run_from_line=0)),
+            "brake engage": pb.LinuxCNCCommand(
+                brake=pb.BrakeCommand(state=pb.BRAKE_ENGAGE)),
+            "brake release": pb.LinuxCNCCommand(
+                brake=pb.BrakeCommand(state=pb.BRAKE_RELEASE)),
+            "pause flag false": pb.LinuxCNCCommand(program=pb.ProgramCommand(pause=False)),
+        }
+        return stops, others
+
+    STOP_COMMANDS = [
+        "estop", "machine off", "program abort", "program pause", "jog stop", "spindle off",
+    ]
+    OTHER_COMMANDS = [
+        "estop reset", "machine on", "mdi", "jog start", "spindle forward",
+        "program resume", "program run", "brake engage", "brake release",
+        "pause flag false",
+    ]
+
+    def test_the_command_lists_cover_what_the_tests_name(self):
+        stops, others = self._commands()
+        assert sorted(stops) == sorted(self.STOP_COMMANDS)
+        assert sorted(others) == sorted(self.OTHER_COMMANDS)
+
+    def _send_behind_a_held_lock(self, service, context, command, while_the_lock_is_held):
+        """
+        Send a command from another thread while this test holds the
+        servicer lock, do ``while_the_lock_is_held``, release the lock, and
+        return the command's response.
+        """
+        lock_is_held = threading.Event()
+        release_lock = threading.Event()
+        responses = []
+
+        def hold_the_lock():
+            with service._lock:
+                lock_is_held.set()
+                release_lock.wait(timeout=10.0)
+
+        def send_command():
+            responses.append(service.SendCommand(command, context))
+
+        # The lock is re-entrant, so holder and sender must be different threads.
+        lock_holder = threading.Thread(target=hold_the_lock)
+        sender = threading.Thread(target=send_command)
+        lock_holder.start()
+        try:
+            assert lock_is_held.wait(timeout=5.0)
+            sender.start()
+            while_the_lock_is_held()
+            sent_while_the_lock_was_held = len(responses)
+        finally:
+            release_lock.set()
+            lock_holder.join(timeout=5.0)
+            if sender.ident:
+                sender.join(timeout=5.0)
+        assert sent_while_the_lock_was_held == 0
+        assert not sender.is_alive()
+        return responses[0]
+
+    @staticmethod
+    def _close_quickly(service, service_module):
+        def close_the_servicer():
+            with patch.object(service_module, "CLOSE_LOCK_TIMEOUT", 0.01):
+                service.close()
+        return close_the_servicer
+
+    @pytest.mark.parametrize("command_name", OTHER_COMMANDS)
+    def test_command_is_not_sent_after_close(
+        self, make_service, service_module, mock_grpc_context, command_name
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        service = make_service(error_channel_mode="off")
+        command = self._commands()[1][command_name]
+
+        response = self._send_behind_a_held_lock(
+            service, mock_grpc_context, command, self._close_quickly(service, service_module)
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == service_module.SERVER_SHUTTING_DOWN_MESSAGE
+        assert not response.HasField("linuxcnc_serial")
+        assert service._command.method_calls == []
+        assert service._latest_dispatch_record is None
+
+    @pytest.mark.parametrize("command_name", OTHER_COMMANDS)
+    def test_command_is_not_sent_after_its_client_has_gone(
+        self, make_service, service_module, mock_grpc_context, command_name
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        service = make_service(error_channel_mode="off")
+        command = self._commands()[1][command_name]
+        client_has_gone = threading.Event()
+        mock_grpc_context.is_active.side_effect = lambda: not client_has_gone.is_set()
+
+        response = self._send_behind_a_held_lock(
+            service, mock_grpc_context, command, client_has_gone.set
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == service_module.REQUEST_NO_LONGER_ACTIVE_MESSAGE
+        assert service._command.method_calls == []
+        assert service._latest_dispatch_record is None
+
+    @pytest.mark.parametrize("command_name", STOP_COMMANDS)
+    def test_command_that_only_stops_is_still_sent_after_close(
+        self, make_service, service_module, mock_grpc_context, command_name
+    ):
+        """A client must always be able to stop: a late stop is safe, a dropped one is not."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        service = make_service(error_channel_mode="off")
+        command, command_method = self._commands()[0][command_name]
+
+        response = self._send_behind_a_held_lock(
+            service, mock_grpc_context, command, self._close_quickly(service, service_module)
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        getattr(service._command, command_method).assert_called_once()
+
+    @pytest.mark.parametrize("command_name", STOP_COMMANDS)
+    def test_command_that_only_stops_is_still_sent_after_its_client_has_gone(
+        self, make_service, mock_grpc_context, command_name
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        service = make_service(error_channel_mode="off")
+        command, command_method = self._commands()[0][command_name]
+        client_has_gone = threading.Event()
+        mock_grpc_context.is_active.side_effect = lambda: not client_has_gone.is_set()
+
+        response = self._send_behind_a_held_lock(
+            service, mock_grpc_context, command, client_has_gone.set
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        getattr(service._command, command_method).assert_called_once()
+
+    def test_command_that_waited_for_the_lock_is_sent_otherwise(
+        self, make_service, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        service = make_service(error_channel_mode="off")
+        command = self._commands()[1]["machine on"]
+
+        response = self._send_behind_a_held_lock(
+            service, mock_grpc_context, command, lambda: None
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        service._command.state.assert_called_once()
+
+
 class TestServerHealthAndOptions:
     """create_server wiring: health follows the connection, flags reach the servicer."""
 
@@ -1012,6 +1201,119 @@ class TestServerHealthAndOptions:
         wait_until(lambda: self._port_can_be_bound(port))
         wait_until(lambda: self._servicer_threads() <= threads_before)
 
+    def test_log_failure_in_create_server_binds_no_port_and_closes_the_servicer(
+        self, server_module
+    ):
+        """An embedding program's log handler that raises is a failure like any other."""
+        threads_before = self._servicer_threads()
+        events = []
+        real_info = server_module.logger.info
+
+        def info_failing_on_the_last_message(message, *arguments, **keyword_arguments):
+            if str(message).startswith("Server configured"):
+                raise RuntimeError("log handler failed")
+            real_info(message, *arguments, **keyword_arguments)
+
+        with self._recording_transport(server_module, events) as servers_built, \
+                self._recording_servicers(server_module) as servicers_built, \
+                patch.object(server_module.logger, "info", info_failing_on_the_last_message):
+            with pytest.raises(RuntimeError, match="log handler failed"):
+                server_module.create_server(
+                    host="127.0.0.1", port=0, error_channel_mode="always"
+                )
+
+        (failed_server,) = servers_built
+        (servicer,) = servicers_built
+        assert failed_server.bound_ports == []
+        assert servicer._stop_requested.is_set()
+        wait_until(lambda: self._servicer_threads() <= threads_before)
+
+    def test_failed_create_server_reports_the_first_failure_not_the_cleanup(
+        self, server_module, caplog
+    ):
+        """HAL construction fails and the health cleanup raises too."""
+        threads_before = self._servicer_threads()
+        with self._recording_servicers(server_module) as servicers_built, \
+                patch.object(
+                    server_module, "HalServiceServicer",
+                    side_effect=RuntimeError("Failed to access HAL"),
+                ), patch.object(
+                    server_module.health.HealthServicer, "enter_graceful_shutdown",
+                    side_effect=RuntimeError("health failed"),
+                ), caplog.at_level(logging.ERROR, logger=server_module.logger.name):
+            with pytest.raises(RuntimeError, match="Failed to access HAL"):
+                server_module.create_server(
+                    host="127.0.0.1", port=0, error_channel_mode="always"
+                )
+
+        (servicer,) = servicers_built
+        assert servicer._stop_requested.is_set()
+        assert "health failed" in caplog.text
+        wait_until(lambda: self._servicer_threads() <= threads_before)
+
+    def test_serve_reports_the_start_failure_when_stopping_fails_too(
+        self, server_module, caplog
+    ):
+        fake_server = MagicMock()
+        fake_server.start.side_effect = RuntimeError("cannot start")
+        fake_server.stop.side_effect = RuntimeError("cannot stop")
+
+        with patch.object(server_module, "create_server", return_value=fake_server), \
+                patch.object(server_module.signal, "signal"), \
+                caplog.at_level(logging.ERROR, logger=server_module.logger.name):
+            with pytest.raises(RuntimeError, match="cannot start"):
+                server_module.serve(port=0)
+
+        assert "cannot stop" in caplog.text
+
+    def test_serve_raises_a_stop_failure_when_nothing_else_failed(self, server_module):
+        real_signal = server_module.signal
+        fake_server = MagicMock()
+        fake_server.stop.side_effect = RuntimeError("cannot stop")
+        installed_handlers = {}
+        fake_server.start.side_effect = lambda: installed_handlers[real_signal.SIGTERM](
+            real_signal.SIGTERM, None
+        )
+
+        with patch.object(server_module, "create_server", return_value=fake_server), \
+                patch.object(server_module, "SHUTDOWN_POLL_INTERVAL", 0.01), \
+                patch.object(
+                    real_signal, "signal",
+                    side_effect=lambda signal_number, handler: installed_handlers.__setitem__(
+                        signal_number, handler
+                    ),
+                ):
+            with pytest.raises(RuntimeError, match="cannot stop"):
+                server_module.serve(port=0)
+
+    def test_stop_runs_every_step_and_raises_the_first_failure(
+        self, server_module, make_server, caplog
+    ):
+        """Called on its own, stop() does all three steps and then reports the first failure."""
+        events = []
+        with self._recording_transport(server_module, events), \
+                self._recording_servicers(server_module) as servicers_built:
+            server = make_server()
+        (servicer,) = servicers_built
+        server.start()
+        real_close = servicer.close
+
+        def close_that_fails_after_closing():
+            real_close()
+            raise RuntimeError("close failed")
+
+        with patch.object(
+            server_module.health.HealthServicer, "enter_graceful_shutdown",
+            side_effect=RuntimeError("health failed"),
+        ), patch.object(servicer, "close", close_that_fails_after_closing), \
+                caplog.at_level(logging.ERROR, logger=server_module.logger.name):
+            with pytest.raises(RuntimeError, match="health failed"):
+                server.stop(grace=0)
+
+        assert ("transport stop", 0) in events
+        assert servicer._stop_requested.is_set()
+        assert "close failed" in caplog.text
+
     def test_create_server_binds_the_port_after_everything_else(self, server_module):
         """Nothing that can fail comes after the bind."""
         steps = []
@@ -1202,20 +1504,28 @@ class TestServerHealthAndOptions:
                         signal_number, handler
                     ),
                 ):
-            serving = threading.Thread(target=server_module.serve, kwargs={"port": 0})
-            serving.start()
-            wait_until(lambda: fake_server.start.called and len(installed_handlers) == 2)
-            shutdown_handler = installed_handlers[server_module.signal.SIGTERM]
-
-            handler_caller = threading.Thread(
-                target=shutdown_handler, args=(server_module.signal.SIGTERM, None), daemon=True
+            # A daemon thread, and asked to stop in the finally below even if
+            # the test fails first, so it can never keep pytest from ending.
+            serving = threading.Thread(
+                target=server_module.serve, kwargs={"port": 0}, daemon=True
             )
+            sigterm = server_module.signal.SIGTERM
+
+            def deliver_shutdown_signal():
+                installed_handlers[sigterm](sigterm, None)
+
+            handler_caller = threading.Thread(target=deliver_shutdown_signal, daemon=True)
             logging_caller = threading.Thread(
                 target=server_logger.info, args=("control",), daemon=True
             )
+            handler_returned_while_lock_was_held = False
+            control_was_blocked = False
+            messages_logged_while_lock_was_held = None
             # Held before it is attached, so nothing gets through it early.
             held_log_handler.acquire()
+            serving.start()
             try:
+                wait_until(lambda: fake_server.start.called and len(installed_handlers) == 2)
                 server_logger.addHandler(held_log_handler)
                 server_logger.setLevel(logging.DEBUG)
                 # Logging locks are reentrant, so the callers are other threads.
@@ -1229,7 +1539,11 @@ class TestServerHealthAndOptions:
                 messages_logged_while_lock_was_held = list(messages_logged)
             finally:
                 held_log_handler.release()
-                logging_caller.join(timeout=5.0)
+                if logging_caller.is_alive():
+                    logging_caller.join(timeout=5.0)
+                if not handler_caller.ident and sigterm in installed_handlers:
+                    # The test failed before it asked serve() to stop.
+                    deliver_shutdown_signal()
                 serving.join(timeout=5.0)
                 server_logger.removeHandler(held_log_handler)
                 server_logger.setLevel(level_before)

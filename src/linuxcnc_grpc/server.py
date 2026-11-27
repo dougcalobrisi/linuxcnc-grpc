@@ -160,47 +160,72 @@ def create_server(
         # If LinuxCNC is not up yet, keep checking and connect when it is.
         linuxcnc_servicer.start_waiting_for_linuxcnc()
 
-        # Bind last. A gRPC server that was never started cannot give its
-        # port back (stop() does nothing on it), so the port is only taken
-        # once nothing else can fail. A bad address or a port in use fails
-        # here, and the cleanup below stops what was built.
+        # The servicer runs background threads (the wait for LinuxCNC and
+        # the error channel reader). Stop them with the server, whoever
+        # stops it, so a stopped server does not keep reading LinuxCNC's
+        # error channel.
+        stop_grpc_server = server.stop
+
+        def stop_server_and_servicer(grace):
+            # Health watchers are told first: every service turns
+            # NOT_SERVING. Then the transport, and only then the servicer.
+            # Closing the servicer can wait for its lock, which a command
+            # that LinuxCNC is not answering holds for seconds; the
+            # transport's shutdown and its grace period must not start late
+            # because of that. Every step runs whatever the others did; the
+            # first failure is raised once all three have run.
+            failures = []
+            stopped = None
+            try:
+                health_servicer.enter_graceful_shutdown()
+            except Exception as health_failure:
+                failures.append(health_failure)
+            try:
+                stopped = stop_grpc_server(grace)
+            except Exception as transport_failure:
+                failures.append(transport_failure)
+            try:
+                linuxcnc_servicer.close()
+            except Exception as close_failure:
+                failures.append(close_failure)
+            for later_failure in failures[1:]:
+                logger.error(
+                    "Another step of stopping the server failed as well",
+                    exc_info=later_failure,
+                )
+            if failures:
+                raise failures[0]
+            return stopped
+
+        server.stop = stop_server_and_servicer
+        logger.info(f"Server configured; binding {address}")
+
+        # Bind last: this is the last statement that can fail. A gRPC server
+        # that was never started cannot give its port back (stop() does
+        # nothing on it), so the port is only taken once nothing else can
+        # fail. A bad address or a port in use fails here, and the cleanup
+        # below stops what was built.
         server.add_insecure_port(address)
     except BaseException:
         # No server will be returned, so nothing else would ever stop the
         # LinuxCNC servicer's background threads (in "always" mode the error
         # reader would go on taking LinuxCNC's messages). No port is bound
-        # and nothing was started, so there is no transport to stop.
+        # and nothing was started, so there is no transport to stop. A
+        # cleanup step that fails is logged: the caller must see the failure
+        # that brought us here, not one from the cleanup.
         try:
             health_servicer.enter_graceful_shutdown()
-        finally:
-            if linuxcnc_servicer is not None:
+        except Exception:
+            logger.exception("Cleaning up after a failed start: the health service failed")
+        if linuxcnc_servicer is not None:
+            try:
                 linuxcnc_servicer.close()
+            except Exception:
+                logger.exception(
+                    "Cleaning up after a failed start: closing the LinuxCNC servicer failed"
+                )
         raise
 
-    # The servicer runs background threads (the wait for LinuxCNC and the
-    # error channel reader). Stop them with the server, whoever stops it, so
-    # a stopped server does not keep reading LinuxCNC's error channel.
-    stop_grpc_server = server.stop
-
-    def stop_server_and_servicer(grace):
-        # Health watchers are told first: every service turns NOT_SERVING.
-        # Then the transport, and only then the servicer. Closing the
-        # servicer can wait for its lock, which a command that LinuxCNC is
-        # not answering holds for seconds; the transport's shutdown and its
-        # grace period must not start late because of that. Each step runs
-        # even if the one before it raised.
-        try:
-            try:
-                health_servicer.enter_graceful_shutdown()
-            finally:
-                stopped = stop_grpc_server(grace)
-        finally:
-            linuxcnc_servicer.close()
-        return stopped
-
-    server.stop = stop_server_and_servicer
-
-    logger.info(f"Server configured on {address}")
     return server
 
 
@@ -249,6 +274,9 @@ def serve(
     # arriving later must not land in this call's list, where nobody looks.
     previous_signal_handlers = {}
     server = None
+    # True until the body below has run to its end, so the cleanup knows
+    # whether a failure is already on its way to the caller.
+    failure_is_propagating = True
 
     try:
         # Installed before the server is created, which can take as long as
@@ -293,31 +321,39 @@ def serve(
             )
         else:
             logger.info("Shutdown signal received, stopping server...")
+        failure_is_propagating = False
     finally:
         # Also on a failure above (a server.start() that raised included),
         # so the servicer's threads never outlive serve(). If create_server
         # failed there is no server, and it has cleaned up after itself.
         try:
-            if server is not None:
-                stopped = server.stop(grace=SHUTDOWN_GRACE_PERIOD)
-                # Bounded: a transport that never reports having stopped
-                # (one whose start failed half-way, for example) must not
-                # hold serve() for ever.
-                if not stopped.wait(SHUTDOWN_WAIT_TIMEOUT):
-                    logger.error(
-                        f"The gRPC server did not finish stopping within "
-                        f"{SHUTDOWN_WAIT_TIMEOUT:g} seconds; not waiting any longer"
+            try:
+                if server is not None:
+                    stopped = server.stop(grace=SHUTDOWN_GRACE_PERIOD)
+                    # Bounded: a transport that never reports having stopped
+                    # (one whose start failed half-way, for example) must
+                    # not hold serve() for ever.
+                    if not stopped.wait(SHUTDOWN_WAIT_TIMEOUT):
+                        logger.error(
+                            f"The gRPC server did not finish stopping within "
+                            f"{SHUTDOWN_WAIT_TIMEOUT:g} seconds; not waiting any longer"
+                        )
+            finally:
+                for shutdown_signal, previous_handler in previous_signal_handlers.items():
+                    # None means the previous handler was not set from
+                    # Python. It cannot be put back, and leaving this call's
+                    # handler would swallow later signals, so the default
+                    # action is the closest there is.
+                    signal.signal(
+                        shutdown_signal,
+                        signal.SIG_DFL if previous_handler is None else previous_handler,
                     )
-        finally:
-            for shutdown_signal, previous_handler in previous_signal_handlers.items():
-                # None means the previous handler was not set from Python.
-                # It cannot be put back, and leaving this call's handler
-                # would swallow later signals, so the default action is the
-                # closest there is.
-                signal.signal(
-                    shutdown_signal,
-                    signal.SIG_DFL if previous_handler is None else previous_handler,
-                )
+        except Exception:
+            # The caller must see the failure that ended serve(), not one
+            # from cleaning up after it.
+            if not failure_is_propagating:
+                raise
+            logger.exception("Stopping the server after a failure failed as well")
     logger.info("Server stopped")
     if unrecoverable_errors:
         # main() turns this into exit status 1, so a supervisor restarts

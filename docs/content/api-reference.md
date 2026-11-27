@@ -143,6 +143,12 @@ if response.status == linuxcnc_pb2.RCS_ERROR:
 > [WaitComplete](#waitcomplete) or watch the status to find out when it is
 > done. See [Command and Error Semantics](server.md#command-and-error-semantics).
 
+The server sends one command at a time. While it shuts down, commands still
+waiting their turn are answered `RCS_ERROR` without being sent, except those
+that only stop something (E-stop, machine off, program abort and pause, jog
+stop, spindle off), which are always sent. The same applies to a command
+whose client has gone away before its turn.
+
 ---
 
 ### WaitComplete

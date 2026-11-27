@@ -100,6 +100,48 @@ COMMAND_NOT_ACCEPTED_MESSAGE = (
 )
 
 
+# SendCommand's error_message for a command that reached its turn at the
+# servicer lock only after the server began to stop, or after its own
+# client had gone. Nothing is sent in either case, unless the command only
+# stops things (see _only_stops_things).
+SERVER_SHUTTING_DOWN_MESSAGE = (
+    "The server is shutting down; the command was not sent"
+)
+REQUEST_NO_LONGER_ACTIVE_MESSAGE = (
+    "The request was cancelled before its turn; the command was not sent"
+)
+
+
+def _only_stops_things(request: linuxcnc_pb2.LinuxCNCCommand) -> bool:
+    """
+    Whether the command can only stop something, never start or move it.
+
+    A client must always be able to stop: such a command is sent even when
+    the server is shutting down or its client has gone, because sending a
+    stop late is safe and dropping it is not. The list is deliberately
+    short. Anything not named here (brake engage included: braking a
+    turning spindle is not plainly harmless) is treated as able to start
+    something.
+    """
+    command_type = request.WhichOneof("command")
+    if command_type == "state":
+        # E-stop and machine off; not E-stop reset, not machine on.
+        return request.state.state in (linuxcnc_pb2.STATE_ESTOP, linuxcnc_pb2.STATE_OFF)
+    if command_type == "jog":
+        return request.jog.type == linuxcnc_pb2.JOG_STOP
+    if command_type == "spindle":
+        return request.spindle.command == linuxcnc_pb2.SPINDLE_CMD_OFF
+    if command_type == "program":
+        # Abort and pause; not open, run, step or resume. A false flag is
+        # not a command at all (the handler rejects it).
+        program_command = request.program.WhichOneof("command")
+        if program_command == "abort":
+            return request.program.abort
+        if program_command == "pause":
+            return request.program.pause
+    return False
+
+
 class DispatchRecord(NamedTuple):
     """
     What WaitComplete needs to know about one dispatched command.
@@ -608,6 +650,23 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             if not context.is_active():
                 return False
 
+    def _reason_not_to_send(
+        self, request: linuxcnc_pb2.LinuxCNCCommand, context: grpc.ServicerContext
+    ) -> str | None:
+        """
+        Why a command must not be sent to LinuxCNC any more, or None.
+
+        Caller holds self._lock and is about to run the command's handler.
+        A command that only stops things is never refused here.
+        """
+        if _only_stops_things(request):
+            return None
+        if self._stop_requested.is_set():
+            return SERVER_SHUTTING_DOWN_MESSAGE
+        if not context.is_active():
+            return REQUEST_NO_LONGER_ACTIVE_MESSAGE
+        return None
+
     def _read_linuxcnc_command_serial(self) -> int | None:
         """
         Read LinuxCNC's serial for the command most recently sent.
@@ -952,6 +1011,21 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             handler = self._command_handlers.get(command_type)
             if handler:
                 with self._lock:
+                    # Asked here, with the lock held and right before the
+                    # handler: a command can wait for the lock for seconds
+                    # behind another one, and must not be sent if the server
+                    # began to stop or its client went away meanwhile. A
+                    # command that only stops things is always sent.
+                    reason_not_to_send = self._reason_not_to_send(request, context)
+                    if reason_not_to_send is not None:
+                        logger.warning(
+                            f"Command not sent: {command_type} ({reason_not_to_send})"
+                        )
+                        return linuxcnc_pb2.CommandResponse(
+                            serial=serial,
+                            status=linuxcnc_pb2.RCS_ERROR,
+                            error_message=reason_not_to_send,
+                        )
                     echo_serial_before_dispatch = self._sample_echo_serial_for_fallback()
                     linuxcnc_serial_before_dispatch = self._read_linuxcnc_command_serial()
                     try:

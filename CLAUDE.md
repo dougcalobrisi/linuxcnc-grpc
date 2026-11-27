@@ -260,8 +260,8 @@ of this without re-measuring):
   under the lock and answers `RCS_EXEC` if it cannot get the lock by its deadline.
 - `create_server` wraps `server.stop`. Stopping does three things, in this order: every
   health service turns `NOT_SERVING` (`enter_graceful_shutdown`), the gRPC server's own
-  `stop(grace)` is called (it returns its event at once), and `servicer.close()` runs. The
-  three are nested in `try`/`finally`, so each runs even if the one before it raised. The
+  `stop(grace)` is called (it returns its event at once), and `servicer.close()` runs. Each
+  of the three runs whatever the others did, and the first failure is raised at the end. The
   servicer comes last because `close()` can wait for the servicer lock, and
   `SendCommand` holds that lock for a whole dispatch, which takes seconds when LinuxCNC's
   task is not answering. The transport's shutdown and grace period must not start late
@@ -280,16 +280,32 @@ of this without re-measuring):
     and the error reader ends without reading (`_poll_error_channel` returns nothing once
     the flag is set).
   - `close()` may be called again.
+  - A command is not sent afterwards, unless it only stops things. `SendCommand` asks
+    `_reason_not_to_send(request, context)` inside its lock hold, right before the handler:
+    with the stop flag set, or with `context.is_active()` false (the client went away while
+    the command waited for the lock), the answer is `RCS_ERROR` and nothing is sent or
+    recorded. Keep the check inside the lock and before the first thing that talks to
+    LinuxCNC.
+  - **A client must always be able to stop**: sending a stop late is safe, dropping it is
+    not. `_only_stops_things(request)` names the commands that are never refused there:
+    state `STATE_ESTOP` and `STATE_OFF`, program `abort` and `pause`, jog `JOG_STOP`,
+    spindle `SPINDLE_CMD_OFF`. Keep the list short and explicit. Brake engage is not on it
+    (braking a turning spindle is not plainly harmless), nor are overrides set to zero. It
+    is the same principle as never refusing a stop over a field the stop does not use.
 - **`create_server` binds the port last and never starts anything.** Its order: health
   service, LinuxCNC servicer, HAL servicer, the two registrations, the waiting thread, and
   only then `add_insecure_port`. A gRPC server that was never started cannot give its port
   back: `stop()` does nothing on it and the port stays bound until the process exits or the
   object is collected (measured with grpcio 1.76 on macOS). So the port is taken only when
-  nothing else can fail. Any failure (`BaseException`, so Ctrl+C too) turns health to
-  graceful shutdown and closes the LinuxCNC servicer if it was built, each even if the other
-  raised, and re-raises with no port bound. Do not start the server on a failure path to
-  free a port: a half-built server could serve the machine RPCs (`close()` leaves
-  `_connected` as it is, and `SendCommand` does not refuse a closed servicer).
+  nothing else can fail: the stop wrapper is installed and the last log line written
+  before it, so the bind is the last statement that can raise. Any failure (`BaseException`,
+  so Ctrl+C too) turns health to graceful shutdown and closes the LinuxCNC servicer if it
+  was built, and re-raises with no port bound. A cleanup step that fails is logged
+  (`logger.exception`) and never replaces the failure that caused the cleanup; `serve()`'s
+  `finally` follows the same rule when a failure is already propagating
+  (`failure_is_propagating`). The stop wrapper called on its own runs all three steps and
+  then raises the first failure, logging any later one. Do not start the server on a
+  failure path to free a port: a half-built server could serve the machine RPCs.
   - What a failure leaves: no port, no transport, no LinuxCNC servicer thread once `close()`
     has done its work (see the bounds above). The HAL servicer has no `close()`, so a HAL
     component already created stays until the process exits.
