@@ -39,7 +39,10 @@ def file_service(mock_linuxcnc_module, mock_linuxcnc_stat, nc_files_dir):
         sys.modules.pop("linuxcnc_grpc.linuxcnc_service", None)
         from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
 
-        yield LinuxCNCServiceServicer(nc_files_dir=str(nc_files_dir))
+        service = LinuxCNCServiceServicer(nc_files_dir=str(nc_files_dir))
+        yield service
+        # Stops the error reader thread, which would otherwise outlive the test.
+        service.close()
 
 
 def _aborted_with(mock_grpc_context):
@@ -1198,10 +1201,13 @@ class TestSymlinkLoopOutsideTheName:
             from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
 
             service = LinuxCNCServiceServicer(nc_files_dir=str(looping_directory))
-            with patch.object(Path, "resolve", resolve_without_loop_detection):
-                response = getattr(service, rpc_name)(
-                    make_request(linuxcnc_pb2), mock_grpc_context
-                )
+            try:
+                with patch.object(Path, "resolve", resolve_without_loop_detection):
+                    response = getattr(service, rpc_name)(
+                        make_request(linuxcnc_pb2), mock_grpc_context
+                    )
+            finally:
+                service.close()
 
         assert response is None
         assert _aborted_with(mock_grpc_context) == grpc.StatusCode.INTERNAL

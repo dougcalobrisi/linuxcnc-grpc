@@ -355,6 +355,20 @@ class TestLinuxCNCServiceIntegration:
         assert config.linear_units_name == "mm"
         assert config.joints[0].HasField("home_sequence")
 
+    def test_stream_errors_replays_buffered_messages(self, linuxcnc_client):
+        """StreamErrors with replay_buffered starts with the server's buffered messages."""
+        stream = linuxcnc_client.StreamErrors(
+            linuxcnc_pb2.StreamErrorsRequest(replay_buffered=True), timeout=5.0
+        )
+        try:
+            first_message = next(stream)
+        finally:
+            stream.cancel()
+
+        assert first_message.message == "mock buffered error"
+        assert first_message.type == linuxcnc_pb2.ErrorMessage.OPERATOR_ERROR
+        assert first_message.sequence == 1
+
     def test_wait_complete(self, linuxcnc_client):
         """Test WaitComplete returns immediately in mock."""
         request = linuxcnc_pb2.WaitCompleteRequest(serial=50, timeout=5.0)

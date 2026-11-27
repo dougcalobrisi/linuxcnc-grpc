@@ -12,6 +12,29 @@ from unittest.mock import MagicMock, patch
 import grpc
 import pytest
 
+from linuxcnc_grpc.error_broker import ErrorBroker
+
+
+@pytest.fixture(autouse=True)
+def stop_error_readers_after_each_test():
+    """
+    Stop the error reader thread of every servicer a test constructs.
+
+    The tests here build servicers inline and do not close them; a reader
+    thread left running would be counted by later tests that check threads.
+    """
+    started_brokers = []
+    real_start = ErrorBroker.start
+
+    def start_and_remember(broker):
+        started_brokers.append(broker)
+        real_start(broker)
+
+    with patch.object(ErrorBroker, "start", start_and_remember):
+        yield
+    for broker in started_brokers:
+        broker.stop()
+
 
 class TestLinuxCNCServiceInit:
     """Test LinuxCNCServiceServicer initialization."""
@@ -2560,87 +2583,6 @@ class TestStreamStatus:
                 list(service.StreamStatus(request, mock_grpc_context))
 
                 mock_sleep.assert_called_with(0.1)
-
-
-class TestStreamErrors:
-    """Test StreamErrors RPC."""
-
-    def test_yields_error_messages(
-        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
-    ):
-        """Yields error messages from channel."""
-        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
-        mock_linuxcnc_module.command.return_value = MagicMock()
-        mock_error_channel = MagicMock()
-        # Return error first time, None second, then stop
-        mock_error_channel.poll.side_effect = [(1, "Test error"), None]
-        mock_linuxcnc_module.error_channel.return_value = mock_error_channel
-        mock_linuxcnc_module.OPERATOR_ERROR = 1
-        mock_grpc_context.is_active.side_effect = [True, True, False]
-
-        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_pb import linuxcnc_pb2
-
-            service = LinuxCNCServiceServicer()
-            request = linuxcnc_pb2.StreamErrorsRequest()
-
-            results = list(service.StreamErrors(request, mock_grpc_context))
-
-            assert len(results) == 1
-            assert results[0].message == "Test error"
-
-    def test_no_error_no_yield(
-        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
-    ):
-        """Does not yield when no errors."""
-        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
-        mock_linuxcnc_module.command.return_value = MagicMock()
-        mock_error_channel = MagicMock()
-        mock_error_channel.poll.return_value = None
-        mock_linuxcnc_module.error_channel.return_value = mock_error_channel
-        mock_grpc_context.is_active.side_effect = [True, False]
-
-        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_pb import linuxcnc_pb2
-
-            service = LinuxCNCServiceServicer()
-            request = linuxcnc_pb2.StreamErrorsRequest()
-
-            results = list(service.StreamErrors(request, mock_grpc_context))
-
-            assert len(results) == 0
-
-    def test_yields_different_error_types(
-        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
-    ):
-        """Yields different error types."""
-        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
-        mock_linuxcnc_module.command.return_value = MagicMock()
-        mock_error_channel = MagicMock()
-        mock_error_channel.poll.side_effect = [
-            (1, "Error message"),
-            (2, "Text message"),
-            None,
-        ]
-        mock_linuxcnc_module.error_channel.return_value = mock_error_channel
-        mock_linuxcnc_module.OPERATOR_ERROR = 1
-        mock_linuxcnc_module.OPERATOR_TEXT = 2
-        mock_grpc_context.is_active.side_effect = [True, True, True, False]
-
-        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_pb import linuxcnc_pb2
-
-            service = LinuxCNCServiceServicer()
-            request = linuxcnc_pb2.StreamErrorsRequest()
-
-            results = list(service.StreamErrors(request, mock_grpc_context))
-
-            assert len(results) == 2
-            assert results[0].message == "Error message"
-            assert results[1].message == "Text message"
 
 
 class TestOverrideLimitsCommand:

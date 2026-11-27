@@ -163,6 +163,9 @@ MOCK_READABLE_FILES = {
     MOCK_CHANGING_PROGRAM_NAME: MOCK_LARGE_PROGRAM_CONTENT,
 }
 
+# The message the mock's StreamErrors replays when asked for buffered messages.
+MOCK_BUFFERED_ERROR_TEXT = "mock buffered error"
+
 
 class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     """Mock LinuxCNC gRPC service returning deterministic responses."""
@@ -229,10 +232,17 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             time.sleep(interval)
 
     def StreamErrors(self, request, context):
-        """Stream errors (none in mock)."""
-        # In mock, we don't generate errors, just keep connection alive
+        """Replay one fixed buffered message if asked, then stay connected."""
+        if request.replay_buffered:
+            yield linuxcnc_pb2.ErrorMessage(
+                type=linuxcnc_pb2.ErrorMessage.OPERATOR_ERROR,
+                message=MOCK_BUFFERED_ERROR_TEXT,
+                timestamp=MOCK_PROGRAM_MODIFIED_NS,
+                sequence=1,
+            )
+        # The mock generates no new errors; just keep the connection alive
         while context.is_active():
-            time.sleep(1.0)
+            time.sleep(0.1)
 
     @staticmethod
     def _abort_unless_name_is_valid(filename, context):

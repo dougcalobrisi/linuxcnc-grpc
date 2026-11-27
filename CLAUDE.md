@@ -19,6 +19,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── linuxcnc_service.py    # LinuxCNCService RPCs
 │   ├── linuxcnc_mapper.py     # linuxcnc.stat() -> LinuxCNCStatus
 │   ├── machine_config.py      # GetMachineConfig builder (status + INI)
+│   ├── error_broker.py        # Single reader and fan-out of the error channel
 │   └── hal_service.py, hal_mapper.py  # HalService
 ├── packages/
 │   ├── go/                    # Generated Go code (*.pb.go, package pb)
@@ -44,6 +45,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── test_*_mapper.py       # Unit tests for proto mappers
 │   ├── test_*_service.py      # Unit tests for gRPC services
 │   ├── test_wait_for_linuxcnc.py  # scripts/wait-for-linuxcnc.py
+│   ├── test_error_broker.py   # Error fan-out, StreamErrors, status.errors
 │   ├── test_file_read_resolve.py  # ReadFile, ResolveFile
 │   ├── test_machine_config.py # GetMachineConfig
 │   ├── mock_server.py         # Mock gRPC server for integration tests
@@ -110,7 +112,7 @@ All packages use consistent naming across registries:
 **Thread Safety**: `LinuxCNCServiceServicer` uses a `threading.RLock` to protect all
 accesses to `self._stat`, `self._command`, and `self._error_channel`. Streaming RPCs
 (`StreamStatus`, `StreamErrors`) hold the lock only during poll/map operations, releasing
-it before `sleep` and `yield` to avoid blocking other threads.
+it before waiting and `yield` to avoid blocking other threads.
 
 **Command Dispatch**: `SendCommand` uses an explicit `_command_handlers` dict mapping
 command type strings to handler methods (no dynamic `getattr` dispatch).
@@ -263,9 +265,35 @@ Other behaviour:
   overrun its timeout behind a slow lock holder. The first slice is always tried, so a free
   lock is still taken at or past the deadline and for an RPC that is already cancelled.
 
-**Errors**: `LinuxCNCStatus.errors` is always empty (`linuxcnc_mapper.py` sets `errors=[]`).
-Error messages reach clients only through `StreamErrors`, which calls `error_channel.poll()`
-and so consumes messages from the single NML error queue, taking them away from the GUI.
+**Errors (`error_broker.py`)**: LinuxCNC's NML error channel is one queue and
+`error_channel.poll()` removes what it returns; there is no peek. Verified on the 2.9 sim: a
+second reader (same or other process) gets nothing after the first read, and re-posting is
+impossible because `operator_message` enqueues a new message the server would read again. So
+the server cannot hide its reading from the GUI; never claim it can.
+- `ErrorBroker` is the **only** caller of `error_channel.poll()` (through
+  `_poll_error_channel`, which takes the servicer lock). One daemon thread
+  (`linuxcnc-error-reader`) reads, stamps each message with a sequence (from 1) and a
+  read-time timestamp, keeps the newest `DEFAULT_ERROR_BUFFER_SIZE` (256) in a deque, and wakes
+  subscribers through one `threading.Condition`.
+- Modes (`--error-channel`, `error_channel_mode`): `on-demand` (default; reads only while
+  `subscriber_count > 0`, which is 1.0's effect on the GUI), `always` (reads from startup),
+  `off` (never reads; `StreamErrors` aborts `FAILED_PRECONDITION`). The default must stay
+  `on-demand`: `always` by default would silently have the server race the GUI for every message (whichever
+  reads first takes it).
+- `StreamErrors` only subscribes (`ErrorSubscription`, a context manager, so a closed generator
+  unsubscribes). It sends the response headers right after subscribing, so clients can tell the
+  subscription is live. `StreamErrorsRequest.replay_buffered` starts at the oldest buffered
+  message. Every subscriber gets every message that is still in the buffer when it asks; a
+  subscriber more than a buffer behind loses the overflow with no error, visible only as a jump
+  in `sequence`.
+- `LinuxCNCStatus.errors` is filled by `_poll_and_map_status` from `ErrorBroker.recent(
+  STATUS_ERRORS_LIMIT)` (newest 20), in `GetStatus` and `StreamStatus`. It is empty when nothing
+  has been read (`off`, or `on-demand` with no stream so far).
+- `read_available()` drains synchronously and is what unit tests drive; the thread loop only
+  adds the mode gate, the 50 ms idle sleep and a 1 s backoff after a failed poll.
+- `LinuxCNCServiceServicer.close()` stops the reader thread, and may be called more than once.
+  `create_server` wraps `server.stop` so that stopping the server calls it first, and calls it
+  itself if anything fails after the servicer was constructed (HAL, the port bind).
 
 **Security**: the server has no authentication or TLS. Docs tell users to bind to
 `127.0.0.1` and use an SSH tunnel, or to run only on a trusted LAN (`docs/content/server.md`).
@@ -383,6 +411,13 @@ the target, the link stays); that is 1.0 behaviour, now
 documented, and `ResolveFile` shows clients the target first. If the loaded program's path
 cannot be resolved (`RuntimeError` from `resolve()` for a symlink loop, Python <= 3.12),
 `is_loaded_program` is false and `loaded_program` is the path as LinuxCNC reported it.
+
+**Tests and servicer threads**: every `LinuxCNCServiceServicer` whose error-channel mode is
+not `off` starts the `linuxcnc-error-reader` thread in its constructor. Tests must stop it
+(`service.close()`). The fixtures in `test_machine_config.py`,
+`test_file_read_resolve.py` and `test_error_broker.py` close what they
+build; `test_linuxcnc_service.py`, which constructs servicers inline, has an autouse fixture
+that records every `ErrorBroker.start` and stops those brokers after the test.
 
 ## Development Setup
 

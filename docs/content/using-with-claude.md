@@ -27,5 +27,5 @@ Claude Code ──MCP/stdio──▶ linuxcnc-mcp ──gRPC (SSH tunnel)──�
 
 ## How linuxcnc-mcp uses this API
 - **Completion is detected by polling `GetStatus`.** It snapshots `task.echo_serial_number` before sending and waits for it to advance, never comparing it with `CommandResponse.serial`. It never calls `WaitComplete`.
-- **Errors come from derived status by default** (task, exec and interp state, joint faults, limits). StreamErrors is opt-in, because it consumes the NML error queue the GUI also reads.
+- **Errors come from derived status by default** (task, exec and interp state, joint faults, limits). StreamErrors is opt-in, because reading the NML error queue takes messages away from the GUI (see [Error messages and the GUI]({{< ref "server#error-messages-and-the-gui" >}})).
 - **The HAL tools are read-only,** as `HalService` is.

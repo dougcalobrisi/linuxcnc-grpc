@@ -23,6 +23,7 @@ import grpc
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from linuxcnc_pb import linuxcnc_pb2_grpc, hal_pb2_grpc
 from .linuxcnc_service import MAX_UPLOAD_SIZE, LinuxCNCServiceServicer
+from .error_broker import ERROR_CHANNEL_MODES, ERROR_CHANNEL_ON_DEMAND
 from .hal_service import HalServiceServicer
 
 # Upload cap plus 1 MB for the filename and protobuf framing.
@@ -50,6 +51,7 @@ def create_server(
     port: int = 50051,
     max_workers: int = 10,
     nc_files_dir: str | None = None,
+    error_channel_mode: str = ERROR_CHANNEL_ON_DEMAND,
 ) -> grpc.Server:
     """
     Create and configure the gRPC server.
@@ -59,6 +61,9 @@ def create_server(
         port: Port number to listen on
         max_workers: Maximum number of worker threads
         nc_files_dir: Override directory for NC files
+        error_channel_mode: When the server reads LinuxCNC's error channel:
+            "on-demand" (only while a StreamErrors client is connected),
+            "always" or "off"
 
     Returns:
         Configured gRPC server (not yet started)
@@ -77,31 +82,54 @@ def create_server(
     )
 
     # Register services
-    linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(
-        LinuxCNCServiceServicer(nc_files_dir=nc_files_dir),
-        server
-    )
-    hal_pb2_grpc.add_HalServiceServicer_to_server(
-        HalServiceServicer(),
-        server
+    linuxcnc_servicer = LinuxCNCServiceServicer(
+        nc_files_dir=nc_files_dir,
+        error_channel_mode=error_channel_mode,
     )
 
-    # Register health check service
-    health_servicer = health.HealthServicer()
-    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
-    health_servicer.set("linuxcnc.LinuxCNCService", health_pb2.HealthCheckResponse.SERVING)
-    health_servicer.set("hal.HalService", health_pb2.HealthCheckResponse.SERVING)
-    health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+    try:
+        linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(linuxcnc_servicer, server)
+        hal_servicer = HalServiceServicer()
+        hal_pb2_grpc.add_HalServiceServicer_to_server(hal_servicer, server)
 
-    # Add insecure port (for development/testing)
-    address = f"{host}:{port}"
-    server.add_insecure_port(address)
+        # Register health check service
+        health_servicer = health.HealthServicer()
+        health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+        health_servicer.set("linuxcnc.LinuxCNCService", health_pb2.HealthCheckResponse.SERVING)
+        health_servicer.set("hal.HalService", health_pb2.HealthCheckResponse.SERVING)
+        health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+
+        # Add insecure port (for development/testing)
+        address = f"{host}:{port}"
+        server.add_insecure_port(address)
+    except Exception:
+        # No server will be returned, so nothing else would ever stop the
+        # LinuxCNC servicer's background thread (in "always" mode the error
+        # reader would go on taking LinuxCNC's messages).
+        linuxcnc_servicer.close()
+        raise
+
+    # The servicer runs a background thread (the error channel reader). Stop
+    # it with the server, whoever stops it, so a stopped server does not keep
+    # reading LinuxCNC's error channel.
+    stop_grpc_server = server.stop
+
+    def stop_server_and_servicer(grace):
+        linuxcnc_servicer.close()
+        return stop_grpc_server(grace)
+
+    server.stop = stop_server_and_servicer
 
     logger.info(f"Server configured on {address}")
     return server
 
 
-def serve(host: str = "0.0.0.0", port: int = 50051, nc_files_dir: str | None = None):
+def serve(
+    host: str = "0.0.0.0",
+    port: int = 50051,
+    nc_files_dir: str | None = None,
+    error_channel_mode: str = ERROR_CHANNEL_ON_DEMAND,
+):
     """
     Start the gRPC server and run until interrupted.
 
@@ -109,8 +137,12 @@ def serve(host: str = "0.0.0.0", port: int = 50051, nc_files_dir: str | None = N
         host: Host address to bind to
         port: Port number to listen on
         nc_files_dir: Override directory for NC files
+        error_channel_mode: When the server reads LinuxCNC's error channel
+            ("on-demand", "always" or "off")
     """
-    server = create_server(host, port, nc_files_dir=nc_files_dir)
+    server = create_server(
+        host, port, nc_files_dir=nc_files_dir, error_channel_mode=error_channel_mode
+    )
 
     # Handle shutdown signals gracefully
     shutdown_event = False
@@ -168,6 +200,17 @@ def main():
         help="Directory for NC files (default: $LINUXCNC_NC_FILES or /home/linuxcnc/linuxcnc/nc_files)"
     )
     parser.add_argument(
+        "--error-channel",
+        choices=ERROR_CHANNEL_MODES,
+        default=ERROR_CHANNEL_ON_DEMAND,
+        help=(
+            "When to read LinuxCNC's error channel. Messages the server reads are "
+            "not shown by the machine's GUI. on-demand: only while a StreamErrors "
+            "client is connected. always: from startup, so status and late "
+            "subscribers get recent messages. off: never; StreamErrors is refused"
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging"
@@ -180,7 +223,12 @@ def main():
         logger.debug("Debug logging enabled")
 
     try:
-        serve(host=args.host, port=args.port, nc_files_dir=args.nc_files)
+        serve(
+            host=args.host,
+            port=args.port,
+            nc_files_dir=args.nc_files,
+            error_channel_mode=args.error_channel,
+        )
     except Exception as e:
         logger.error(f"Server error: {e}")
         sys.exit(1)

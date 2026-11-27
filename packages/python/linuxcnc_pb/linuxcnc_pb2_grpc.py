@@ -131,7 +131,11 @@ class LinuxCNCServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def StreamErrors(self, request, context):
-        """Stream errors
+        """Stream messages from LinuxCNC's error channel. Each message the server
+        reads goes to every subscriber. The server keeps the newest 256 messages;
+        a subscriber that falls further behind loses the overflow, visible only
+        as a jump in ErrorMessage.sequence. Reading the channel takes messages
+        away from the machine's GUI; see the server's --error-channel option.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

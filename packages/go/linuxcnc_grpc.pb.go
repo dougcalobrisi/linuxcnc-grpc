@@ -44,7 +44,11 @@ type LinuxCNCServiceClient interface {
 	WaitComplete(ctx context.Context, in *WaitCompleteRequest, opts ...grpc.CallOption) (*CommandResponse, error)
 	// Stream status updates
 	StreamStatus(ctx context.Context, in *StreamStatusRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LinuxCNCStatus], error)
-	// Stream errors
+	// Stream messages from LinuxCNC's error channel. Each message the server
+	// reads goes to every subscriber. The server keeps the newest 256 messages;
+	// a subscriber that falls further behind loses the overflow, visible only
+	// as a jump in ErrorMessage.sequence. Reading the channel takes messages
+	// away from the machine's GUI; see the server's --error-channel option.
 	StreamErrors(ctx context.Context, in *StreamErrorsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ErrorMessage], error)
 	// Upload a G-code file to the nc_files directory
 	UploadFile(ctx context.Context, in *UploadFileRequest, opts ...grpc.CallOption) (*UploadFileResponse, error)
@@ -210,7 +214,11 @@ type LinuxCNCServiceServer interface {
 	WaitComplete(context.Context, *WaitCompleteRequest) (*CommandResponse, error)
 	// Stream status updates
 	StreamStatus(*StreamStatusRequest, grpc.ServerStreamingServer[LinuxCNCStatus]) error
-	// Stream errors
+	// Stream messages from LinuxCNC's error channel. Each message the server
+	// reads goes to every subscriber. The server keeps the newest 256 messages;
+	// a subscriber that falls further behind loses the overflow, visible only
+	// as a jump in ErrorMessage.sequence. Reading the channel takes messages
+	// away from the machine's GUI; see the server's --error-channel option.
 	StreamErrors(*StreamErrorsRequest, grpc.ServerStreamingServer[ErrorMessage]) error
 	// Upload a G-code file to the nc_files directory
 	UploadFile(context.Context, *UploadFileRequest) (*UploadFileResponse, error)

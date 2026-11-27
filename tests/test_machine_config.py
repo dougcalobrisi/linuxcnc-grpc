@@ -534,6 +534,8 @@ class TestGetMachineConfigRpc:
             return service
 
         yield _make_service
+        for service in services:
+            service.close()
 
     def test_reads_the_ini_file_named_in_status(
         self, make_service, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, tmp_path

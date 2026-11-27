@@ -423,6 +423,125 @@ class TestE2EStreaming:
         stream.cancel()
 
 
+def collect_stream_errors(stub, expected_text, replay_buffered=False, timeout=10.0):
+    """
+    Open StreamErrors in a thread and collect messages until one contains expected_text.
+
+    Returns (thread, collected_messages, ready_event). ready_event is set once
+    the stream is open on the server, so the caller knows a message posted
+    afterwards will be seen.
+    """
+    import threading
+
+    collected_messages = []
+    stream_is_open = threading.Event()
+
+    def read_stream():
+        stream = stub.StreamErrors(
+            linuxcnc_pb2.StreamErrorsRequest(replay_buffered=replay_buffered),
+            timeout=timeout,
+        )
+        try:
+            # The server sends the response headers once it has subscribed.
+            stream.initial_metadata()
+            stream_is_open.set()
+            for error_message in stream:
+                collected_messages.append(error_message)
+                if expected_text in error_message.message:
+                    break
+        except grpc.RpcError:
+            pass
+        finally:
+            stream_is_open.set()
+            stream.cancel()
+
+    reader = threading.Thread(target=read_stream, daemon=True)
+    reader.start()
+    return reader, collected_messages, stream_is_open
+
+
+def post_operator_error(stub, text):
+    """Have LinuxCNC put an operator error on its error channel."""
+    return stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+        operator_message=linuxcnc_pb2.OperatorMessageCommand(
+            type=linuxcnc_pb2.OperatorMessageCommand.ERROR, message=text
+        )
+    ))
+
+
+@pytest.mark.e2e
+class TestE2EErrors:
+    """Verify error fan-out against LinuxCNC's real error channel."""
+
+    def test_two_streams_both_receive_the_same_message(self, linuxcnc_stub):
+        """Every subscriber gets every message, with the same sequence number."""
+        text = f"e2e fan-out {time.time_ns()}"
+        first_reader, first_messages, first_open = collect_stream_errors(linuxcnc_stub, text)
+        second_reader, second_messages, second_open = collect_stream_errors(linuxcnc_stub, text)
+        assert first_open.wait(5.0) and second_open.wait(5.0)
+
+        post_operator_error(linuxcnc_stub, text)
+        first_reader.join(timeout=10.0)
+        second_reader.join(timeout=10.0)
+
+        first_match = [m for m in first_messages if text in m.message]
+        second_match = [m for m in second_messages if text in m.message]
+        assert len(first_match) == 1 and len(second_match) == 1
+        assert first_match[0].type == linuxcnc_pb2.ErrorMessage.OPERATOR_ERROR
+        assert first_match[0].sequence > 0
+        assert first_match[0].sequence == second_match[0].sequence
+        assert first_match[0].timestamp == second_match[0].timestamp
+
+    def test_status_errors_and_replay_carry_the_streamed_message(self, linuxcnc_stub):
+        """A message read for a stream shows up in status.errors and in a later replay."""
+        text = f"e2e status errors {time.time_ns()}"
+        reader, messages, stream_open = collect_stream_errors(linuxcnc_stub, text)
+        assert stream_open.wait(5.0)
+        post_operator_error(linuxcnc_stub, text)
+        reader.join(timeout=10.0)
+        streamed = [m for m in messages if text in m.message]
+        assert len(streamed) == 1
+
+        status = linuxcnc_stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
+        in_status = [e for e in status.errors if text in e.message]
+        assert len(in_status) == 1
+        assert in_status[0].sequence == streamed[0].sequence
+
+        # A subscriber that connects afterwards can ask for the buffer.
+        replay_reader, replayed_messages, replay_open = collect_stream_errors(
+            linuxcnc_stub, text, replay_buffered=True
+        )
+        replay_reader.join(timeout=10.0)
+        replayed = [m for m in replayed_messages if text in m.message]
+        assert len(replayed) == 1
+        assert replayed[0].sequence == streamed[0].sequence
+
+    def test_mdi_rejection_reaches_the_stream(self, linuxcnc_stub):
+        """A real LinuxCNC error (MDI in manual mode) arrives through StreamErrors."""
+        send_mode_command(linuxcnc_stub, linuxcnc_pb2.MODE_MANUAL)
+        wait_for_condition(
+            linuxcnc_stub,
+            lambda s: s.task.task_mode == linuxcnc_pb2.MODE_MANUAL,
+            description="MANUAL mode",
+        )
+        marker = f"e2e marker {time.time_ns()}"
+        reader, messages, stream_open = collect_stream_errors(linuxcnc_stub, marker)
+        assert stream_open.wait(5.0)
+
+        linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+            mdi=linuxcnc_pb2.MdiCommand(command="G0 X0")
+        ))
+        time.sleep(0.5)
+        # The marker ends the collection; everything before it is LinuxCNC's own.
+        post_operator_error(linuxcnc_stub, marker)
+        reader.join(timeout=10.0)
+
+        before_marker = [m for m in messages if marker not in m.message]
+        assert any("MDI" in m.message or "mode" in m.message.lower() for m in before_marker), (
+            f"expected LinuxCNC's MDI rejection, got {[m.message for m in messages]}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # HAL Tests
 # ---------------------------------------------------------------------------

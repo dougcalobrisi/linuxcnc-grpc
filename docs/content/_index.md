@@ -54,7 +54,7 @@ Main service for machine control:
 - **SendCommand** - Execute commands (jog, MDI, state changes, etc.)
 - **WaitComplete** - Wait for command completion
 - **StreamStatus** - Subscribe to real-time status updates
-- **StreamErrors** - Subscribe to error messages
+- **StreamErrors** - Subscribe to error messages (each message the server reads goes to every subscribed client)
 - **GetMachineConfig** - Kinematics, joint-to-axis mapping, limits, velocities and units
 - **UploadFile / ListFiles / ReadFile / DeleteFile** - Manage G-code files
 - **ResolveFile** - Check whether a file is the loaded program before changing it
@@ -79,4 +79,5 @@ HAL (Hardware Abstraction Layer) introspection:
 - [Rust tutorial](tutorial.md#rust)
 - [LinuxCNCService API](api-reference.md#linuxcncservice)
 - [HalService API](api-reference.md#halservice)
+- [Error messages and the GUI](server.md#error-messages-and-the-gui)
 - [Using with Claude (MCP)](using-with-claude.md)

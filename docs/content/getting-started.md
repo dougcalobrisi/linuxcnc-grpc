@@ -320,7 +320,7 @@ All gRPC calls can raise `grpc.RpcError`. Common status codes:
 | `UNAVAILABLE` | Server not reachable or LinuxCNC disconnected |
 | `INVALID_ARGUMENT` | A file RPC was given a bad argument: a file name outside the NC files directory, an empty name, empty or too large upload content |
 | `NOT_FOUND` | A file that does not exist |
-| `FAILED_PRECONDITION` | Machine not in correct state for command |
+| `FAILED_PRECONDITION` | `StreamErrors` on a server started with `--error-channel off` |
 | `INTERNAL` | Server-side error |
 
 A rejected command is not a gRPC error. If the server rejects it before

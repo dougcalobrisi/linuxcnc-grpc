@@ -58,6 +58,7 @@ python -m linuxcnc_grpc.server --host 0.0.0.0 --port 50051
 | `--host` | `0.0.0.0` | Address to bind to. Use `127.0.0.1` for local-only access |
 | `--port` | `50051` | Port number to listen on |
 | `--nc-files` | `/home/linuxcnc/linuxcnc/nc_files` | Directory for G-code file operations |
+| `--error-channel` | `on-demand` | When to read LinuxCNC's error channel: `on-demand`, `always` or `off`. See [Error messages and the GUI](#error-messages-and-the-gui) |
 | `--debug` | off | Enable debug logging |
 
 ## Auto-Start with LinuxCNC
@@ -417,21 +418,74 @@ The rest of this section describes the wait without `linuxcnc_serial`.
   threads (10 by default) until it returns. Don't park many long waits at
   once, or new RPCs will have to queue for a free thread.
 
-### `LinuxCNCStatus.errors` is always empty
+### Error messages and the GUI
 
-The `errors` field of `LinuxCNCStatus` is never filled in, by `GetStatus` or
-by `StreamStatus`. Operator and NML error messages are delivered **only**
-through `StreamErrors`.
+LinuxCNC delivers operator and NML error messages through its NML error
+channel. That channel is **a single queue, and reading a message removes
+it**. The LinuxCNC Python module offers no way to look at a message without
+taking it. So each message goes to exactly one reader: the machine's GUI
+(AXIS, gmoccapy and so on) or this server, never both.
 
-`StreamErrors` reads LinuxCNC's NML error channel, which is a single queue.
-**Each message is delivered to one reader only**, so a message your client
-receives is taken away from the machine's GUI (AXIS, gmoccapy and so on) and
-the operator will not see it there, and the reverse. Only call `StreamErrors`
-if you intend your client to be the place errors are shown.
+We checked this on the LinuxCNC 2.9 simulator, with a second error-channel
+reader standing in for the GUI:
 
-Without `StreamErrors` you can still detect trouble from the status:
-`task.exec_state`, `task.task_state` (estop), `task.interpreter_errcode`,
-limit status and joint faults.
+- A second reader in the same process, or in another process, gets nothing
+  once the first has read the message.
+- A reader that connects after the message was posted still finds it, as long
+  as nobody has read it yet.
+- Putting a message back for the GUI is not possible either. The only way to
+  post one is `operator_message`, which adds a *new* message to the same
+  queue, where the server would read it again.
+
+The server therefore cannot make its reading invisible to the GUI. What it
+can do is read in one place, share what it read with every client, and let
+you choose whether it reads at all. That is the `--error-channel` option:
+
+| Mode | The server reads the channel | GUI sees messages | `StreamErrors` | `status.errors` |
+|------|------------------------------|-------------------|----------------|-----------------|
+| `on-demand` (default) | Only while at least one `StreamErrors` client is connected | Yes; while a client is streaming, only the ones it polls before the server does | Works | Messages read during streams |
+| `always` | From startup | Only the ones it polls before the server does | Works, and `replay_buffered` returns messages from before the client connected | Always the most recent messages |
+| `off` | Never | Yes, always | Refused with `FAILED_PRECONDITION` | Always empty |
+
+Measured on the simulator: in `on-demand` with no stream open, and in `off`,
+the stand-in GUI reader received every message and `status.errors` stayed
+empty. In `on-demand` with a stream open, and in `always`, the stream
+received every message and the stand-in GUI reader received none. That is
+what was observed, not a guarantee: nothing reserves a message for the server,
+so a GUI that polls the queue first gets that message and the server never
+sees it.
+
+Which to use:
+
+- **A machine with an operator at a GUI:** keep `on-demand` and don't call
+  `StreamErrors` unless your client is meant to take over error display, or
+  use `off` to make sure no client can. Detect trouble from the status
+  instead: `task.exec_state`, `task.task_state` (estop),
+  `task.interpreter_errcode`, limit status and joint faults.
+- **A headless machine, or one driven entirely over gRPC:** use `always`.
+  Every client then sees every message the server read, and
+  `replay_buffered` returns the newest 256 from before the client connected.
+
+Details:
+
+- While the server reads the channel and a GUI is running too, both are
+  polling the same queue and each message goes to whichever polls first. The
+  server polls about every 50 ms.
+- In `on-demand` mode, a message that was waiting in the queue when the first
+  stream starts is read and delivered. When the last stream ends, the server
+  stops reading; a poll already under way at that moment may still take one
+  more message, which then appears in `status.errors` and in later replays.
+- The server keeps the most recent 256 messages. A `StreamErrors` client
+  that falls more than 256 messages behind loses the older ones. There is no
+  error; the only sign is a jump in `sequence`, which clients built against
+  1.0 cannot see.
+- `status.errors` carries the newest 20 messages in every `GetStatus` and
+  `StreamStatus` message, and they stay there until newer ones push them out.
+  Use `ErrorMessage.sequence` to tell a new message from one you have already
+  handled. If more than 20 messages arrive between two status reads, the
+  ones in between never appear there, so a gap in `sequence` between polls
+  is normal; use `StreamErrors` if you need every message.
+- `timestamp` is when the server read the message, not when LinuxCNC raised it.
 
 ## Using with Claude (MCP)
 

@@ -17,6 +17,7 @@ The suite has ~50 tests organized into these areas:
 - **WaitComplete** — blocking until commands finish, timeout behavior, waiting on one command by its `linuxcnc_serial`
 - **G-code execution** — upload/open/run, pause/resume, abort, single-step
 - **Jogging** — incremental and continuous jog with stop
+- **Errors** — fan-out of one message to two streams, `status.errors`, replay of buffered messages, a real MDI rejection
 - **Machine configuration** — `GetMachineConfig` against the simulator's INI file and status
 - **Coolant** — mist and flood on/off
 - **Rapid rate & max velocity** — override scales

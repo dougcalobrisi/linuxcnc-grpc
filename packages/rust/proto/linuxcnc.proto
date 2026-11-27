@@ -351,7 +351,12 @@ message ErrorMessage {
   }
   ErrorType type = 1;
   string message = 2;
-  int64 timestamp = 3;                  // Unix timestamp in nanoseconds
+  int64 timestamp = 3;                  // When the server read the message, unix timestamp in nanoseconds
+  // Position in the order the server read messages: starts at 1 and grows by
+  // one per message while the server runs. The same message has the same
+  // sequence in StreamErrors and in LinuxCNCStatus.errors, so clients can
+  // drop duplicates and notice gaps. It restarts when the server restarts.
+  int64 sequence = 4;
 }
 
 // ============================================================================
@@ -376,7 +381,11 @@ message LinuxCNCStatus {
   GCodeStatus gcode = 18;
   LimitStatus limits = 19;
 
-  // Errors (if any)
+  // The most recent messages the server has read from LinuxCNC's error
+  // channel (at most 20, oldest first). They stay here until newer ones push
+  // them out, so use ErrorMessage.sequence to tell new from already seen.
+  // Empty unless the server reads the error channel: see the server's
+  // --error-channel option.
   repeated ErrorMessage errors = 20;
 }
 
@@ -658,7 +667,11 @@ service LinuxCNCService {
   // Stream status updates
   rpc StreamStatus(StreamStatusRequest) returns (stream LinuxCNCStatus);
 
-  // Stream errors
+  // Stream messages from LinuxCNC's error channel. Each message the server
+  // reads goes to every subscriber. The server keeps the newest 256 messages;
+  // a subscriber that falls further behind loses the overflow, visible only
+  // as a jump in ErrorMessage.sequence. Reading the channel takes messages
+  // away from the machine's GUI; see the server's --error-channel option.
   rpc StreamErrors(StreamErrorsRequest) returns (stream ErrorMessage);
 
   // Upload a G-code file to the nc_files directory
@@ -709,7 +722,10 @@ message StreamStatusRequest {
 }
 
 message StreamErrorsRequest {
-  // Empty - streams all errors
+  // If true, the stream starts with the messages the server already holds in
+  // its buffer (the most recent 256), oldest first, and then continues with
+  // new ones. If false, only messages read from now on are sent.
+  bool replay_buffered = 1;
 }
 
 // ============================================================================

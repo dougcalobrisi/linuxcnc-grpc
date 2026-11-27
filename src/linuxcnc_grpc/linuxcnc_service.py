@@ -21,6 +21,7 @@ import linuxcnc
 from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 from .linuxcnc_mapper import LinuxCNCMapper
 from .machine_config import build_machine_config
+from .error_broker import BufferedError, ErrorBroker, ERROR_CHANNEL_ON_DEMAND
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,10 @@ ISSUED_SERIALS_REMEMBERED = 4096
 # CommandResponse.serial is an int32; the server's own counter wraps to 1
 # after this value.
 MAX_RESPONSE_SERIAL = 2**31 - 1
+
+# Error delivery
+STATUS_ERRORS_LIMIT = 20  # most recent error messages included in LinuxCNCStatus
+STREAM_ERRORS_WAIT_INTERVAL = 0.25  # seconds a StreamErrors call waits before rechecking the client
 
 # Default allowed NC file directory (override with LINUXCNC_NC_FILES env var)
 DEFAULT_NC_FILES_DIR = "/home/linuxcnc/linuxcnc/nc_files"
@@ -118,13 +123,20 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     Raises RuntimeError if LinuxCNC is not available.
     """
 
-    def __init__(self, nc_files_dir: str | None = None):
+    def __init__(
+        self,
+        nc_files_dir: str | None = None,
+        error_channel_mode: str = ERROR_CHANNEL_ON_DEMAND,
+    ):
         """
         Initialize the service with real LinuxCNC connection.
 
         Args:
             nc_files_dir: Override directory for NC files. If None, falls back
                 to LINUXCNC_NC_FILES env var, then DEFAULT_NC_FILES_DIR.
+            error_channel_mode: When the server reads LinuxCNC's error
+                channel: "on-demand" (only while a StreamErrors client is
+                connected), "always" or "off". See error_broker.
 
         Raises:
             RuntimeError: If linuxcnc module cannot connect to LinuxCNC.
@@ -180,8 +192,14 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         # Cache version from module attribute
         self._version = getattr(linuxcnc, 'version', 'unknown')
 
+        # The single reader of LinuxCNC's error channel. Created before the
+        # first connect and started after it, so it never polls a channel
+        # that does not exist yet.
+        self._error_broker = ErrorBroker(self._poll_error_channel, mode=error_channel_mode)
+
         # Establish initial connection
         self._connect()
+        self._error_broker.start()
         logger.info(f"LinuxCNCService initialized (CONNECTED) - LinuxCNC v{self._version}")
 
     def _connect(self) -> None:
@@ -229,6 +247,39 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             self._connected = False
         logger.error("Failed to reconnect to LinuxCNC after max retries")
         return False
+
+    def _poll_error_channel(self):
+        """Read one message from LinuxCNC's error channel, for the error broker."""
+        with self._lock:
+            return self._error_channel.poll()
+
+    def _error_to_proto(self, buffered_error: BufferedError) -> linuxcnc_pb2.ErrorMessage:
+        """Convert a message held by the error broker to its protobuf form."""
+        return linuxcnc_pb2.ErrorMessage(
+            type=self._map_error_type(buffered_error.error_kind),
+            message=buffered_error.message,
+            timestamp=buffered_error.timestamp_ns,
+            sequence=buffered_error.sequence,
+        )
+
+    def _recent_errors(self) -> list[linuxcnc_pb2.ErrorMessage]:
+        """The newest error messages the server has read, for LinuxCNCStatus.errors."""
+        return [
+            self._error_to_proto(buffered_error)
+            for buffered_error in self._error_broker.recent(STATUS_ERRORS_LIMIT)
+        ]
+
+    def _poll_and_map_status(self) -> linuxcnc_pb2.LinuxCNCStatus:
+        """
+        Poll LinuxCNC and build the status message. Caller must hold self._lock.
+        """
+        self._stat.poll()
+        mapper = LinuxCNCMapper(self._stat, version=self._version)
+        return mapper.map_to_proto(errors=self._recent_errors())
+
+    def close(self) -> None:
+        """Stop the servicer's background thread. Call when the server shuts down."""
+        self._error_broker.stop()
 
     def _next_serial(self) -> int:
         """Get next command serial number, within 1..MAX_RESPONSE_SERIAL."""
@@ -533,17 +584,13 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         logger.debug("GetStatus called")
         try:
             with self._lock:
-                self._stat.poll()
-                mapper = LinuxCNCMapper(self._stat, version=self._version)
-                return mapper.map_to_proto()
+                return self._poll_and_map_status()
         except linuxcnc.error as e:
             logger.error(f"LinuxCNC error in GetStatus: {e}")
             if self._reconnect():
                 try:
                     with self._lock:
-                        self._stat.poll()
-                        mapper = LinuxCNCMapper(self._stat, version=self._version)
-                        return mapper.map_to_proto()
+                        return self._poll_and_map_status()
                 except Exception as retry_error:
                     logger.error(f"GetStatus failed after reconnect: {retry_error}")
             context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
@@ -1102,9 +1149,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             while context.is_active():
                 try:
                     with self._lock:
-                        self._stat.poll()
-                        mapper = LinuxCNCMapper(self._stat, version=self._version)
-                        status = mapper.map_to_proto()
+                        status = self._poll_and_map_status()
                     yield status
                 except linuxcnc.error as e:
                     logger.error(f"LinuxCNC error in StreamStatus: {e}")
@@ -1571,27 +1616,42 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         context: grpc.ServicerContext
     ) -> Iterator[linuxcnc_pb2.ErrorMessage]:
         """
-        Stream error messages from LinuxCNC error channel.
+        Stream messages from LinuxCNC's error channel.
 
-        Polls the error channel and yields ErrorMessage for each error received.
+        The error broker is the only reader of the channel; this call just
+        subscribes to it, so any number of clients can stream at once and
+        each receives every message. With request.replay_buffered, the
+        stream starts with the messages already in the broker's buffer.
+
+        Reading the channel takes messages away from the machine's GUI. In
+        "on-demand" mode (the default) the server reads only while at least
+        one subscriber is connected; in "off" mode this call is refused.
         """
-        logger.info("StreamErrors started")
+        if not self._error_broker.reads_error_channel:
+            context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "The server is configured not to read LinuxCNC's error channel "
+                "(--error-channel off)"
+            )
+            return
+
+        logger.info(f"StreamErrors started - replay_buffered={request.replay_buffered}")
 
         try:
-            while context.is_active():
-                with self._lock:
-                    error = self._error_channel.poll()
-                if error:
-                    try:
-                        error_type, message = error
-                        yield linuxcnc_pb2.ErrorMessage(
-                            type=self._map_error_type(error_type),
-                            message=message,
-                            timestamp=int(time.time() * 1e9)
-                        )
-                    except Exception as e:
-                        logger.error(f"Error processing error message: {e}", exc_info=True)
-                time.sleep(0.05)  # 50ms poll interval
+            with self._error_broker.subscribe(
+                replay_buffered=request.replay_buffered
+            ) as subscription:
+                # Send the response headers now, so a client can tell that
+                # its subscription is in place before the first message.
+                context.send_initial_metadata(())
+                # Also ends when the broker is stopped (server shutdown):
+                # wait_for_messages() then returns at once, and looping on
+                # would spin until the client went away.
+                while context.is_active() and not self._error_broker.is_stopped:
+                    for buffered_error in subscription.wait_for_messages(
+                        timeout=STREAM_ERRORS_WAIT_INTERVAL
+                    ):
+                        yield self._error_to_proto(buffered_error)
         except grpc.RpcError:
             pass  # Client disconnected; normal shutdown
         except OSError as e:
