@@ -171,7 +171,8 @@ Two things to know before you rely on the responses:
   a later command has been echoed, from any client, it is `RCS_DONE` and does
   not say how the earlier command ended (see
   [Command and Error Semantics](server.md#waitcomplete)).
-- The server does not switch modes for you.
+- The server does not switch modes for you. See
+  [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first).
 
 ### Example: MDI Command (Python)
 

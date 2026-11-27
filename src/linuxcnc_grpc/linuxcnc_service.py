@@ -6,6 +6,7 @@ Requires the linuxcnc Python module and a running LinuxCNC instance.
 """
 
 import errno
+import math
 import os
 import stat as stat_module
 import subprocess
@@ -179,6 +180,20 @@ def _as_plain_int(value) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool):
         return value
     return None
+
+
+def _require_finite(field_name: str, value: float) -> None:
+    """Raise ValueError unless value is a finite number (not NaN, not infinite)."""
+    if not math.isfinite(value):
+        raise ValueError(f"{field_name} must be a finite number, got {value}")
+
+
+def _require_finite_and_not_negative(field_name: str, value: float) -> None:
+    """Raise ValueError unless value is finite and zero or more."""
+    # Finite first: NaN passes any comparison-based check.
+    _require_finite(field_name, value)
+    if value < 0:
+        raise ValueError(f"{field_name} must not be negative, got {value}")
 
 
 class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
@@ -767,24 +782,39 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         return None
 
     def _validate_joint_index(self, index: int, is_joint: bool = False) -> None:
-        """Validate joint or axis index is within bounds."""
+        """
+        Validate that a joint or axis index names one that exists.
+
+        No negative index passes: home and unhome handle their own -1 ("all
+        joints") before calling this.
+        """
         with self._lock:
             self._stat.poll()
             if is_joint:
                 max_index = len(self._stat.joint)
+                # stat.joint always has 16 entries; only the first
+                # stat.joints of them are joints the machine has.
+                configured_joint_count = _as_plain_int(getattr(self._stat, 'joints', None))
+                if configured_joint_count is not None and 0 < configured_joint_count < max_index:
+                    max_index = configured_joint_count
             else:
                 max_index = len(self._stat.axis)
-        if index < -1 or index >= max_index:
-            label = "joint" if is_joint else "axis"
-            raise ValueError(f"{label} index {index} out of range (0..{max_index - 1})")
         if index == -1 and not is_joint:
             raise ValueError("axis index -1 is not valid")
+        if index < 0 or index >= max_index:
+            label = "joint" if is_joint else "axis"
+            raise ValueError(f"{label} index {index} out of range (0..{max_index - 1})")
 
     def _validate_spindle_index(self, index: int) -> None:
-        """Validate spindle index is within bounds."""
+        """Validate that a spindle index names a spindle the machine has."""
         with self._lock:
             self._stat.poll()
             max_index = len(self._stat.spindle)
+            # stat.spindle always has 8 entries; only the first
+            # stat.spindles of them are spindles the machine has.
+            configured_spindle_count = _as_plain_int(getattr(self._stat, 'spindles', None))
+            if configured_spindle_count is not None and 0 < configured_spindle_count < max_index:
+                max_index = configured_spindle_count
         if index < 0 or index >= max_index:
             raise ValueError(f"spindle index {index} out of range (0..{max_index - 1})")
 
@@ -1132,6 +1162,13 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _handle_jog_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle jog command (stop, continuous, increment)."""
         jog = request.jog
+        # Only the numbers the requested jog type forwards are checked, so a
+        # stop is never refused over a field it does not use. Velocity keeps
+        # its sign: that is the jog direction.
+        if jog.type in (linuxcnc_pb2.JOG_CONTINUOUS, linuxcnc_pb2.JOG_INCREMENT):
+            _require_finite("jog velocity", jog.velocity)
+        if jog.type == linuxcnc_pb2.JOG_INCREMENT:
+            _require_finite("jog increment", jog.increment)
         self._validate_joint_index(jog.index, jog.is_joint)
         if jog.type == linuxcnc_pb2.JOG_STOP:
             self._command.jog(linuxcnc.JOG_STOP, jog.is_joint, jog.index)
@@ -1160,19 +1197,41 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         logger.info(f"Unhome command: joint={joint}")
 
     def _handle_spindle_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
-        """Handle spindle command (forward, reverse, off, increase, decrease)."""
+        """Handle spindle command (forward, reverse, off, increase, decrease, constant)."""
         sp = request.spindle
+        turns_spindle_on = sp.command in (
+            linuxcnc_pb2.SPINDLE_CMD_FORWARD, linuxcnc_pb2.SPINDLE_CMD_REVERSE
+        )
+        if turns_spindle_on:
+            # LinuxCNC multiplies the speed by the direction, so a negative
+            # speed would turn the spindle the opposite way to the one asked
+            # for. Speed is not checked for the other operations, which do
+            # not use it: a stop is never refused over it.
+            _require_finite_and_not_negative("spindle speed", sp.speed)
         self._validate_spindle_index(sp.spindle)
-        if sp.command == linuxcnc_pb2.SPINDLE_CMD_FORWARD:
-            self._command.spindle(linuxcnc.SPINDLE_FORWARD, sp.speed, sp.spindle, sp.wait_for_at_speed)
-        elif sp.command == linuxcnc_pb2.SPINDLE_CMD_REVERSE:
-            self._command.spindle(linuxcnc.SPINDLE_REVERSE, sp.speed, sp.spindle, sp.wait_for_at_speed)
+        if turns_spindle_on:
+            direction = (
+                linuxcnc.SPINDLE_FORWARD
+                if sp.command == linuxcnc_pb2.SPINDLE_CMD_FORWARD
+                else linuxcnc.SPINDLE_REVERSE
+            )
+            # linuxcnc.command.spindle(direction, speed, spindle[, wait]).
+            # The wait flag is passed only when set: leaving it out means
+            # "don't wait", and LinuxCNC 2.8 takes no fourth argument.
+            if sp.wait_for_at_speed:
+                self._command.spindle(direction, sp.speed, sp.spindle, True)
+            else:
+                self._command.spindle(direction, sp.speed, sp.spindle)
         elif sp.command == linuxcnc_pb2.SPINDLE_CMD_OFF:
-            self._command.spindle(linuxcnc.SPINDLE_OFF, 0, sp.spindle)
+            # For every operation without a speed, the spindle number is the
+            # second argument; anything after it is ignored.
+            self._command.spindle(linuxcnc.SPINDLE_OFF, sp.spindle)
         elif sp.command == linuxcnc_pb2.SPINDLE_CMD_INCREASE:
-            self._command.spindle(linuxcnc.SPINDLE_INCREASE, 0, sp.spindle)
+            self._command.spindle(linuxcnc.SPINDLE_INCREASE, sp.spindle)
         elif sp.command == linuxcnc_pb2.SPINDLE_CMD_DECREASE:
-            self._command.spindle(linuxcnc.SPINDLE_DECREASE, 0, sp.spindle)
+            self._command.spindle(linuxcnc.SPINDLE_DECREASE, sp.spindle)
+        elif sp.command == linuxcnc_pb2.SPINDLE_CMD_CONSTANT:
+            self._command.spindle(linuxcnc.SPINDLE_CONSTANT, sp.spindle)
         else:
             raise ValueError(f"Unknown spindle command: {sp.command}")
         logger.info(f"Spindle command: cmd={sp.command}, speed={sp.speed}, spindle={sp.spindle}")
@@ -1180,6 +1239,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _handle_spindle_override_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle spindle override command."""
         so = request.spindle_override
+        _require_finite_and_not_negative("spindle override scale", so.scale)
         self._validate_spindle_index(so.spindle)
         self._command.spindleoverride(so.scale, so.spindle)
         logger.info(f"Spindle override: scale={so.scale}, spindle={so.spindle}")
@@ -1190,25 +1250,31 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         self._validate_spindle_index(brake.spindle)
         if brake.state == linuxcnc_pb2.BRAKE_ENGAGE:
             self._command.brake(linuxcnc.BRAKE_ENGAGE, brake.spindle)
-        else:
+        elif brake.state == linuxcnc_pb2.BRAKE_RELEASE:
             self._command.brake(linuxcnc.BRAKE_RELEASE, brake.spindle)
+        else:
+            # An unrecognised value must not release the brake.
+            raise ValueError(f"Unknown brake state: {brake.state}")
         logger.info(f"Brake command: state={brake.state}, spindle={brake.spindle}")
 
     def _handle_feedrate_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle feedrate override command."""
         scale = request.feedrate.scale
+        _require_finite_and_not_negative("feedrate scale", scale)
         self._command.feedrate(scale)
         logger.info(f"Feedrate command: scale={scale}")
 
     def _handle_rapidrate_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle rapid rate override command."""
         scale = request.rapidrate.scale
+        _require_finite_and_not_negative("rapidrate scale", scale)
         self._command.rapidrate(scale)
         logger.info(f"Rapidrate command: scale={scale}")
 
     def _handle_maxvel_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle max velocity command."""
         velocity = request.maxvel.velocity
+        _require_finite_and_not_negative("maximum velocity", velocity)
         self._command.maxvel(velocity)
         logger.info(f"Maxvel command: velocity={velocity}")
 
@@ -1228,6 +1294,14 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _handle_tool_offset_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle tool offset command."""
         to = request.tool_offset
+        for field_name, offset_value in (
+            ("tool z_offset", to.z_offset),
+            ("tool x_offset", to.x_offset),
+            ("tool diameter", to.diameter),
+            ("tool front_angle", to.front_angle),
+            ("tool back_angle", to.back_angle),
+        ):
+            _require_finite(field_name, offset_value)
         self._command.tool_offset(
             to.tool_number, to.z_offset, to.x_offset,
             to.diameter, to.front_angle, to.back_angle, to.orientation
@@ -1264,12 +1338,24 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _handle_analog_output_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle analog output command."""
         ao = request.analog_output
+        _require_finite("analog output value", ao.value)
         self._command.set_analog_output(ao.index, ao.value)
         logger.info(f"Analog output command: index={ao.index}, value={ao.value}")
 
     def _handle_set_limit_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle set limit command."""
         sl = request.set_limit
+        # Everything is checked before the first of the two messages goes
+        # out. An infinite limit would switch the soft limit off.
+        _require_finite("min_limit", sl.min_limit)
+        _require_finite("max_limit", sl.max_limit)
+        if sl.min_limit >= sl.max_limit:
+            raise ValueError(
+                f"min_limit ({sl.min_limit}) must be less than max_limit ({sl.max_limit})"
+            )
+        # Also before the first message: a joint that does not exist. -1
+        # means "all joints" only to home and unhome.
+        self._validate_joint_index(sl.joint, is_joint=True)
         self._command.set_min_limit(sl.joint, sl.min_limit)
         self._command.set_max_limit(sl.joint, sl.max_limit)
         logger.info(f"Set limit command: joint={sl.joint}, min={sl.min_limit}, max={sl.max_limit}")
@@ -1277,6 +1363,9 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _handle_override_config_cmd(self, request: linuxcnc_pb2.LinuxCNCCommand) -> None:
         """Handle override configuration command."""
         oc = request.override_config
+        # Checked before the first of the four messages, so a bad spindle
+        # number changes none of the settings.
+        self._validate_spindle_index(oc.spindle)
         self._command.set_feed_override(oc.feed_override_enable)
         self._command.set_spindle_override(oc.spindle_override_enable, oc.spindle)
         self._command.set_feed_hold(oc.feed_hold_enable)

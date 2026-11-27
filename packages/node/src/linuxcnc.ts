@@ -1160,7 +1160,11 @@ export interface UnhomeCommand {
 /** Spindle command */
 export interface SpindleControlCommand {
   command: SpindleCommand;
-  /** For FORWARD/REVERSE */
+  /**
+   * For FORWARD/REVERSE only, where it must be zero or more and finite. The
+   * direction comes from the command, not from the sign. The other commands
+   * ignore it.
+   */
   speed: number;
   /** Spindle number (default 0) */
   spindle: number;
@@ -1170,7 +1174,7 @@ export interface SpindleControlCommand {
 
 /** Spindle override command */
 export interface SpindleOverrideCommand {
-  /** Override scale */
+  /** Override scale; must be finite and not negative */
   scale: number;
   /** Spindle number */
   spindle: number;
@@ -1184,18 +1188,19 @@ export interface BrakeCommand {
 
 /** Feed rate override command */
 export interface FeedrateCommand {
-  /** Feed rate scale (0.0-2.0+) */
+  /** Feed rate scale (0.0-2.0+); must be finite and not negative */
   scale: number;
 }
 
 /** Rapid rate override command */
 export interface RapidrateCommand {
-  /** Rapid rate scale (0.0-1.0) */
+  /** Rapid rate scale (0.0-1.0); must be finite and not negative */
   scale: number;
 }
 
 /** Maximum velocity command */
 export interface MaxVelCommand {
+  /** Must be finite and not negative */
   velocity: number;
 }
 
@@ -1269,7 +1274,10 @@ export interface AnalogOutputCommand {
   value: number;
 }
 
-/** Set joint limits */
+/**
+ * Set joint limits. min_limit must be below max_limit and both must be finite;
+ * otherwise neither is sent.
+ */
 export interface SetLimitCommand {
   joint: number;
   minLimit: number;

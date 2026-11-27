@@ -7,7 +7,7 @@ Tests the gRPC service layer for LinuxCNC machine control.
 import os
 import sys
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import grpc
 import pytest
@@ -3151,6 +3151,706 @@ class TestDeleteFile:
                     mock_grpc_context.abort.assert_called_once()
                     args = mock_grpc_context.abort.call_args
                     assert args[0][0] == grpc.StatusCode.INVALID_ARGUMENT
+
+
+def make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, command):
+    """
+    Build a servicer bound to this test's linuxcnc stand-in and command object.
+
+    The stand-in gets the numeric constants the real module has, each
+    distinct within its group, so a test can assert the exact arguments a
+    handler passed to the command object.
+    """
+    mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+    mock_linuxcnc_module.command.return_value = command
+    mock_linuxcnc_module.error_channel.return_value = MagicMock()
+    mock_linuxcnc_module.SPINDLE_FORWARD = 1
+    mock_linuxcnc_module.SPINDLE_REVERSE = -1
+    mock_linuxcnc_module.SPINDLE_OFF = 0
+    mock_linuxcnc_module.SPINDLE_INCREASE = 10
+    mock_linuxcnc_module.SPINDLE_DECREASE = 11
+    mock_linuxcnc_module.SPINDLE_CONSTANT = 12
+    mock_linuxcnc_module.BRAKE_RELEASE = 0
+    mock_linuxcnc_module.BRAKE_ENGAGE = 1
+    mock_linuxcnc_module.JOG_STOP = 0
+    mock_linuxcnc_module.JOG_CONTINUOUS = 1
+    mock_linuxcnc_module.JOG_INCREMENT = 2
+
+    # Import the protobuf modules before patch.dict: anything first imported
+    # inside it is dropped from sys.modules on exit.
+    from linuxcnc_pb import linuxcnc_pb2  # noqa: F401
+
+    with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+        sys.modules.pop("linuxcnc_grpc.linuxcnc_service", None)
+        from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+
+        return LinuxCNCServiceServicer()
+
+
+class TestSpindleCommandArguments:
+    """The spindle handler addresses the requested spindle, with the right arguments."""
+
+    @staticmethod
+    def _send_spindle_command(
+        mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, **spindle_fields
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        # Two spindles, so a command for spindle 1 is valid and
+        # distinguishable from one that lands on spindle 0.
+        mock_linuxcnc_stat.spindle = [dict(mock_linuxcnc_stat.spindle[0]) for _ in range(2)]
+        mock_linuxcnc_stat.spindles = 2
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+        response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                spindle=linuxcnc_pb2.SpindleControlCommand(**spindle_fields)
+            ),
+            mock_grpc_context,
+        )
+        return response, mock_cmd
+
+    @pytest.mark.parametrize(
+        "command_name, linuxcnc_constant",
+        [
+            ("SPINDLE_CMD_OFF", 0),
+            ("SPINDLE_CMD_INCREASE", 10),
+            ("SPINDLE_CMD_DECREASE", 11),
+            ("SPINDLE_CMD_CONSTANT", 12),
+        ],
+    )
+    def test_operations_without_a_speed_pass_the_spindle_as_second_argument(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+        command_name, linuxcnc_constant,
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_spindle_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            command=getattr(linuxcnc_pb2, command_name), spindle=1,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [call.spindle(linuxcnc_constant, 1)]
+
+    @pytest.mark.parametrize(
+        "command_name, linuxcnc_constant",
+        [("SPINDLE_CMD_FORWARD", 1), ("SPINDLE_CMD_REVERSE", -1)],
+    )
+    def test_forward_and_reverse_pass_speed_then_spindle(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+        command_name, linuxcnc_constant,
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_spindle_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            command=getattr(linuxcnc_pb2, command_name), speed=1200.0, spindle=1,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [call.spindle(linuxcnc_constant, 1200.0, 1)]
+
+    def test_wait_for_at_speed_is_passed_as_fourth_argument_when_set(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_spindle_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            command=linuxcnc_pb2.SPINDLE_CMD_FORWARD, speed=800.0, spindle=1,
+            wait_for_at_speed=True,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [call.spindle(1, 800.0, 1, True)]
+
+    @pytest.mark.parametrize("command_name", ["SPINDLE_CMD_FORWARD", "SPINDLE_CMD_REVERSE"])
+    @pytest.mark.parametrize(
+        "bad_speed", [-1.0, -1200.0, float("nan"), float("inf"), float("-inf")]
+    )
+    def test_negative_or_non_finite_speed_is_rejected_without_dispatch(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+        command_name, bad_speed,
+    ):
+        """A negative speed would turn the spindle the other way."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_spindle_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            command=getattr(linuxcnc_pb2, command_name), speed=bad_speed, spindle=0,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "spindle speed" in response.error_message
+        assert mock_cmd.method_calls == []
+
+    def test_zero_speed_is_accepted(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_spindle_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            command=linuxcnc_pb2.SPINDLE_CMD_FORWARD, speed=0.0, spindle=0,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [call.spindle(1, 0.0, 0)]
+
+    @pytest.mark.parametrize("unused_speed", [-500.0, float("nan"), float("inf")])
+    def test_spindle_off_is_never_refused_over_the_speed_field(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, unused_speed
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_spindle_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            command=linuxcnc_pb2.SPINDLE_CMD_OFF, speed=unused_speed, spindle=1,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [call.spindle(0, 1)]
+
+    def test_unknown_spindle_command_is_rejected_without_dispatch(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_spindle_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            command=99, spindle=0,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "Unknown spindle command" in response.error_message
+        assert mock_cmd.method_calls == []
+
+
+class TestBrakeCommandArguments:
+    """Only the two known brake states act; nothing else releases the brake."""
+
+    @staticmethod
+    def _send_brake_command(
+        mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, brake_state
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_linuxcnc_stat.spindle = [dict(mock_linuxcnc_stat.spindle[0]) for _ in range(2)]
+        mock_linuxcnc_stat.spindles = 2
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+        response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                brake=linuxcnc_pb2.BrakeCommand(state=brake_state, spindle=1)
+            ),
+            mock_grpc_context,
+        )
+        return response, mock_cmd
+
+    def test_engage(self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_brake_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            linuxcnc_pb2.BRAKE_ENGAGE,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [call.brake(1, 1)]
+
+    def test_release(self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_brake_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            linuxcnc_pb2.BRAKE_RELEASE,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [call.brake(0, 1)]
+
+    @pytest.mark.parametrize("unknown_brake_state", [2, 99])
+    def test_unknown_state_is_rejected_and_does_not_release_the_brake(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+        unknown_brake_state,
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, mock_cmd = self._send_brake_command(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            unknown_brake_state,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "Unknown brake state" in response.error_message
+        assert mock_cmd.method_calls == []
+
+
+NOT_FINITE = [float("nan"), float("inf"), float("-inf")]
+
+
+def _command_builders_forwarding_a_float():
+    """One request builder per float field a handler forwards to LinuxCNC."""
+    from linuxcnc_pb import linuxcnc_pb2
+
+    def tool_offset_with(**changed_field):
+        fields = dict(
+            tool_number=1, z_offset=1.0, x_offset=0.5, diameter=6.0,
+            front_angle=0.0, back_angle=0.0, orientation=0,
+        )
+        fields.update(changed_field)
+        return linuxcnc_pb2.LinuxCNCCommand(tool_offset=linuxcnc_pb2.ToolOffsetCommand(**fields))
+
+    return {
+        "jog continuous velocity": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            jog=linuxcnc_pb2.JogCommand(type=linuxcnc_pb2.JOG_CONTINUOUS, index=0, velocity=value)
+        ),
+        "jog increment velocity": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            jog=linuxcnc_pb2.JogCommand(type=linuxcnc_pb2.JOG_INCREMENT, index=0, velocity=value, increment=1.0)
+        ),
+        "jog increment distance": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            jog=linuxcnc_pb2.JogCommand(type=linuxcnc_pb2.JOG_INCREMENT, index=0, velocity=10.0, increment=value)
+        ),
+        "spindle override scale": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            spindle_override=linuxcnc_pb2.SpindleOverrideCommand(scale=value, spindle=0)
+        ),
+        "feedrate scale": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            feedrate=linuxcnc_pb2.FeedrateCommand(scale=value)
+        ),
+        "rapidrate scale": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            rapidrate=linuxcnc_pb2.RapidrateCommand(scale=value)
+        ),
+        "maximum velocity": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            maxvel=linuxcnc_pb2.MaxVelCommand(velocity=value)
+        ),
+        "tool z_offset": lambda value: tool_offset_with(z_offset=value),
+        "tool x_offset": lambda value: tool_offset_with(x_offset=value),
+        "tool diameter": lambda value: tool_offset_with(diameter=value),
+        "tool front_angle": lambda value: tool_offset_with(front_angle=value),
+        "tool back_angle": lambda value: tool_offset_with(back_angle=value),
+        "analog output value": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            analog_output=linuxcnc_pb2.AnalogOutputCommand(index=0, value=value)
+        ),
+        "set_limit min_limit": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            set_limit=linuxcnc_pb2.SetLimitCommand(joint=0, min_limit=value, max_limit=10.0)
+        ),
+        "set_limit max_limit": lambda value: linuxcnc_pb2.LinuxCNCCommand(
+            set_limit=linuxcnc_pb2.SetLimitCommand(joint=0, min_limit=-10.0, max_limit=value)
+        ),
+    }
+
+
+FLOAT_FIELD_NAMES = [
+    "jog continuous velocity", "jog increment velocity", "jog increment distance",
+    "spindle override scale", "feedrate scale", "rapidrate scale", "maximum velocity",
+    "tool z_offset", "tool x_offset", "tool diameter", "tool front_angle",
+    "tool back_angle", "analog output value", "set_limit min_limit",
+    "set_limit max_limit",
+]
+MUST_NOT_BE_NEGATIVE_FIELD_NAMES = [
+    "spindle override scale", "feedrate scale", "rapidrate scale", "maximum velocity",
+]
+
+
+class TestNumberValidation:
+    """Numbers LinuxCNC cannot sensibly act on are refused before anything is sent."""
+
+    def test_every_float_field_has_a_builder(self):
+        assert sorted(_command_builders_forwarding_a_float()) == sorted(FLOAT_FIELD_NAMES)
+
+    @pytest.mark.parametrize("field_name", FLOAT_FIELD_NAMES)
+    @pytest.mark.parametrize("not_finite_value", NOT_FINITE)
+    def test_non_finite_value_is_rejected_without_dispatch(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+        field_name, not_finite_value,
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+        request = _command_builders_forwarding_a_float()[field_name](not_finite_value)
+
+        response = service.SendCommand(request, mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "finite" in response.error_message
+        assert not response.HasField("linuxcnc_serial")
+        assert mock_cmd.method_calls == []
+
+    @pytest.mark.parametrize("field_name", MUST_NOT_BE_NEGATIVE_FIELD_NAMES)
+    def test_negative_scale_or_velocity_limit_is_rejected_without_dispatch(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, field_name
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+        request = _command_builders_forwarding_a_float()[field_name](-0.5)
+
+        response = service.SendCommand(request, mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "must not be negative" in response.error_message
+        assert mock_cmd.method_calls == []
+
+    def test_zero_scales_and_velocity_limit_are_accepted(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Zero is a real setting (feed override 0 holds the feed)."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+        builders = _command_builders_forwarding_a_float()
+
+        for field_name in MUST_NOT_BE_NEGATIVE_FIELD_NAMES:
+            response = service.SendCommand(builders[field_name](0.0), mock_grpc_context)
+            assert response.status == linuxcnc_pb2.RCS_DONE, field_name
+
+        assert mock_cmd.method_calls == [
+            call.spindleoverride(0.0, 0),
+            call.feedrate(0.0),
+            call.rapidrate(0.0),
+            call.maxvel(0.0),
+        ]
+
+    def test_negative_jog_velocity_is_a_direction_and_is_accepted(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+
+        continuous_response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                jog=linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_CONTINUOUS, is_joint=True, index=2, velocity=-15.0
+                )
+            ),
+            mock_grpc_context,
+        )
+        increment_response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                jog=linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_INCREMENT, is_joint=False, index=1,
+                    velocity=-15.0, increment=-0.25,
+                )
+            ),
+            mock_grpc_context,
+        )
+
+        assert continuous_response.status == linuxcnc_pb2.RCS_DONE
+        assert increment_response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [
+            call.jog(1, True, 2, -15.0),
+            call.jog(2, False, 1, -15.0, -0.25),
+        ]
+
+    @pytest.mark.parametrize("unused_value", NOT_FINITE)
+    def test_jog_stop_is_never_refused_over_fields_it_does_not_use(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, unused_value
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+
+        response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                jog=linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_STOP, is_joint=True, index=1,
+                    velocity=unused_value, increment=unused_value,
+                )
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [call.jog(0, True, 1)]
+
+    def test_continuous_jog_is_not_refused_over_the_unused_increment(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+
+        response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                jog=linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_CONTINUOUS, index=0, velocity=5.0,
+                    increment=float("nan"),
+                )
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [call.jog(1, False, 0, 5.0)]
+
+    def test_set_limit_sends_min_then_max(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+
+        response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                set_limit=linuxcnc_pb2.SetLimitCommand(joint=1, min_limit=-10.0, max_limit=10.0)
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert mock_cmd.method_calls == [
+            call.set_min_limit(1, -10.0),
+            call.set_max_limit(1, 10.0),
+        ]
+
+    @pytest.mark.parametrize(
+        "min_limit, max_limit", [(10.0, -10.0), (5.0, 5.0), (0.0, 0.0)]
+    )
+    def test_set_limit_needs_min_below_max_and_sends_neither_message_otherwise(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+        min_limit, max_limit,
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+
+        response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                set_limit=linuxcnc_pb2.SetLimitCommand(
+                    joint=0, min_limit=min_limit, max_limit=max_limit
+                )
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "must be less than max_limit" in response.error_message
+        assert mock_cmd.method_calls == []
+
+    def test_set_limit_with_a_bad_max_does_not_send_the_min_first(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Both limits are checked before the first of the two messages."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+
+        response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                set_limit=linuxcnc_pb2.SetLimitCommand(
+                    joint=0, min_limit=-10.0, max_limit=float("inf")
+                )
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        mock_cmd.set_min_limit.assert_not_called()
+        mock_cmd.set_max_limit.assert_not_called()
+
+
+# LinuxCNC's status always carries this many joint entries, whatever the
+# machine has.
+STAT_JOINT_ENTRIES = 16
+
+
+def give_stat_a_full_joint_array(mock_linuxcnc_stat, configured_joint_count):
+    """Shape the stand-in status like LinuxCNC's: 16 joint entries, some of them real."""
+    mock_linuxcnc_stat.joint = [
+        dict(mock_linuxcnc_stat.joint[0]) for _ in range(STAT_JOINT_ENTRIES)
+    ]
+    mock_linuxcnc_stat.joints = configured_joint_count
+
+
+class TestIndexChecksBeforeDispatch:
+    """A joint or spindle that does not exist is refused before anything is sent."""
+
+    @staticmethod
+    def send(mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, **command_fields):
+        """Send one command; return the response and the command object's calls."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_cmd = MagicMock()
+        service = make_service_with_command(mock_linuxcnc_module, mock_linuxcnc_stat, mock_cmd)
+        response = service.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(**command_fields), mock_grpc_context
+        )
+        return response, mock_cmd.method_calls
+
+    @pytest.mark.parametrize("spindle_index", [-1, 1, 99])
+    def test_override_config_with_a_bad_spindle_sends_none_of_its_messages(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, spindle_index
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, command_calls = self.send(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            override_config=linuxcnc_pb2.OverrideConfigCommand(
+                feed_override_enable=True, spindle_override_enable=True,
+                spindle=spindle_index,
+            ),
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == f"spindle index {spindle_index} out of range (0..0)"
+        assert not response.HasField("linuxcnc_serial")
+        assert command_calls == []
+
+    def test_spindle_beyond_the_configured_count_is_refused(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """stat.spindle always has 8 entries; only stat.spindles of them exist."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_linuxcnc_stat.spindle = [mock_linuxcnc_stat.spindle[0]] * 8
+        mock_linuxcnc_stat.spindles = 1
+
+        response, command_calls = self.send(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            spindle=linuxcnc_pb2.SpindleControlCommand(
+                command=linuxcnc_pb2.SPINDLE_CMD_OFF, spindle=3
+            ),
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == "spindle index 3 out of range (0..0)"
+        assert command_calls == []
+
+    def test_override_config_with_a_good_spindle_sends_all_four_messages(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        response, command_calls = self.send(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            override_config=linuxcnc_pb2.OverrideConfigCommand(
+                feed_override_enable=True, spindle_override_enable=True, spindle=0,
+                feed_hold_enable=False, adaptive_feed_enable=True,
+            ),
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert command_calls == [
+            call.set_feed_override(True),
+            call.set_spindle_override(True, 0),
+            call.set_feed_hold(False),
+            call.set_adaptive_feed(True),
+        ]
+
+    @pytest.mark.parametrize("joint_index", [-2, -1, 3, 15, 16])
+    def test_set_limit_with_a_bad_joint_sends_neither_limit(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, joint_index
+    ):
+        """-1 is refused too: "all joints" exists only for home and unhome."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        give_stat_a_full_joint_array(mock_linuxcnc_stat, configured_joint_count=3)
+        response, command_calls = self.send(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            set_limit=linuxcnc_pb2.SetLimitCommand(
+                joint=joint_index, min_limit=-10.0, max_limit=10.0
+            ),
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == f"joint index {joint_index} out of range (0..2)"
+        assert not response.HasField("linuxcnc_serial")
+        assert command_calls == []
+
+    def test_set_limit_on_the_last_configured_joint_is_sent(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        give_stat_a_full_joint_array(mock_linuxcnc_stat, configured_joint_count=3)
+        response, command_calls = self.send(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            set_limit=linuxcnc_pb2.SetLimitCommand(joint=2, min_limit=-10.0, max_limit=10.0),
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert command_calls == [call.set_min_limit(2, -10.0), call.set_max_limit(2, 10.0)]
+
+    @pytest.mark.parametrize("joint_index", [-1, 3])
+    def test_joint_jog_is_bounded_by_the_configured_joint_count(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, joint_index
+    ):
+        """An unused entry of the 16-entry joint array is not a joint, and neither is -1."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        give_stat_a_full_joint_array(mock_linuxcnc_stat, configured_joint_count=3)
+        response, command_calls = self.send(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            jog=linuxcnc_pb2.JogCommand(
+                type=linuxcnc_pb2.JOG_STOP, is_joint=True, index=joint_index
+            ),
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == f"joint index {joint_index} out of range (0..2)"
+        assert command_calls == []
+
+    @pytest.mark.parametrize("command_name", ["home", "unhome"])
+    def test_home_and_unhome_are_bounded_by_the_configured_joint_count(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, command_name
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        give_stat_a_full_joint_array(mock_linuxcnc_stat, configured_joint_count=3)
+        joint_command = (
+            linuxcnc_pb2.HomeCommand(joint=3) if command_name == "home"
+            else linuxcnc_pb2.UnhomeCommand(joint=3)
+        )
+        response, command_calls = self.send(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            **{command_name: joint_command},
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == "joint index 3 out of range (0..2)"
+        assert command_calls == []
+
+    def test_home_all_joints_is_still_sent(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        give_stat_a_full_joint_array(mock_linuxcnc_stat, configured_joint_count=3)
+        response, command_calls = self.send(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            home=linuxcnc_pb2.HomeCommand(joint=-1),
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert command_calls == [call.home(-1)]
+
+    @pytest.mark.parametrize("unusable_joint_count", [None, 0, True, "3", 99])
+    def test_joint_count_that_is_not_usable_falls_back_to_the_array_length(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+        unusable_joint_count,
+    ):
+        """Without a believable stat.joints the old bound, the array length, applies."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        give_stat_a_full_joint_array(mock_linuxcnc_stat, unusable_joint_count)
+        response, command_calls = self.send(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context,
+            jog=linuxcnc_pb2.JogCommand(type=linuxcnc_pb2.JOG_STOP, is_joint=True, index=15),
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert command_calls == [call.jog(0, True, 15)]
 
 
 class TestWaitCompleteTimeoutValues:
