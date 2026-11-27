@@ -295,6 +295,11 @@ class TestLinuxCNCServiceIntegration:
                 "axis index -1 is not valid",
             ),
             (
+                {"jog": linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_CONTINUOUS, velocity=1.0, index=9)},
+                "axis index 9 out of range (0..8)",
+            ),
+            (
                 {"home": linuxcnc_pb2.HomeCommand(joint=3)},
                 "joint index 3 out of range (0..2)",
             ),
@@ -350,6 +355,27 @@ class TestLinuxCNCServiceIntegration:
         """A stop is not refused over a number it does not use; a negative jog velocity is a direction."""
         response = linuxcnc_client.SendCommand(
             linuxcnc_pb2.LinuxCNCCommand(serial=111, **command_fields)
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert response.error_message == ""
+        assert response.HasField("linuxcnc_serial")
+
+    @pytest.mark.parametrize("axis_index", [3, 4, 5, 6, 7, 8])
+    def test_send_command_accepts_an_axis_jog_for_every_axis_slot(
+        self, linuxcnc_client, axis_index
+    ):
+        """An axis jog is sent for any of LinuxCNC's nine axis slots, also one the machine lacks."""
+        response = linuxcnc_client.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                serial=112,
+                jog=linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_CONTINUOUS,
+                    is_joint=False,
+                    index=axis_index,
+                    velocity=1.0,
+                ),
+            )
         )
 
         assert response.status == linuxcnc_pb2.RCS_DONE

@@ -187,15 +187,22 @@ def _finite_and_not_negative_error(field_name, value):
 # What the mock machine has, as in the status it reports. Index checks use
 # these the way the real server uses LinuxCNC's status.
 MOCK_JOINT_COUNT = 3
-MOCK_AXIS_COUNT = 3
 MOCK_SPINDLE_COUNT = 1
+# LinuxCNC's axis array always has nine slots (XYZABCUVW), whatever the machine has.
+LINUXCNC_AXIS_SLOT_COUNT = 9
 
 
 def _joint_or_axis_index_error(index, is_joint):
-    """The real server's message for a joint or axis that does not exist, or None."""
+    """
+    The real server's message for a joint or axis index it refuses, or None.
+
+    A joint must be one the machine has. An axis only has to be one of
+    LinuxCNC's nine slots: the real server sends a jog for an axis the
+    machine does not have, and so does the mock.
+    """
     if index == -1 and not is_joint:
         return "axis index -1 is not valid"
-    index_count = MOCK_JOINT_COUNT if is_joint else MOCK_AXIS_COUNT
+    index_count = MOCK_JOINT_COUNT if is_joint else LINUXCNC_AXIS_SLOT_COUNT
     if index < 0 or index >= index_count:
         label = "joint" if is_joint else "axis"
         return f"{label} index {index} out of range (0..{index_count - 1})"
