@@ -187,6 +187,175 @@ class TestLinuxCNCServiceIntegration:
         assert response.serial == 102
         assert response.status == linuxcnc_pb2.RCS_DONE
 
+    @pytest.mark.parametrize(
+        "command_fields, expected_message",
+        [
+            (
+                {"spindle": linuxcnc_pb2.SpindleControlCommand(
+                    command=linuxcnc_pb2.SPINDLE_CMD_FORWARD, speed=-100.0)},
+                "spindle speed must not be negative, got -100.0",
+            ),
+            (
+                {"spindle": linuxcnc_pb2.SpindleControlCommand(
+                    command=linuxcnc_pb2.SPINDLE_CMD_REVERSE, speed=-100.0)},
+                "spindle speed must not be negative, got -100.0",
+            ),
+            (
+                {"spindle": linuxcnc_pb2.SpindleControlCommand(
+                    command=linuxcnc_pb2.SPINDLE_CMD_FORWARD, speed=float("nan"))},
+                "spindle speed must be a finite number, got nan",
+            ),
+            (
+                {"feedrate": linuxcnc_pb2.FeedrateCommand(scale=float("inf"))},
+                "feedrate scale must be a finite number, got inf",
+            ),
+            (
+                {"feedrate": linuxcnc_pb2.FeedrateCommand(scale=-0.5)},
+                "feedrate scale must not be negative, got -0.5",
+            ),
+            (
+                {"jog": linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_CONTINUOUS, velocity=float("nan"))},
+                "jog velocity must be a finite number, got nan",
+            ),
+            (
+                {"brake": linuxcnc_pb2.BrakeCommand(state=7)},
+                "Unknown brake state: 7",
+            ),
+            (
+                {"set_limit": linuxcnc_pb2.SetLimitCommand(
+                    joint=0, min_limit=10.0, max_limit=10.0)},
+                "min_limit (10.0) must be less than max_limit (10.0)",
+            ),
+            (
+                {"set_limit": linuxcnc_pb2.SetLimitCommand(
+                    joint=0, min_limit=float("-inf"), max_limit=10.0)},
+                "min_limit must be a finite number, got -inf",
+            ),
+            (
+                {"analog_output": linuxcnc_pb2.AnalogOutputCommand(
+                    index=0, value=float("nan"))},
+                "analog output value must be a finite number, got nan",
+            ),
+            (
+                {"analog_output": linuxcnc_pb2.AnalogOutputCommand(
+                    index=0, value=float("inf"))},
+                "analog output value must be a finite number, got inf",
+            ),
+            (
+                {"tool_offset": linuxcnc_pb2.ToolOffsetCommand(
+                    tool_number=1, z_offset=float("nan"))},
+                "tool z_offset must be a finite number, got nan",
+            ),
+            (
+                {"tool_offset": linuxcnc_pb2.ToolOffsetCommand(
+                    tool_number=1, back_angle=float("-inf"))},
+                "tool back_angle must be a finite number, got -inf",
+            ),
+            (
+                {"spindle": linuxcnc_pb2.SpindleControlCommand(command=99)},
+                "Unknown spindle command: 99",
+            ),
+            (
+                {"jog": linuxcnc_pb2.JogCommand(type=99, index=0)},
+                "Unknown jog type: 99",
+            ),
+            (
+                {"override_config": linuxcnc_pb2.OverrideConfigCommand(
+                    feed_override_enable=True, spindle=-1)},
+                "spindle index -1 out of range (0..0)",
+            ),
+            (
+                {"override_config": linuxcnc_pb2.OverrideConfigCommand(spindle=1)},
+                "spindle index 1 out of range (0..0)",
+            ),
+            (
+                {"set_limit": linuxcnc_pb2.SetLimitCommand(
+                    joint=-1, min_limit=-10.0, max_limit=10.0)},
+                "joint index -1 out of range (0..2)",
+            ),
+            (
+                {"set_limit": linuxcnc_pb2.SetLimitCommand(
+                    joint=-2, min_limit=-10.0, max_limit=10.0)},
+                "joint index -2 out of range (0..2)",
+            ),
+            (
+                {"set_limit": linuxcnc_pb2.SetLimitCommand(
+                    joint=3, min_limit=-10.0, max_limit=10.0)},
+                "joint index 3 out of range (0..2)",
+            ),
+            (
+                {"jog": linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_STOP, is_joint=True, index=-1)},
+                "joint index -1 out of range (0..2)",
+            ),
+            (
+                {"jog": linuxcnc_pb2.JogCommand(
+                    type=linuxcnc_pb2.JOG_STOP, is_joint=False, index=-1)},
+                "axis index -1 is not valid",
+            ),
+            (
+                {"home": linuxcnc_pb2.HomeCommand(joint=3)},
+                "joint index 3 out of range (0..2)",
+            ),
+            (
+                {"spindle": linuxcnc_pb2.SpindleControlCommand(
+                    command=linuxcnc_pb2.SPINDLE_CMD_OFF, spindle=1)},
+                "spindle index 1 out of range (0..0)",
+            ),
+        ],
+    )
+    def test_send_command_rejects_what_the_real_server_rejects(
+        self, linuxcnc_client, command_fields, expected_message
+    ):
+        """A refused command is RCS_ERROR with the server's message and no linuxcnc_serial."""
+        response = linuxcnc_client.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(serial=110, **command_fields)
+        )
+
+        assert response.serial == 110
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == expected_message
+        assert not response.HasField("linuxcnc_serial")
+
+    @pytest.mark.parametrize(
+        "command_fields",
+        [
+            {"spindle": linuxcnc_pb2.SpindleControlCommand(
+                command=linuxcnc_pb2.SPINDLE_CMD_OFF, speed=float("nan"))},
+            {"spindle": linuxcnc_pb2.SpindleControlCommand(
+                command=linuxcnc_pb2.SPINDLE_CMD_OFF, speed=-100.0)},
+            {"jog": linuxcnc_pb2.JogCommand(
+                type=linuxcnc_pb2.JOG_STOP, velocity=float("nan"), increment=float("inf"))},
+            {"jog": linuxcnc_pb2.JogCommand(
+                type=linuxcnc_pb2.JOG_CONTINUOUS, velocity=-10.0)},
+            {"brake": linuxcnc_pb2.BrakeCommand(state=linuxcnc_pb2.BRAKE_RELEASE)},
+            {"set_limit": linuxcnc_pb2.SetLimitCommand(
+                joint=0, min_limit=-10.0, max_limit=10.0)},
+            {"set_limit": linuxcnc_pb2.SetLimitCommand(
+                joint=2, min_limit=-10.0, max_limit=10.0)},
+            {"override_config": linuxcnc_pb2.OverrideConfigCommand(
+                feed_override_enable=True, spindle=0)},
+            {"home": linuxcnc_pb2.HomeCommand(joint=-1)},
+            {"unhome": linuxcnc_pb2.UnhomeCommand(joint=-1)},
+            {"spindle": linuxcnc_pb2.SpindleControlCommand(
+                command=linuxcnc_pb2.SPINDLE_CMD_CONSTANT)},
+            {"analog_output": linuxcnc_pb2.AnalogOutputCommand(index=0, value=-2.5)},
+            {"tool_offset": linuxcnc_pb2.ToolOffsetCommand(tool_number=1, z_offset=-1.5)},
+        ],
+    )
+    def test_send_command_checks_only_the_fields_the_operation_uses(
+        self, linuxcnc_client, command_fields
+    ):
+        """A stop is not refused over a number it does not use; a negative jog velocity is a direction."""
+        response = linuxcnc_client.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(serial=111, **command_fields)
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert response.error_message == ""
+        assert response.HasField("linuxcnc_serial")
+
     def test_send_command_returns_linuxcnc_serial(self, linuxcnc_client):
         """SendCommand carries LinuxCNC's serial separately from the server's."""
         command = linuxcnc_pb2.LinuxCNCCommand(

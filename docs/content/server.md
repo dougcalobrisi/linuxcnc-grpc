@@ -379,15 +379,18 @@ after the other:
 
 If one of these messages fails, the ones before it have been sent and stay in
 effect, and the ones after it are not sent. The answer is `RCS_ERROR` all the
-same, and the response does not say how many messages went out. The server
-makes no checks of its own on these four commands, so `RCS_ERROR` for one of
-them always comes from LinuxCNC: a call failed, the first or a later one, or
-LinuxCNC took none of the messages.
+same, and the response does not say how many messages went out.
+
+The server's own checks all run before the first message (see
+[Values the server rejects](api-reference.md#values-the-server-rejects)), so a
+rejected command is never partly sent. Only a LinuxCNC call that fails after
+the first message leaves one that way.
 
 The check for a command LinuxCNC did not take looks at the command as a whole.
-If LinuxCNC takes some of these messages and silently drops another, the
-answer is `RCS_DONE`. The same holds for opening a program, which LinuxCNC
-itself sends as two messages (close the current program, open the new one).
+If LinuxCNC takes none of these messages, the answer is `RCS_ERROR` and
+nothing was sent. If it takes some and silently drops another, the answer is
+`RCS_DONE`. The same holds for opening a program, which LinuxCNC itself sends
+as two messages (close the current program, open the new one).
 
 After `RCS_ERROR` from one of these four commands, read the status before you
 send the command again: part of it may have taken effect.

@@ -118,6 +118,34 @@ it before waiting and `yield` to avoid blocking other threads.
 **Command Dispatch**: `SendCommand` uses an explicit `_command_handlers` dict mapping
 command type strings to handler methods (no dynamic `getattr` dispatch).
 
+**Spindle commands**: `linuxcnc.command.spindle` takes different arguments per operation, and
+the handler must keep these call shapes (taken from the binding source and exercised live on
+the 2.9 simulator: forward, increase, decrease, constant, reverse and off all behaved as the
+source says):
+- Forward/reverse: `spindle(direction, speed, spindle)` or, only when `wait_for_at_speed` is
+  true, `spindle(direction, speed, spindle, True)`. Leaving the fourth argument out means
+  "don't wait", and LinuxCNC 2.8 takes no fourth argument.
+- Off, increase, decrease, constant: `spindle(linuxcnc.SPINDLE_OFF, spindle)` and likewise
+  `SPINDLE_INCREASE`, `SPINDLE_DECREASE`, `SPINDLE_CONSTANT`. The spindle number is the
+  *second* argument. Writing `spindle(SPINDLE_OFF, 0, spindle)` (as 1.0 did) makes every one
+  of them act on spindle 0.
+- LinuxCNC multiplies the speed by the direction, so a negative speed turns the spindle the
+  other way. Forward/reverse therefore reject a negative speed.
+- `SPINDLE_CMD_CONSTANT` is implemented (`linuxcnc.SPINDLE_CONSTANT`).
+- The brake handler names both states. Anything other than `BRAKE_ENGAGE` or `BRAKE_RELEASE`
+  raises; an `else: release` branch would release the brake on an unknown value.
+
+**No mode or teleop switching (by decision)**: handlers pass commands straight to LinuxCNC.
+An opt-in `ensure_mode` was considered and not built: switching modes server-side means
+waiting for the switch inside or between lock holds, and a motion command that silently
+changes mode is a safety-relevant surprise for other clients and the operator. Instead
+`api-reference.md` ("Modes and teleop: what to send first") documents the sequencing, all
+measured on the 2.9 sim: home/unhome and joint jogs need teleop off, axis jogs need teleop
+on, homing all joints turns teleop on by itself, a refused jog/home still gives `RCS_DONE`
+from both SendCommand and WaitComplete (the refusal is only an operator error message), and
+`trajectory.inpos` stays true during an axis jog (velocity shows motion). Two e2e tests pin
+the last two facts.
+
 **Deprecated `AutoCommand`**: the `AutoCommand` message and `AutoCommandType` enum carry
 `option deprecated = true`. They are not in the `LinuxCNCCommand` oneof and never were;
 program control goes through `ProgramCommand`. Keep them until 2.0 (removing a message is
@@ -457,9 +485,40 @@ the server cannot hide its reading from the GUI; never claim it can.
 **Security**: the server has no authentication or TLS. Docs tell users to bind to
 `127.0.0.1` and use an SSH tunnel, or to run only on a trusted LAN (`docs/content/server.md`).
 
-**Input Validation**: Handler methods validate indices before dispatching to LinuxCNC:
-- `_validate_joint_index(index, is_joint)` checks bounds against `stat.joint`/`stat.axis`; index -1 is only valid for joint operations (home/unhome all).
-- `_validate_spindle_index(index)` checks bounds against `stat.spindle`.
+**Input Validation**: Handler methods validate indices and numbers before dispatching to
+LinuxCNC. A failed check raises `ValueError`, which `SendCommand` returns as `RCS_ERROR`
+with nothing sent.
+- **Validate only what the operation forwards; never refuse a stop over an unused field.**
+  Jog velocity is checked for continuous and incremental jogs and the increment for
+  incremental ones, never for `JOG_STOP`. Spindle speed is checked for forward and reverse
+  only, never for off. A client must always be able to stop.
+- `_require_finite(name, value)` rejects NaN and infinity: jog velocity and increment, tool
+  offset values, analog output value, both `set_limit` limits. Jog velocity keeps its sign
+  (the direction).
+- `_require_finite_and_not_negative(name, value)`: spindle speed (forward/reverse), feedrate,
+  rapidrate and spindle override scales, maxvel. It tests finiteness first because NaN passes
+  any comparison.
+- `set_limit` checks both limits and `min_limit < max_limit` before the first of its two
+  messages goes out, so a bad request sends neither. An infinite limit would switch the soft
+  limit off.
+- **Indices are checked before the first message of a multi-message handler.** `set_limit`
+  validates its joint and `override_config` its spindle before sending anything, so a refused
+  request leaves nothing dispatched (and no partial-dispatch record). `coolant` and
+  `program_options` carry only booleans and have nothing to check. Within a handler the order
+  is numbers, then index, then unknown enum value; `tests/mock_server.py` mirrors that order
+  and the messages.
+- `_validate_joint_index(index, is_joint)` refuses every negative index. For joints the bound
+  is `stat.joints` (the real joint count) when that is a plain int between 1 and
+  `len(stat.joint)`, otherwise `len(stat.joint)` (always 16 on LinuxCNC); for axes it is
+  `len(stat.axis)`. The "all joints" -1 belongs to `home`/`unhome` alone, which skip the
+  validator for it; `set_limit` and a joint jog with -1 are refused. Axis -1 keeps its own
+  message ("axis index -1 is not valid").
+- `_validate_spindle_index(index)` bounds the index by `stat.spindles` (the real spindle count)
+  when that is a plain int between 1 and `len(stat.spindle)`, otherwise by `len(stat.spindle)`.
+  `stat.spindle` always has 8 entries (measured on the 2.9 sim: one spindle configured, 8
+  listed), the same trap as the 16 joint entries.
+- Not checked: `digital_output`/`analog_output` `index` and `tool_offset` `tool_number` go to
+  LinuxCNC as given.
 - `_validate_nc_path(filename)` resolves paths relative to the NC files directory and rejects path traversal, null bytes, empty filenames and symlink loops (all as `ValueError`, so `INVALID_ARGUMENT`). Used by both `_handle_program_cmd` and the file management RPCs. A loop is caught two ways because Python versions differ: `Path.resolve()` raises `RuntimeError` up to 3.12, and from 3.13 returns a path that still contains the link, so the function also calls `os.stat` and checks for `ELOOP`.
 - `_resolved_nc_files_dir()` resolves the directory itself for ListFiles, ResolveFile and GetMachineConfig and raises `OSError(ELOOP)` for a loop (or a link chain longer than the kernel follows) on every Python version: it turns the `RuntimeError` of Python <= 3.12 into that error, and also calls `os.stat` on the directory, because from 3.13 `resolve()` does not raise. Those RPCs report it as `INTERNAL`. ResolveFile calls it before `_validate_nc_path`, so a loop in the directory is not blamed on the file name. Upload/Read/Delete resolve the directory inside `_validate_nc_path`, where a directory loop is still `INVALID_ARGUMENT` naming the file. Left that way to keep `_validate_nc_path` raising only `ValueError`.
 - MDI commands reject empty strings, null bytes and commands over `MAX_MDI_COMMAND_LENGTH` (10000 characters). The full command is logged at INFO after it is sent (and its `repr` at DEBUG on arrival).

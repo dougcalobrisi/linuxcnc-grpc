@@ -430,14 +430,17 @@ message UnhomeCommand {
 // Spindle command
 message SpindleControlCommand {
   SpindleCommand command = 1;
-  double speed = 2;                     // For FORWARD/REVERSE
+  // For FORWARD/REVERSE only, where it must be zero or more and finite. The
+  // direction comes from the command, not from the sign. The other commands
+  // ignore it.
+  double speed = 2;
   int32 spindle = 3;                    // Spindle number (default 0)
   bool wait_for_at_speed = 4;           // Wait for spindle to reach speed
 }
 
 // Spindle override command
 message SpindleOverrideCommand {
-  double scale = 1;                     // Override scale
+  double scale = 1;                     // Override scale; must be finite and not negative
   int32 spindle = 2;                    // Spindle number
 }
 
@@ -449,17 +452,17 @@ message BrakeCommand {
 
 // Feed rate override command
 message FeedrateCommand {
-  double scale = 1;                     // Feed rate scale (0.0-2.0+)
+  double scale = 1;                     // Feed rate scale (0.0-2.0+); must be finite and not negative
 }
 
 // Rapid rate override command
 message RapidrateCommand {
-  double scale = 1;                     // Rapid rate scale (0.0-1.0)
+  double scale = 1;                     // Rapid rate scale (0.0-1.0); must be finite and not negative
 }
 
 // Maximum velocity command
 message MaxVelCommand {
-  double velocity = 1;
+  double velocity = 1;                  // Must be finite and not negative
 }
 
 // Coolant command
@@ -514,7 +517,8 @@ message AnalogOutputCommand {
   double value = 2;
 }
 
-// Set joint limits
+// Set joint limits. min_limit must be below max_limit and both must be finite;
+// otherwise neither is sent.
 message SetLimitCommand {
   int32 joint = 1;
   double min_limit = 2;

@@ -14,6 +14,7 @@ The server prints "READY:<port>" to stdout when ready to accept connections.
 
 import argparse
 import logging
+import math
 import signal
 import sys
 import threading
@@ -167,6 +168,158 @@ MOCK_READABLE_FILES = {
 MOCK_BUFFERED_ERROR_TEXT = "mock buffered error"
 
 
+def _finite_error(field_name, value):
+    """The real server's message for a number that is NaN or infinite, or None."""
+    if not math.isfinite(value):
+        return f"{field_name} must be a finite number, got {value}"
+    return None
+
+
+def _finite_and_not_negative_error(field_name, value):
+    """The real server's message for a number that is not finite or is negative, or None."""
+    if not math.isfinite(value):
+        return f"{field_name} must be a finite number, got {value}"
+    if value < 0:
+        return f"{field_name} must not be negative, got {value}"
+    return None
+
+
+# What the mock machine has, as in the status it reports. Index checks use
+# these the way the real server uses LinuxCNC's status.
+MOCK_JOINT_COUNT = 3
+MOCK_AXIS_COUNT = 3
+MOCK_SPINDLE_COUNT = 1
+
+
+def _joint_or_axis_index_error(index, is_joint):
+    """The real server's message for a joint or axis that does not exist, or None."""
+    if index == -1 and not is_joint:
+        return "axis index -1 is not valid"
+    index_count = MOCK_JOINT_COUNT if is_joint else MOCK_AXIS_COUNT
+    if index < 0 or index >= index_count:
+        label = "joint" if is_joint else "axis"
+        return f"{label} index {index} out of range (0..{index_count - 1})"
+    return None
+
+
+def _spindle_index_error(index):
+    """The real server's message for a spindle that does not exist, or None."""
+    if index < 0 or index >= MOCK_SPINDLE_COUNT:
+        return f"spindle index {index} out of range (0..{MOCK_SPINDLE_COUNT - 1})"
+    return None
+
+
+def command_rejection_message(request):
+    """
+    Why the real server would refuse this command before sending anything
+    to LinuxCNC, or None if it would send it.
+
+    Covers the number, index and enum checks of the real handlers, in the
+    order each handler makes them. As there, only the fields the requested
+    operation uses are checked: a spindle stop is not refused over its speed,
+    nor a jog stop over its velocity.
+    """
+    command_type = request.WhichOneof("command")
+    if command_type == "jog":
+        jog = request.jog
+        if jog.type in (linuxcnc_pb2.JOG_CONTINUOUS, linuxcnc_pb2.JOG_INCREMENT):
+            velocity_error = _finite_error("jog velocity", jog.velocity)
+            if velocity_error:
+                return velocity_error
+        if jog.type == linuxcnc_pb2.JOG_INCREMENT:
+            increment_error = _finite_error("jog increment", jog.increment)
+            if increment_error:
+                return increment_error
+        index_error = _joint_or_axis_index_error(jog.index, jog.is_joint)
+        if index_error:
+            return index_error
+        if jog.type not in (
+            linuxcnc_pb2.JOG_STOP, linuxcnc_pb2.JOG_CONTINUOUS, linuxcnc_pb2.JOG_INCREMENT
+        ):
+            return f"Unknown jog type: {jog.type}"
+        return None
+    if command_type in ("home", "unhome"):
+        joint = getattr(request, command_type).joint
+        # -1 means every joint.
+        if joint == -1:
+            return None
+        return _joint_or_axis_index_error(joint, is_joint=True)
+    if command_type == "spindle":
+        spindle = request.spindle
+        if spindle.command in (
+            linuxcnc_pb2.SPINDLE_CMD_FORWARD, linuxcnc_pb2.SPINDLE_CMD_REVERSE
+        ):
+            speed_error = _finite_and_not_negative_error("spindle speed", spindle.speed)
+            if speed_error:
+                return speed_error
+        index_error = _spindle_index_error(spindle.spindle)
+        if index_error:
+            return index_error
+        if spindle.command not in (
+            linuxcnc_pb2.SPINDLE_CMD_FORWARD,
+            linuxcnc_pb2.SPINDLE_CMD_REVERSE,
+            linuxcnc_pb2.SPINDLE_CMD_OFF,
+            linuxcnc_pb2.SPINDLE_CMD_INCREASE,
+            linuxcnc_pb2.SPINDLE_CMD_DECREASE,
+            linuxcnc_pb2.SPINDLE_CMD_CONSTANT,
+        ):
+            return f"Unknown spindle command: {spindle.command}"
+        return None
+    if command_type == "spindle_override":
+        return (
+            _finite_and_not_negative_error(
+                "spindle override scale", request.spindle_override.scale
+            )
+            or _spindle_index_error(request.spindle_override.spindle)
+        )
+    if command_type == "brake":
+        index_error = _spindle_index_error(request.brake.spindle)
+        if index_error:
+            return index_error
+        if request.brake.state not in (linuxcnc_pb2.BRAKE_ENGAGE, linuxcnc_pb2.BRAKE_RELEASE):
+            return f"Unknown brake state: {request.brake.state}"
+        return None
+    if command_type == "feedrate":
+        return _finite_and_not_negative_error("feedrate scale", request.feedrate.scale)
+    if command_type == "rapidrate":
+        return _finite_and_not_negative_error("rapidrate scale", request.rapidrate.scale)
+    if command_type == "maxvel":
+        return _finite_and_not_negative_error("maximum velocity", request.maxvel.velocity)
+    if command_type == "tool_offset":
+        tool_offset = request.tool_offset
+        for field_name, offset_value in (
+            ("tool z_offset", tool_offset.z_offset),
+            ("tool x_offset", tool_offset.x_offset),
+            ("tool diameter", tool_offset.diameter),
+            ("tool front_angle", tool_offset.front_angle),
+            ("tool back_angle", tool_offset.back_angle),
+        ):
+            offset_error = _finite_error(field_name, offset_value)
+            if offset_error:
+                return offset_error
+        return None
+    if command_type == "analog_output":
+        return _finite_error("analog output value", request.analog_output.value)
+    if command_type == "set_limit":
+        set_limit = request.set_limit
+        limit_error = (
+            _finite_error("min_limit", set_limit.min_limit)
+            or _finite_error("max_limit", set_limit.max_limit)
+        )
+        if limit_error:
+            return limit_error
+        if set_limit.min_limit >= set_limit.max_limit:
+            return (
+                f"min_limit ({set_limit.min_limit}) must be less than "
+                f"max_limit ({set_limit.max_limit})"
+            )
+        # No -1 here: "all joints" exists only for home and unhome.
+        return _joint_or_axis_index_error(set_limit.joint, is_joint=True)
+    if command_type == "override_config":
+        return _spindle_index_error(request.override_config.spindle)
+    return None
+
+
 class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     """Mock LinuxCNC gRPC service returning deterministic responses."""
 
@@ -182,14 +335,28 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         return self._build_status()
 
     def SendCommand(self, request, context):
-        """Accept any command and return success."""
+        """
+        Accept a command and return success.
+
+        A command the real server refuses before sending anything (see
+        command_rejection_message) gets RCS_ERROR with the same message and,
+        as there, no linuxcnc_serial.
+        """
+        rejection_message = command_rejection_message(request)
         with self._serial_lock:
             self._command_serial += 1
             command_serial = self._command_serial
             linuxcnc_serial = MOCK_LINUXCNC_SERIAL_BASE + command_serial
-            self._issued_linuxcnc_serials.add(linuxcnc_serial)
+            if rejection_message is None:
+                self._issued_linuxcnc_serials.add(linuxcnc_serial)
         serial = request.serial if request.serial else command_serial
         logger.info(f"Received command serial={serial}: {request.WhichOneof('command')}")
+        if rejection_message is not None:
+            return linuxcnc_pb2.CommandResponse(
+                serial=serial,
+                status=linuxcnc_pb2.RCS_ERROR,
+                error_message=rejection_message,
+            )
         return linuxcnc_pb2.CommandResponse(
             serial=serial,
             status=linuxcnc_pb2.RCS_DONE,

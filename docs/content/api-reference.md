@@ -149,6 +149,120 @@ that only stop something (E-stop, machine off, program abort and pause, jog
 stop, spindle off), which are always sent. The same applies to a command
 whose client has gone away before its turn.
 
+#### Values the server rejects
+
+The server checks a command before it sends anything to LinuxCNC. A command
+that fails a check gets `RCS_ERROR` with the reason in `error_message`, has no
+`linuxcnc_serial`, and nothing is sent.
+
+- **Numbers must be finite** (not NaN, not infinite): the jog `velocity`
+  (continuous and incremental jogs) and `increment` (incremental jogs), the
+  spindle `speed` (forward and reverse), the feed, rapid and spindle override
+  `scale`, the maximum velocity, the tool offset values (`z_offset`,
+  `x_offset`, `diameter`, `front_angle`, `back_angle`), the analog output
+  `value` and both `set_limit` limits.
+- **These must also be zero or more:** the spindle `speed` for forward and
+  reverse, the three override scales and the maximum velocity. A jog
+  `velocity` may be negative: its sign is the jog direction. It is in machine
+  units per second.
+- **`set_limit`** needs `min_limit` below `max_limit`. Otherwise neither limit
+  is sent.
+- **`brake`** takes `BRAKE_ENGAGE` or `BRAKE_RELEASE`. Any other value is
+  rejected; it is not taken as a release.
+- **Joint, axis and spindle numbers** in jog, home, unhome, spindle, spindle
+  override, brake, `set_limit` and `override_config` commands must exist on
+  the machine. Joints are counted as the machine has them
+  (`trajectory.joints`) and spindles likewise (`spindles`), not by the 16 joint
+  and 8 spindle entries the status always carries. A
+  negative number is rejected, except `-1` for home and unhome, which means
+  all joints. A command made of several messages (`set_limit`,
+  `override_config`) is checked completely before the first one is sent.
+- Only the fields the requested operation uses are checked. A jog stop is
+  never refused because of its `velocity`, nor a spindle stop because of its
+  `speed`.
+
+#### Spindle commands
+
+`SpindleControlCommand` carries a `command`, the `spindle` number (default 0),
+and for forward and reverse a `speed` and `wait_for_at_speed`. The `spindle`
+number is used by every command.
+
+| `command` | Effect |
+|-----------|--------|
+| `SPINDLE_CMD_FORWARD`, `SPINDLE_CMD_REVERSE` | Turn the spindle on at `speed`. The direction comes from the command, so `speed` must be zero or more; a negative speed is rejected. `wait_for_at_speed` is passed to LinuxCNC when true |
+| `SPINDLE_CMD_OFF` | Stop the spindle |
+| `SPINDLE_CMD_INCREASE`, `SPINDLE_CMD_DECREASE` | LinuxCNC's `SPINDLE_INCREASE` and `SPINDLE_DECREASE` |
+| `SPINDLE_CMD_CONSTANT` | LinuxCNC's `SPINDLE_CONSTANT` |
+
+#### Modes and teleop: what to send first
+
+**The server never switches the task mode or teleop for you.** Every command is
+passed to LinuxCNC as it is, and LinuxCNC refuses a command sent in the wrong
+mode. The table gives what each kind of command needs. It was measured on the
+LinuxCNC 2.9 simulator (`sim/axis`, trivkins); the error texts are LinuxCNC's.
+
+| Command | Task mode | Teleop (`trajectory.motion_mode`) | In the wrong state |
+|---------|-----------|-----------------------------------|--------------------|
+| `home`, `unhome` | `MODE_MANUAL` | Off (`TRAJ_MODE_FREE`) | "must be in joint mode to home" |
+| `jog` with `is_joint = true` | `MODE_MANUAL` | Off (`TRAJ_MODE_FREE`) | "Mode is TELEOP, cannot jog joint" |
+| `jog` with `is_joint = false` (axis jog) | `MODE_MANUAL` | On (`TRAJ_MODE_TELEOP`) | "Joint jog requested for undefined joint number=-1" |
+| `mdi` | `MODE_MDI`, joints homed | Set by LinuxCNC (`TRAJ_MODE_COORD`) | "Can't issue MDI command when not homed", or a mode error |
+| `program` (`open`, `run_from_line`, …) | `MODE_AUTO` | Set by LinuxCNC | A mode error |
+
+How to sequence commands safely:
+
+1. **Send the mode (or teleop) command, then wait until status shows it.**
+   A mode change takes effect a moment after `SendCommand` returns. Either
+   call `WaitComplete` with the `linuxcnc_serial` from the response, or poll
+   `GetStatus` until `task.task_mode` (or `trajectory.motion_mode`) has the
+   value you asked for. Don't sleep for a fixed time.
+2. **Joints can be jogged before homing; axes cannot.** A joint jog works on
+   an unhomed machine. An axis jog needs teleop, which needs the joints
+   homed. To move an unhomed machine, jog joints (use
+   [GetMachineConfig](#getmachineconfig) to find the joint for an axis).
+3. **Homing changes teleop.** On the simulator, LinuxCNC switched to teleop by
+   itself once every joint was homed. So after homing, a joint jog or a second
+   `home` is refused until you send `teleop` with `enable = false`.
+4. **MDI and auto change it too.** Entering `MODE_MDI` put the motion mode at
+   `TRAJ_MODE_COORD`; going back to `MODE_MANUAL` did not always restore
+   teleop. Check `trajectory.motion_mode` before an axis jog rather than
+   assume, and send `teleop` if needed.
+
+How refusals show up:
+
+- **A jog or home that LinuxCNC refuses still returns `RCS_DONE` from
+  `SendCommand`, and `WaitComplete` reports `RCS_DONE` for it as well.** The
+  refusal comes from the motion controller as an operator error message, not
+  as a failed command. You see it only as an error message
+  ([StreamErrors](#streamerrors) or `status.errors`) and in the fact that
+  nothing moves or homes.
+- **An MDI command in the wrong mode** also returns `RCS_DONE` from
+  `SendCommand`, but `WaitComplete` with its `linuxcnc_serial` returns
+  `RCS_ERROR`.
+- So after any motion command, confirm the effect in the status (position,
+  `homed`, `motion_mode`) instead of trusting the response alone.
+
+Telling whether a jog is moving:
+
+- **`trajectory.inpos` stays `true` during an axis jog**, and so does the
+  joint's `inpos`. Don't use it to wait for a jog to finish.
+- Use `trajectory.current_vel`, `axes[n].velocity` or `joints[n].velocity`:
+  they are non-zero while the jog moves and return to zero when it stops.
+
+```python
+def set_mode_and_wait(stub, mode, timeout=5.0):
+    sent = stub.SendCommand(
+        linuxcnc_pb2.LinuxCNCCommand(mode=linuxcnc_pb2.ModeCommand(mode=mode))
+    )
+    request = linuxcnc_pb2.WaitCompleteRequest(timeout=timeout)
+    if sent.HasField("linuxcnc_serial"):
+        request.linuxcnc_serial = sent.linuxcnc_serial
+    stub.WaitComplete(request)
+    status = stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
+    if status.task.task_mode != mode:
+        raise RuntimeError("mode change did not take effect")
+```
+
 ---
 
 ### WaitComplete

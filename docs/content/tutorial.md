@@ -113,7 +113,7 @@ finally:
 
 #### 5a. Send commands (MDI G-code)
 
-LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed").
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first).
 
 Create `mdi.py`:
 
@@ -274,7 +274,7 @@ process.on("SIGINT", () => {
 
 #### 5b. Send commands (MDI G-code)
 
-LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed").
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first).
 
 Create `mdi.ts`:
 
@@ -495,7 +495,7 @@ func main() {
 
 #### 5c. Send commands (MDI G-code)
 
-LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed").
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first).
 
 Create `mdi.go`:
 
@@ -698,7 +698,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 5d. Send commands (MDI G-code)
 
-LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed").
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first).
 
 Replace `src/main.rs`:
 
@@ -832,7 +832,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---------|----------|
 | `UNAVAILABLE: failed to connect` | Check that the gRPC server is running and `LINUXCNC_IP:50051` is reachable (try `telnet LINUXCNC_IP 50051`) |
 | `UNAVAILABLE: LinuxCNC is not running…` | The server is up but LinuxCNC is not. Start LinuxCNC; the server connects within a few seconds |
-| MDI command has no effect, or `WaitComplete` returns `RCS_ERROR` | Machine must be powered on, homed and in MDI mode first (see Step 5 examples). `SendCommand` still answers `RCS_DONE`, which only means the command was sent; LinuxCNC reports its refusal as an operator error message (`StreamErrors` or `status.errors`) |
+| MDI command has no effect, or `WaitComplete` returns `RCS_ERROR` | Machine must be powered on, homed and in MDI mode first (see Step 5 examples and [Modes and teleop](api-reference.md#modes-and-teleop-what-to-send-first)). `SendCommand` still answers `RCS_DONE`, which only means the command was sent; LinuxCNC reports its refusal as an operator error message (`StreamErrors` or `status.errors`) |
 | `SendCommand` returns `RCS_ERROR` | Read `error_message`. Either the server rejected the command before sending it (for example a joint or spindle index out of range or an empty MDI command), or a LinuxCNC call failed. After an error from `coolant`, `set_limit`, `override_config` or `program_options`, check the status before retrying: part of the command may have been sent (see [`RCS_ERROR` from `SendCommand`](server.md#rcs_error-from-sendcommand)). This is a normal response, not a gRPC error |
 | `INVALID_ARGUMENT` | A file RPC was given a bad file name (outside the NC files directory, empty) or bad content |
 | Connection timeout | Ensure no firewall is blocking port 50051 between the two machines |

@@ -1275,6 +1275,83 @@ class TestE2EJog:
             "Position should have changed after continuous jog"
         )
 
+    def test_axis_jog_is_visible_in_velocity_not_inpos(self, linuxcnc_stub):
+        """During an axis jog trajectory.inpos stays true; velocity is what shows motion."""
+        home_all(linuxcnc_stub)
+        linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+            teleop=linuxcnc_pb2.TeleopCommand(enable=True)
+        ))
+        wait_for_condition(
+            linuxcnc_stub,
+            lambda s: s.trajectory.motion_mode == linuxcnc_pb2.TRAJ_MODE_TELEOP,
+            description="teleop mode",
+        )
+
+        linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+            jog=linuxcnc_pb2.JogCommand(
+                type=linuxcnc_pb2.JOG_CONTINUOUS, is_joint=False, index=0, velocity=0.5
+            )
+        ))
+        try:
+            moving_status = wait_for_condition(
+                linuxcnc_stub,
+                lambda s: abs(s.axes[0].velocity) > 0.01,
+                timeout=5.0,
+                description="X axis moving",
+            )
+            assert moving_status.trajectory.inpos, (
+                "documented behaviour: inpos stays true during an axis jog"
+            )
+            assert moving_status.trajectory.current_vel > 0.01
+        finally:
+            linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+                jog=linuxcnc_pb2.JogCommand(type=linuxcnc_pb2.JOG_STOP, is_joint=False, index=0)
+            ))
+        wait_for_condition(
+            linuxcnc_stub,
+            lambda s: abs(s.axes[0].velocity) < 0.001,
+            description="X axis stopped",
+        )
+
+    def test_joint_jog_in_teleop_is_refused_by_linuxcnc_not_by_send_command(
+        self, linuxcnc_stub
+    ):
+        """The server does not switch teleop: a joint jog in teleop is dispatched and ignored."""
+        home_all(linuxcnc_stub)
+        linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+            teleop=linuxcnc_pb2.TeleopCommand(enable=True)
+        ))
+        wait_for_condition(
+            linuxcnc_stub,
+            lambda s: s.trajectory.motion_mode == linuxcnc_pb2.TRAJ_MODE_TELEOP,
+            description="teleop mode",
+        )
+        start_x = linuxcnc_stub.GetStatus(
+            linuxcnc_pb2.GetStatusRequest()
+        ).position.actual_position.x
+        marker = f"e2e teleop marker {time.time_ns()}"
+        reader, messages, stream_open = collect_stream_errors(linuxcnc_stub, marker)
+        assert stream_open.wait(5.0)
+
+        response = linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+            jog=linuxcnc_pb2.JogCommand(
+                type=linuxcnc_pb2.JOG_INCREMENT, is_joint=True, index=0,
+                velocity=1.0, increment=0.1,
+            )
+        ))
+        # "Dispatched", even though LinuxCNC will refuse it.
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        time.sleep(0.7)
+        post_operator_error(linuxcnc_stub, marker)
+        reader.join(timeout=10.0)
+
+        end_x = linuxcnc_stub.GetStatus(
+            linuxcnc_pb2.GetStatusRequest()
+        ).position.actual_position.x
+        assert abs(end_x - start_x) < 0.001, "the refused jog must not move the joint"
+        refusals = [m.message for m in messages if "TELEOP" in m.message]
+        assert refusals, f"expected LinuxCNC's refusal, got {[m.message for m in messages]}"
+
 
 # ---------------------------------------------------------------------------
 # Coolant Tests

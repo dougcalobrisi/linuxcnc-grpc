@@ -3076,11 +3076,14 @@ func (x *UnhomeCommand) GetJoint() int32 {
 
 // Spindle command
 type SpindleControlCommand struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Command        SpindleCommand         `protobuf:"varint,1,opt,name=command,proto3,enum=linuxcnc.SpindleCommand" json:"command,omitempty"`
-	Speed          float64                `protobuf:"fixed64,2,opt,name=speed,proto3" json:"speed,omitempty"`                                            // For FORWARD/REVERSE
-	Spindle        int32                  `protobuf:"varint,3,opt,name=spindle,proto3" json:"spindle,omitempty"`                                         // Spindle number (default 0)
-	WaitForAtSpeed bool                   `protobuf:"varint,4,opt,name=wait_for_at_speed,json=waitForAtSpeed,proto3" json:"wait_for_at_speed,omitempty"` // Wait for spindle to reach speed
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Command SpindleCommand         `protobuf:"varint,1,opt,name=command,proto3,enum=linuxcnc.SpindleCommand" json:"command,omitempty"`
+	// For FORWARD/REVERSE only, where it must be zero or more and finite. The
+	// direction comes from the command, not from the sign. The other commands
+	// ignore it.
+	Speed          float64 `protobuf:"fixed64,2,opt,name=speed,proto3" json:"speed,omitempty"`
+	Spindle        int32   `protobuf:"varint,3,opt,name=spindle,proto3" json:"spindle,omitempty"`                                         // Spindle number (default 0)
+	WaitForAtSpeed bool    `protobuf:"varint,4,opt,name=wait_for_at_speed,json=waitForAtSpeed,proto3" json:"wait_for_at_speed,omitempty"` // Wait for spindle to reach speed
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -3146,7 +3149,7 @@ func (x *SpindleControlCommand) GetWaitForAtSpeed() bool {
 // Spindle override command
 type SpindleOverrideCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Scale         float64                `protobuf:"fixed64,1,opt,name=scale,proto3" json:"scale,omitempty"`    // Override scale
+	Scale         float64                `protobuf:"fixed64,1,opt,name=scale,proto3" json:"scale,omitempty"`    // Override scale; must be finite and not negative
 	Spindle       int32                  `protobuf:"varint,2,opt,name=spindle,proto3" json:"spindle,omitempty"` // Spindle number
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3252,7 +3255,7 @@ func (x *BrakeCommand) GetSpindle() int32 {
 // Feed rate override command
 type FeedrateCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Scale         float64                `protobuf:"fixed64,1,opt,name=scale,proto3" json:"scale,omitempty"` // Feed rate scale (0.0-2.0+)
+	Scale         float64                `protobuf:"fixed64,1,opt,name=scale,proto3" json:"scale,omitempty"` // Feed rate scale (0.0-2.0+); must be finite and not negative
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3297,7 +3300,7 @@ func (x *FeedrateCommand) GetScale() float64 {
 // Rapid rate override command
 type RapidrateCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Scale         float64                `protobuf:"fixed64,1,opt,name=scale,proto3" json:"scale,omitempty"` // Rapid rate scale (0.0-1.0)
+	Scale         float64                `protobuf:"fixed64,1,opt,name=scale,proto3" json:"scale,omitempty"` // Rapid rate scale (0.0-1.0); must be finite and not negative
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3342,7 +3345,7 @@ func (x *RapidrateCommand) GetScale() float64 {
 // Maximum velocity command
 type MaxVelCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Velocity      float64                `protobuf:"fixed64,1,opt,name=velocity,proto3" json:"velocity,omitempty"`
+	Velocity      float64                `protobuf:"fixed64,1,opt,name=velocity,proto3" json:"velocity,omitempty"` // Must be finite and not negative
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3842,7 +3845,8 @@ func (x *AnalogOutputCommand) GetValue() float64 {
 	return 0
 }
 
-// Set joint limits
+// Set joint limits. min_limit must be below max_limit and both must be finite;
+// otherwise neither is sent.
 type SetLimitCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Joint         int32                  `protobuf:"varint,1,opt,name=joint,proto3" json:"joint,omitempty"`

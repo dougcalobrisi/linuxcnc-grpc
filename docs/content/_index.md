@@ -79,6 +79,7 @@ HAL (Hardware Abstraction Layer) introspection:
 - [Rust tutorial](tutorial.md#rust)
 - [LinuxCNCService API](api-reference.md#linuxcncservice)
 - [HalService API](api-reference.md#halservice)
+- [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first)
 - [Error messages and the GUI](server.md#error-messages-and-the-gui)
 - [Starting before LinuxCNC](server.md#starting-before-linuxcnc)
 - [Using with Claude (MCP)](using-with-claude.md)
