@@ -198,8 +198,12 @@ of this without re-measuring):
   LinuxCNC is back. Retrying for ever would keep the server up and `NOT_SERVING` where no
   supervisor restarts it. It is three attempts and not one in case the failure was something
   else. The thread then logs an error, calls `on_unrecoverable(error_text)` (a constructor
-  argument; called once, from the waiting thread, without the lock, and not once `close()`
-  has been called) and ends; the servicer stays disconnected. `create_server` has the same
+  argument; called once, from the waiting thread, without the lock) and ends; the servicer
+  stays disconnected. `_report_unrecoverable` reads the stop flag right before the call and
+  logs only after it, so it says nothing once it has seen `close()`. Nothing makes `close()`
+  wait for the callback (a lock there would let a slow callback hold up shutdown), so the
+  call can still arrive while `close()` runs or just after it returned: callers must ignore
+  it once they have decided to stop. `create_server` has the same
   parameter and passes it through. `serve()` passes a callback that only appends to a list
   (the same rule as its signal handler); its polling loop sees the entry, the `finally` stops
   the server, and `serve()` then raises `UnrecoverableConnectionError`, which `main()` logs
@@ -256,8 +260,9 @@ of this without re-measuring):
   under the lock and answers `RCS_EXEC` if it cannot get the lock by its deadline.
 - `create_server` wraps `server.stop`. Stopping does three things, in this order: every
   health service turns `NOT_SERVING` (`enter_graceful_shutdown`), the gRPC server's own
-  `stop(grace)` is called (it returns its event at once), and `servicer.close()` runs (in a
-  `finally`). The servicer comes last because `close()` can wait for the servicer lock, and
+  `stop(grace)` is called (it returns its event at once), and `servicer.close()` runs. The
+  three are nested in `try`/`finally`, so each runs even if the one before it raised. The
+  servicer comes last because `close()` can wait for the servicer lock, and
   `SendCommand` holds that lock for a whole dispatch, which takes seconds when LinuxCNC's
   task is not answering. The transport's shutdown and grace period must not start late
   because of that.
@@ -275,24 +280,40 @@ of this without re-measuring):
     and the error reader ends without reading (`_poll_error_channel` returns nothing once
     the flag is set).
   - `close()` may be called again.
-- **A failed `create_server` frees the port and closes the LinuxCNC servicer.** The port is
-  bound first, so a bad address fails before any thread exists. Every failure after that
-  closes the LinuxCNC servicer (if it was built) and frees the port. The HAL servicer has no
-  `close()`: a HAL component already created stays until the process exits. Freeing the port
-  takes a detour, measured with grpcio 1.76 on macOS (not measured on Linux, where the
-  detour is harmless at worst): a gRPC server that was never started keeps its port for the
-  life of the process (`stop()` does nothing on it, and dropping the object does not help),
-  while starting it and stopping it at once frees the port.
-  `_release_port_of_unstarted_server` does that. For that reason the LinuxCNC and HAL
-  services are registered last, after everything that can fail, so the server started for
-  that moment offers only the health service, already in graceful shutdown. Do not move the
-  registrations up.
+- **`create_server` binds the port last and never starts anything.** Its order: health
+  service, LinuxCNC servicer, HAL servicer, the two registrations, the waiting thread, and
+  only then `add_insecure_port`. A gRPC server that was never started cannot give its port
+  back: `stop()` does nothing on it and the port stays bound until the process exits or the
+  object is collected (measured with grpcio 1.76 on macOS). So the port is taken only when
+  nothing else can fail. Any failure (`BaseException`, so Ctrl+C too) turns health to
+  graceful shutdown and closes the LinuxCNC servicer if it was built, each even if the other
+  raised, and re-raises with no port bound. Do not start the server on a failure path to
+  free a port: a half-built server could serve the machine RPCs (`close()` leaves
+  `_connected` as it is, and `SendCommand` does not refuse a closed servicer).
+  - What a failure leaves: no port, no transport, no LinuxCNC servicer thread once `close()`
+    has done its work (see the bounds above). The HAL servicer has no `close()`, so a HAL
+    component already created stays until the process exits.
+  - A bad address or a port in use is now found after the servicers exist. In `always` mode
+    with LinuxCNC running, the error reader runs from the servicer's construction until that
+    `close()` (HAL construction and the registrations, milliseconds) and can take a message
+    from LinuxCNC's queue in that time; that message is lost to the GUI. The same was already
+    true of a HAL failure. In `on-demand` and `off` mode nothing is read. No address check
+    before the servicers was added: it would have to copy gRPC's address parsing and still
+    could not promise that the real bind succeeds.
+  - Clients see no difference: nobody can connect before the bind, and health starts as
+    before.
+  - A server that `create_server` returned and that is never started keeps its port after
+    `stop()`, for the same reason. Start it or let the process end.
 - **`serve()`'s signal handler only appends to a list**; the main thread polls it every
   `SHUTDOWN_POLL_INTERVAL` (0.2 s) and then stops the server in a `finally`, which also
   covers a failed `server.start()`. The handlers are installed before `create_server` is
   called (it can take as long as a probe), so a signal during startup is recorded: the
   server is created, started, and stopped on the loop's first pass. If `create_server`
-  raises there is no server to stop and only the handlers are restored. A handler runs in
+  raises there is no server to stop and only the handlers are restored. The stop is
+  `stop(grace=SHUTDOWN_GRACE_PERIOD)` (5 s) and its event is waited on for at most
+  `SHUTDOWN_WAIT_TIMEOUT` (15 s), then an error is logged and `serve()` goes on: gRPC starts
+  its native server before its serving thread, and if that thread cannot start, the event of
+  a later stop is never set. A handler runs in
   the main thread in the middle of whatever it was doing, so anything that takes a lock
   there can deadlock against the interrupted code: stopping the server, logging, and also
   `threading.Event.set()` (its condition lock is not reentrant, and `Event.wait()` holds it

@@ -165,7 +165,15 @@ A program that builds the server with `create_server()` instead of running
 `linuxcnc-grpc` gets the error in the log, and can pass
 `on_unrecoverable=callback` to be told: the callback is called once, from a
 background thread, with a description. The server stays up and `NOT_SERVING`
-until the program stops it; only a new process can connect.
+until the program stops it; only a new process can connect. The callback is
+not called once the server is being stopped, but the two can cross: a call
+can arrive at the moment the program stops the server, or just after. Ignore
+it once you have decided to stop.
+
+`create_server()` binds the port as its last step, so if it raises, no port
+is held. A server it returned keeps its port until it has been started and
+stopped, or the process exits: stopping a gRPC server that was never started
+does not release the port.
 
 ### What happens when LinuxCNC stops
 

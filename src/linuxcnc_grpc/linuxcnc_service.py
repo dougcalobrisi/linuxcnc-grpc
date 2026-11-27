@@ -180,8 +180,11 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             on_unrecoverable: Called once, with a description, when the
                 waiting thread gives up because this process can no longer
                 connect to LinuxCNC and has to be restarted. Called from
-                the waiting thread without the servicer lock, and not after
-                close(). The condition is logged as an error either way.
+                the waiting thread without the servicer lock. It is not
+                called once the thread has seen close(), but nothing makes
+                close() wait for it: the call can arrive while close() runs
+                or just after it has returned. A caller that has decided to
+                stop should ignore it. The condition is logged as an error.
 
         Raises:
             Exception: If require_linuxcnc is True and LinuxCNC is not
@@ -446,19 +449,22 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         Called from the waiting thread with the lock not held, so the
         listener may take its time or stop the server. Says nothing once
         close() has been called: a server that is stopping needs no restart.
+        The flag is read right before the listener is called, and the
+        listener is called before anything is logged, to keep the time in
+        which close() can slip in between as short as possible. It cannot
+        be closed altogether without making close() wait for the listener.
         """
         if self._stop_requested.is_set():
             return
+        if self._on_unrecoverable is not None:
+            try:
+                self._on_unrecoverable(error_text)
+            except Exception as e:
+                logger.error(f"Unrecoverable-connection listener failed: {e}")
         logger.error(
             f"This process can no longer connect to LinuxCNC: {error_text}. "
             "The server stays disconnected until it is restarted."
         )
-        if self._on_unrecoverable is None:
-            return
-        try:
-            self._on_unrecoverable(error_text)
-        except Exception as e:
-            logger.error(f"Unrecoverable-connection listener failed: {e}")
 
     def _reconnect(self, failed_connection: tuple[bool, int] | None = None) -> bool:
         """

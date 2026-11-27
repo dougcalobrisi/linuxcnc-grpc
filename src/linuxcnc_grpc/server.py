@@ -36,8 +36,12 @@ LINUXCNC_HEALTH_SERVICE = "linuxcnc.LinuxCNCService"
 HAL_HEALTH_SERVICE = "hal.HalService"
 # How often serve() looks whether a shutdown signal has arrived.
 SHUTDOWN_POLL_INTERVAL = 0.2  # seconds
-# Longest create_server waits for the transport of a failed start to go away.
-FAILED_START_STOP_TIMEOUT = 5.0  # seconds
+# How long serve() lets RPCs in progress finish when it stops the server.
+SHUTDOWN_GRACE_PERIOD = 5  # seconds
+# Longest serve() waits for the stopped server to report that it is done.
+# Longer than the grace period, and never for ever: a transport that never
+# finishes stopping must not keep the process from exiting.
+SHUTDOWN_WAIT_TIMEOUT = 15.0  # seconds
 
 # Configure logging
 logging.basicConfig(
@@ -61,23 +65,6 @@ class _RequestLoggingInterceptor(grpc.ServerInterceptor):
     def intercept_service(self, continuation, handler_call_details):
         logger.debug(f"RPC: {handler_call_details.method}")
         return continuation(handler_call_details)
-
-
-def _release_port_of_unstarted_server(server: grpc.Server) -> None:
-    """
-    Free the port of a gRPC server that was bound but never started.
-
-    stop() does nothing on a server that was never started, and dropping the
-    object does not free the port either (measured with grpcio 1.76): the
-    port then stays bound for the life of the process. Starting the server
-    and stopping it at once does free it. The caller makes sure that only
-    the health service is registered at this point.
-    """
-    try:
-        server.start()
-        server.stop(0).wait(FAILED_START_STOP_TIMEOUT)
-    except Exception as e:
-        logger.error(f"Could not release the server's port after a failed start: {e}")
 
 
 def create_server(
@@ -112,10 +99,16 @@ def create_server(
             is logged as an error whether or not this is given
 
     Returns:
-        Configured gRPC server (not yet started). If this raises after the
-        port was bound, the port is released and the LinuxCNC servicer is
-        closed. The HAL component, if it was created, stays until the
-        process exits.
+        Configured gRPC server (not yet started), with the port bound.
+
+    The port is bound last. If this raises, no port is bound and the
+    LinuxCNC servicer, if it was built, is closed; nothing is ever started
+    here. A HAL component already created stays until the process exits.
+
+    Start the returned server, or let the process end: gRPC does nothing
+    when stop() is called on a server that was never started, so such a
+    server keeps its port until the process exits or the object is
+    collected.
     """
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=max_workers),
@@ -130,13 +123,7 @@ def create_server(
         ]
     )
 
-    # Bind first: a bad address or a port in use fails here, before any
-    # servicer has started a background thread.
     address = f"{host}:{port}"
-    server.add_insecure_port(address)
-
-    # From here on the server holds the port, so every failure has to give
-    # it back and stop whatever servicer was built.
     health_servicer = health.HealthServicer()
     linuxcnc_servicer = None
     try:
@@ -157,6 +144,7 @@ def create_server(
         health_servicer.set(LINUXCNC_HEALTH_SERVICE, health_pb2.HealthCheckResponse.NOT_SERVING)
         health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
 
+        # Register services
         linuxcnc_servicer = LinuxCNCServiceServicer(
             nc_files_dir=nc_files_dir,
             error_channel_mode=error_channel_mode,
@@ -164,28 +152,29 @@ def create_server(
             on_connection_change=report_linuxcnc_connection,
             on_unrecoverable=on_unrecoverable,
         )
+        linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(linuxcnc_servicer, server)
         hal_servicer = HalServiceServicer()
+        hal_pb2_grpc.add_HalServiceServicer_to_server(hal_servicer, server)
+        health_servicer.set(HAL_HEALTH_SERVICE, health_pb2.HealthCheckResponse.SERVING)
 
         # If LinuxCNC is not up yet, keep checking and connect when it is.
         linuxcnc_servicer.start_waiting_for_linuxcnc()
 
-        # Registered only now that nothing else can fail: releasing the port
-        # after a failure starts the server for a moment, and it must not
-        # offer the LinuxCNC or HAL service then.
-        linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(linuxcnc_servicer, server)
-        hal_pb2_grpc.add_HalServiceServicer_to_server(hal_servicer, server)
-        health_servicer.set(HAL_HEALTH_SERVICE, health_pb2.HealthCheckResponse.SERVING)
+        # Bind last. A gRPC server that was never started cannot give its
+        # port back (stop() does nothing on it), so the port is only taken
+        # once nothing else can fail. A bad address or a port in use fails
+        # here, and the cleanup below stops what was built.
+        server.add_insecure_port(address)
     except BaseException:
-        # No server will be returned, so nothing else would ever free the
-        # port or stop the LinuxCNC servicer's background threads (in
-        # "always" mode the error reader would go on taking LinuxCNC's
-        # messages).
+        # No server will be returned, so nothing else would ever stop the
+        # LinuxCNC servicer's background threads (in "always" mode the error
+        # reader would go on taking LinuxCNC's messages). No port is bound
+        # and nothing was started, so there is no transport to stop.
         try:
             health_servicer.enter_graceful_shutdown()
+        finally:
             if linuxcnc_servicer is not None:
                 linuxcnc_servicer.close()
-        finally:
-            _release_port_of_unstarted_server(server)
         raise
 
     # The servicer runs background threads (the wait for LinuxCNC and the
@@ -194,16 +183,20 @@ def create_server(
     stop_grpc_server = server.stop
 
     def stop_server_and_servicer(grace):
-        # Tell health watchers first: every service turns NOT_SERVING.
-        health_servicer.enter_graceful_shutdown()
+        # Health watchers are told first: every service turns NOT_SERVING.
         # Then the transport, and only then the servicer. Closing the
         # servicer can wait for its lock, which a command that LinuxCNC is
         # not answering holds for seconds; the transport's shutdown and its
-        # grace period must not start late because of that.
+        # grace period must not start late because of that. Each step runs
+        # even if the one before it raised.
         try:
-            return stop_grpc_server(grace)
+            try:
+                health_servicer.enter_graceful_shutdown()
+            finally:
+                stopped = stop_grpc_server(grace)
         finally:
             linuxcnc_servicer.close()
+        return stopped
 
     server.stop = stop_server_and_servicer
 
@@ -301,13 +294,20 @@ def serve(
         else:
             logger.info("Shutdown signal received, stopping server...")
     finally:
-        # Also on a failure above, so the servicer's threads never outlive
-        # serve(). 5 second grace period for RPCs in progress. If
-        # create_server failed there is no server, and it has cleaned up
-        # after itself.
+        # Also on a failure above (a server.start() that raised included),
+        # so the servicer's threads never outlive serve(). If create_server
+        # failed there is no server, and it has cleaned up after itself.
         try:
             if server is not None:
-                server.stop(grace=5).wait()
+                stopped = server.stop(grace=SHUTDOWN_GRACE_PERIOD)
+                # Bounded: a transport that never reports having stopped
+                # (one whose start failed half-way, for example) must not
+                # hold serve() for ever.
+                if not stopped.wait(SHUTDOWN_WAIT_TIMEOUT):
+                    logger.error(
+                        f"The gRPC server did not finish stopping within "
+                        f"{SHUTDOWN_WAIT_TIMEOUT:g} seconds; not waiting any longer"
+                    )
         finally:
             for shutdown_signal, previous_handler in previous_signal_handlers.items():
                 # None means the previous handler was not set from Python.
