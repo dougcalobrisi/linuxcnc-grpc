@@ -150,11 +150,11 @@ linuxcnc-grpc --host 192.168.1.100
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LINUXCNC_NC_FILES` | `/home/linuxcnc/linuxcnc/nc_files` | Directory for G-code file operations (UploadFile, ListFiles, DeleteFile, program open) |
+| `LINUXCNC_NC_FILES` | `/home/linuxcnc/linuxcnc/nc_files` | Directory for G-code file operations (UploadFile, ListFiles, ReadFile, DeleteFile, ResolveFile, program open) |
 
 ### NC Files Directory
 
-All file management RPCs (`UploadFile`, `ListFiles`, `DeleteFile`) and the `program open` command operate within a single allowed directory. By default this is `/home/linuxcnc/linuxcnc/nc_files`.
+All file management RPCs (`UploadFile`, `ListFiles`, `ReadFile`, `DeleteFile`, `ResolveFile`) and the `program open` command operate within a single allowed directory. By default this is `/home/linuxcnc/linuxcnc/nc_files`.
 
 To change it, use the `--nc-files` flag:
 
@@ -179,7 +179,7 @@ Environment=LINUXCNC_NC_FILES=/home/user/nc_programs
 ExecStart=/usr/local/bin/linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
-Path traversal outside this directory is rejected — filenames like `../../etc/passwd` will return `INVALID_ARGUMENT`. The server resolves symlinks and validates the canonical path stays within the allowed directory.
+Path traversal outside this directory is rejected — filenames like `../../etc/passwd` will return `INVALID_ARGUMENT`. The server resolves symlinks and validates the canonical path stays within the allowed directory. A name that runs into a symbolic link loop is also `INVALID_ARGUMENT`.
 
 ## Security Considerations
 

@@ -170,7 +170,7 @@ See [examples/README.md](https://github.com/dougcalobrisi/linuxcnc-grpc/blob/mai
 
 ### File Management
 
-The server provides `UploadFile`, `ListFiles`, and `DeleteFile` RPCs for remote G-code file management. Files are stored in the NC files directory (default: `/home/linuxcnc/linuxcnc/nc_files`).
+The server provides `UploadFile`, `ListFiles`, `ReadFile`, `DeleteFile` and `ResolveFile` RPCs for remote G-code file management. Files are stored in the NC files directory (default: `/home/linuxcnc/linuxcnc/nc_files`).
 
 Configure the directory with `--nc-files` or the `LINUXCNC_NC_FILES` environment variable:
 

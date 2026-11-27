@@ -16,6 +16,8 @@ Complete API documentation for LinuxCNC gRPC services.
   - [UploadFile](#uploadfile)
   - [ListFiles](#listfiles)
   - [DeleteFile](#deletefile)
+  - [ReadFile](#readfile)
+  - [ResolveFile](#resolvefile)
 - [HalService](#halservice)
   - [GetSystemStatus](#getsystemstatus)
   - [GetValue](#getvalue)
@@ -265,7 +267,7 @@ rpc StreamErrors(StreamErrorsRequest) returns (stream ErrorMessage)
 
 The following RPCs manage G-code files in the NC files directory (default: `/home/linuxcnc/linuxcnc/nc_files`, configurable via `--nc-files` flag or `LINUXCNC_NC_FILES` environment variable). See [Server Configuration](server.md#nc-files-directory) for details.
 
-All filenames are relative to this directory. Path traversal outside it is rejected. An upload can hold at most 10 MiB (10,485,760) characters of text, and the whole request must fit in the server's 11 MiB receive limit (see [UploadFile](#uploadfile)).
+All filenames are relative to this directory. Path traversal outside it is rejected. An upload can hold at most 10 MiB (10,485,760) characters of text, and the whole request must fit in the server's 11 MiB receive limit (see [UploadFile](#uploadfile)). Downloads are read in chunks of up to 1 MiB.
 
 ### UploadFile
 
@@ -281,7 +283,7 @@ rpc UploadFile(UploadFileRequest) returns (UploadFileResponse)
 |-------|------|-------------|
 | `filename` | string | Relative path within nc_files dir (e.g. `"part1.ngc"` or `"subdir/part1.ngc"`) |
 | `content` | string | G-code text content |
-| `fail_if_exists` | bool | If true, fail when file already exists (default: false = overwrite) |
+| `fail_if_exists` | bool | If true, fail when file already exists (default: false = overwrite). The file is then created exclusively, so of two concurrent uploads of the same new name only one succeeds |
 
 **Response:** `UploadFileResponse`
 
@@ -294,7 +296,7 @@ rpc UploadFile(UploadFileRequest) returns (UploadFileResponse)
 
 | Code | Condition |
 |------|-----------|
-| `INVALID_ARGUMENT` | Empty filename, empty content, null bytes, path traversal, or content longer than 10,485,760 characters (10 MiB) |
+| `INVALID_ARGUMENT` | Empty filename, empty content, null bytes, path traversal, a symbolic link loop in the name, or content longer than 10,485,760 characters (10 MiB) |
 | `ALREADY_EXISTS` | File exists and `fail_if_exists` is true |
 | `RESOURCE_EXHAUSTED` | The request message is larger than the server's receive limit of 11 MiB (11,534,336 bytes). gRPC rejects it before `UploadFile` runs |
 
@@ -349,7 +351,7 @@ rpc ListFiles(ListFilesRequest) returns (ListFilesResponse)
 | Code | Condition |
 |------|-----------|
 | `NOT_FOUND` | Subdirectory does not exist |
-| `INVALID_ARGUMENT` | Path traversal attempt |
+| `INVALID_ARGUMENT` | Path traversal attempt, or a symbolic link loop in the name |
 
 **Example (Python):**
 
@@ -386,7 +388,7 @@ rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse)
 | Code | Condition |
 |------|-----------|
 | `NOT_FOUND` | File does not exist |
-| `INVALID_ARGUMENT` | Path traversal attempt or target is a directory |
+| `INVALID_ARGUMENT` | Path traversal attempt, a symbolic link loop in the name, or target is a directory |
 
 **Example (Python):**
 
@@ -395,6 +397,167 @@ response = stub.DeleteFile(
     linuxcnc_pb2.DeleteFileRequest(filename="my_part.ngc")
 )
 print(f"Deleted: {response.path}")
+```
+
+> `DeleteFile` and `UploadFile` act on the file a name resolves to. If the
+> name is a symbolic link to another file in the directory, the link's target
+> is deleted or overwritten. Use [ResolveFile](#resolvefile) to see what a
+> name resolves to.
+
+### ReadFile
+
+Read a file from the nc_files directory, whole or in chunks.
+
+```protobuf
+rpc ReadFile(ReadFileRequest) returns (ReadFileResponse)
+```
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `filename` | string | Relative path within nc_files dir |
+| `offset` | int64 | Byte offset to start reading from (default 0) |
+| `max_bytes` | int32 | Most bytes to return. 0, or anything above 1 MiB (1,048,576), means 1 MiB |
+
+**Response:** `ReadFileResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Absolute, canonical path of the file read |
+| `content` | bytes | File bytes starting at `offset` |
+| `offset` | int64 | The offset this content starts at |
+| `total_size_bytes` | int64 | Size of the whole file when it was read |
+| `end_of_file` | bool | True if this content reaches the end of the file |
+| `modified_timestamp` | int64 | Last modified time (unix nanoseconds) |
+
+One response carries at most 1 MiB, so it always fits in a gRPC client's
+default 4 MB receive limit. For a larger file, call again with `offset`
+advanced by the length of the content you received, until `end_of_file` is
+true. Files of any size can be read this way (uploads are capped at 10 MiB,
+but the directory may hold larger files put there by other means).
+
+- `content` is raw bytes. A chunk boundary can fall inside a multi-byte UTF-8
+  character, so join all the chunks before decoding.
+- If `modified_timestamp` or `total_size_bytes` changes between chunks, the
+  file was modified while you were reading it. Start again from offset 0, and
+  check at the end that you received `total_size_bytes` bytes. This catches
+  ordinary rewrites; a file rewritten with the same size and timestamp between
+  two chunks cannot be told apart, so don't read a file while you know it is
+  being written.
+- If the file's size or modification time changes while the server is reading
+  one chunk, the call fails with `ABORTED` instead of returning content that
+  may mix two versions. Start again from offset 0.
+- An `offset` at or past the end of the file is not an error: `content` is
+  empty and `end_of_file` is true.
+- The path rules are the same as for `UploadFile` and `DeleteFile`. A symbolic
+  link is followed only if its target is inside the nc_files directory.
+- The file RPCs check the path and then act on it. A program running on the
+  machine with write access to the nc_files directory could change the
+  directory between those two steps; the server guards the file itself against
+  being swapped for a link, but it does not defend against a hostile local
+  user rearranging the directory tree.
+
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `NOT_FOUND` | File does not exist |
+| `INVALID_ARGUMENT` | Path traversal attempt, a symbolic link loop in the name, the name is a directory or not a regular file (a FIFO or device is refused without being read), or `offset` or `max_bytes` is negative |
+| `ABORTED` | The file's size or modification time changed during the read. Start again from offset 0 |
+
+**Example (Python):**
+
+```python
+def read_nc_file(stub, filename):
+    content = b""
+    modified_timestamp = None
+    while True:
+        chunk = stub.ReadFile(
+            linuxcnc_pb2.ReadFileRequest(filename=filename, offset=len(content))
+        )
+        version = (chunk.modified_timestamp, chunk.total_size_bytes)
+        if modified_timestamp not in (None, version):
+            raise RuntimeError(f"{filename} changed while it was being read")
+        modified_timestamp = version
+        content += chunk.content
+        if chunk.end_of_file:
+            return content.decode()
+
+print(read_nc_file(stub, "my_part.ngc"))
+```
+
+The Go client has a `ReadFile(ctx, filename)` helper that does the same loop.
+
+### ResolveFile
+
+Resolve a name in the nc_files directory to its canonical path, and say
+whether it is the program LinuxCNC has loaded. Use it before replacing or
+deleting a file, to make sure you are not changing a program that is loaded
+or running.
+
+```protobuf
+rpc ResolveFile(ResolveFileRequest) returns (ResolveFileResponse)
+```
+
+**Request:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `filename` | string | Relative path within nc_files dir. The file does not have to exist |
+
+**Response:** `ResolveFileResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Absolute, canonical path with symbolic links resolved. This is the file `UploadFile`, `DeleteFile` and `ReadFile` act on for this name |
+| `exists` | bool | True if something exists at that path |
+| `is_directory` | bool | True if it is a directory |
+| `is_symlink` | bool | True if resolving the name goes through a symbolic link at any component |
+| `is_loaded_program` | bool | True if this is the file LinuxCNC has loaded (`task.file`) |
+| `loaded_program` | string | Canonical path of the loaded program, empty if none |
+| `interp_state` | InterpState | Interpreter state when checked |
+
+`is_loaded_program` is true when the name resolves to the same canonical path
+as `task.file`, or to the same file on disk (a hard link). It compares
+resolved paths, so a symbolic link to the loaded program counts, and so does
+a program LinuxCNC opened through a link.
+
+LinuxCNC keeps reporting the last program it opened, even after it has
+finished. A loaded program is only *in use* while `interp_state` is not
+`INTERP_IDLE`. A safe rule for clients:
+
+- `is_loaded_program` false: the name is not the loaded program; replace or
+  delete it freely.
+- `is_loaded_program` true and `interp_state` is `INTERP_IDLE`: the program is
+  loaded but not running. Replacing it is safe, but LinuxCNC keeps the version
+  it read until the program is opened again.
+- `is_loaded_program` true and any other `interp_state`: leave the file alone.
+
+The answer is a snapshot: another client or the operator can load a program
+right after you ask.
+
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_ARGUMENT` | Path traversal attempt, a symbolic link loop in the name, or an empty name |
+| `UNAVAILABLE` | LinuxCNC could not be read, so the loaded program is unknown |
+| `INTERNAL` | The server's NC files directory could not be resolved (a symbolic link loop). The message names the error |
+
+If the path LinuxCNC reports for the loaded program cannot be resolved (a
+symbolic link loop), `is_loaded_program` is false.
+
+**Example (Python):**
+
+```python
+resolved = stub.ResolveFile(
+    linuxcnc_pb2.ResolveFileRequest(filename="my_part.ngc")
+)
+if resolved.is_loaded_program and resolved.interp_state != linuxcnc_pb2.INTERP_IDLE:
+    print(f"{resolved.path} is running; not touching it")
+else:
+    stub.DeleteFile(linuxcnc_pb2.DeleteFileRequest(filename="my_part.ngc"))
 ```
 
 ---

@@ -501,6 +501,77 @@ class TestE2EFiles:
         assert self.TEST_FILENAME not in names
 
 
+    def test_read_file_returns_uploaded_content(self, linuxcnc_stub):
+        """ReadFile gives back exactly what UploadFile wrote, whole and in chunks."""
+        filename = "e2e_read_test.ngc"
+        upload_test_file(linuxcnc_stub, filename, self.TEST_CONTENT)
+        try:
+            whole = linuxcnc_stub.ReadFile(linuxcnc_pb2.ReadFileRequest(filename=filename))
+            assert whole.content.decode() == self.TEST_CONTENT
+            assert whole.end_of_file
+            assert whole.total_size_bytes == len(self.TEST_CONTENT.encode())
+
+            collected = b""
+            while True:
+                chunk = linuxcnc_stub.ReadFile(linuxcnc_pb2.ReadFileRequest(
+                    filename=filename, offset=len(collected), max_bytes=7
+                ))
+                assert chunk.modified_timestamp == whole.modified_timestamp
+                collected += chunk.content
+                if chunk.end_of_file:
+                    break
+            assert collected == whole.content
+        finally:
+            delete_test_file(linuxcnc_stub, filename)
+
+    def test_read_file_rejects_path_traversal(self, linuxcnc_stub):
+        with pytest.raises(grpc.RpcError) as error_info:
+            linuxcnc_stub.ReadFile(linuxcnc_pb2.ReadFileRequest(filename="../../etc/passwd"))
+        assert error_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    def test_resolve_file_identifies_loaded_program(self, linuxcnc_stub):
+        """After program_open, ResolveFile marks that name, and only that name, as loaded."""
+        loaded_name = "e2e_resolve_loaded.ngc"
+        other_name = "e2e_resolve_other.ngc"
+        upload_resp = upload_test_file(linuxcnc_stub, loaded_name, self.TEST_CONTENT)
+        upload_test_file(linuxcnc_stub, other_name, self.TEST_CONTENT)
+        try:
+            send_mode_command(linuxcnc_stub, linuxcnc_pb2.MODE_AUTO)
+            wait_for_condition(
+                linuxcnc_stub,
+                lambda s: s.task.task_mode == linuxcnc_pb2.MODE_AUTO,
+                description="AUTO mode",
+            )
+            linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+                program=linuxcnc_pb2.ProgramCommand(open=loaded_name)
+            ))
+            wait_for_condition(
+                linuxcnc_stub,
+                lambda s: s.task.file.endswith(loaded_name),
+                description="program loaded",
+            )
+
+            loaded = linuxcnc_stub.ResolveFile(
+                linuxcnc_pb2.ResolveFileRequest(filename=loaded_name)
+            )
+            assert loaded.exists
+            assert loaded.is_loaded_program
+            assert loaded.path == upload_resp.path
+            assert loaded.loaded_program == loaded.path
+            assert loaded.interp_state == linuxcnc_pb2.INTERP_IDLE
+
+            other = linuxcnc_stub.ResolveFile(
+                linuxcnc_pb2.ResolveFileRequest(filename=other_name)
+            )
+            assert other.exists
+            assert not other.is_loaded_program
+            assert other.loaded_program == loaded.path
+        finally:
+            send_mode_command(linuxcnc_stub, linuxcnc_pb2.MODE_MANUAL)
+            delete_test_file(linuxcnc_stub, loaded_name)
+            delete_test_file(linuxcnc_stub, other_name)
+
+
 # ---------------------------------------------------------------------------
 # WaitComplete Tests
 # ---------------------------------------------------------------------------

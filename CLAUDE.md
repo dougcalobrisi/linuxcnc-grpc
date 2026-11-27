@@ -40,6 +40,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── test_*_mapper.py       # Unit tests for proto mappers
 │   ├── test_*_service.py      # Unit tests for gRPC services
 │   ├── test_wait_for_linuxcnc.py  # scripts/wait-for-linuxcnc.py
+│   ├── test_file_read_resolve.py  # ReadFile, ResolveFile
 │   ├── mock_server.py         # Mock gRPC server for integration tests
 │   └── conftest.py            # Shared fixtures
 ├── docs/                      # Hugo documentation site
@@ -267,13 +268,50 @@ and so consumes messages from the single NML error queue, taking them away from 
 **Input Validation**: Handler methods validate indices before dispatching to LinuxCNC:
 - `_validate_joint_index(index, is_joint)` checks bounds against `stat.joint`/`stat.axis`; index -1 is only valid for joint operations (home/unhome all).
 - `_validate_spindle_index(index)` checks bounds against `stat.spindle`.
-- `_validate_nc_path(filename)` resolves paths relative to the NC files directory and rejects path traversal, null bytes, and empty filenames. Used by both `_handle_program_cmd` and the file management RPCs.
+- `_validate_nc_path(filename)` resolves paths relative to the NC files directory and rejects path traversal, null bytes, empty filenames and symlink loops (all as `ValueError`, so `INVALID_ARGUMENT`). Used by both `_handle_program_cmd` and the file management RPCs. A loop is caught two ways because Python versions differ: `Path.resolve()` raises `RuntimeError` up to 3.12, and from 3.13 returns a path that still contains the link, so the function also calls `os.stat` and checks for `ELOOP`.
+- `_resolved_nc_files_dir()` resolves the directory itself for ListFiles and ResolveFile and raises `OSError(ELOOP)` for a loop (or a link chain longer than the kernel follows) on every Python version: it turns the `RuntimeError` of Python <= 3.12 into that error, and also calls `os.stat` on the directory, because from 3.13 `resolve()` does not raise. Those RPCs report it as `INTERNAL`. ResolveFile calls it before `_validate_nc_path`, so a loop in the directory is not blamed on the file name. Upload/Read/Delete resolve the directory inside `_validate_nc_path`, where a directory loop is still `INVALID_ARGUMENT` naming the file. Left that way to keep `_validate_nc_path` raising only `ValueError`.
 - MDI commands reject empty strings, null bytes and commands over `MAX_MDI_COMMAND_LENGTH` (10000 characters). The full command is logged at INFO after it is sent (and its `repr` at DEBUG on arrival).
 
-**File Management RPCs**: `UploadFile`, `ListFiles`, and `DeleteFile` provide remote file
+**File Management RPCs**: `UploadFile`, `ListFiles`, `DeleteFile`, `ReadFile` and `ResolveFile` provide remote file
 management for the NC files directory (`/home/linuxcnc/linuxcnc/nc_files` or `LINUXCNC_NC_FILES` env var).
-These RPCs do not require the LinuxCNC lock (no stat/command access) and use `_validate_nc_path`
-for security. Upload max size is 10 MB.
+All use `_validate_nc_path` for security. Upload, List, Delete and Read do not take the LinuxCNC
+lock (no stat/command access); `ResolveFile` takes it for one status poll and needs LinuxCNC.
+Upload limit: `UploadFile` aborts `INVALID_ARGUMENT` when `len(request.content)` exceeds
+`MAX_UPLOAD_SIZE` (10 MiB). `content` is a proto `string`, so that counts characters, not bytes
+(the error text and the log line say "characters"). The server's receive limit is `MAX_RECEIVE_MESSAGE_BYTES`
+(`MAX_UPLOAD_SIZE` + 1 MiB); a larger request is rejected by gRPC with `RESOURCE_EXHAUSTED`
+before the handler runs.
+With `fail_if_exists`, `UploadFile` checks `exists()` first and then creates the file with
+`open("x")` (exclusive create), so of two concurrent uploads of the same new name only one
+writes; the other gets `ALREADY_EXISTS`. Without the flag it is a plain `write_text`.
+If the write after the exclusive create fails (a full disk, say), the handler unlinks the
+file it created and re-raises: a partial file left behind would answer every retry with
+`ALREADY_EXISTS`. Only the `fail_if_exists` path does this, because only there is it certain
+that this call created the file.
+
+**ReadFile**: returns `bytes` (not `string`, so chunk boundaries can split UTF-8 and non-UTF-8
+files still read). One response carries at most `MAX_READ_CHUNK_BYTES` (1 MiB), which keeps it
+under a client's default 4 MB receive limit; `max_bytes` of 0 or above the cap means the cap.
+Clients page with `offset` until `end_of_file`. The file is opened with `O_NOFOLLOW` and must
+be a regular file by `fstat` (the resolved path has no symlinks, so a link there means it was
+swapped in after validation). The open also uses `O_NONBLOCK`, so a FIFO swapped in does not
+block the open and is then refused by the regular-file check. Size and mtime come from
+`os.fstat` on the open file, taken *after* the read, so `end_of_file` matches the bytes
+returned. A second `fstat` taken before the read is compared with it: if size or
+`st_mtime_ns` changed during the read, the RPC aborts `ABORTED` (the client starts again from
+offset 0) rather than pair bytes of one version with the size and mtime of another. Ancestor
+directories are not protected against a hostile local user (nor are Upload/Delete).
+No lock, no LinuxCNC access. There is no total size cap, since only one chunk is read.
+
+**ResolveFile**: resolves a name with `_validate_nc_path` and compares it with `stat.file`
+(taking the lock for one poll). `is_loaded_program` is true on equal resolved paths or
+`os.path.samefile` (hard links). `is_symlink` comes from `_name_follows_symlink`, which walks
+the name component by component (a lexical comparison misses `link/../file`). It aborts `UNAVAILABLE` on `linuxcnc.error` rather
+than report "not loaded" without knowing. `UploadFile` and `DeleteFile` act on the resolved
+path, so deleting a symlinked name deletes the link's target; that is 1.0 behaviour, now
+documented, and `ResolveFile` shows clients the target first. If the loaded program's path
+cannot be resolved (`RuntimeError` from `resolve()` for a symlink loop, Python <= 3.12),
+`is_loaded_program` is false and `loaded_program` is the path as LinuxCNC reported it.
 
 ## Development Setup
 

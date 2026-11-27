@@ -78,6 +78,16 @@ class LinuxCNCServiceStub(object):
                 request_serializer=linuxcnc__pb2.DeleteFileRequest.SerializeToString,
                 response_deserializer=linuxcnc__pb2.DeleteFileResponse.FromString,
                 _registered_method=True)
+        self.ReadFile = channel.unary_unary(
+                '/linuxcnc.LinuxCNCService/ReadFile',
+                request_serializer=linuxcnc__pb2.ReadFileRequest.SerializeToString,
+                response_deserializer=linuxcnc__pb2.ReadFileResponse.FromString,
+                _registered_method=True)
+        self.ResolveFile = channel.unary_unary(
+                '/linuxcnc.LinuxCNCService/ResolveFile',
+                request_serializer=linuxcnc__pb2.ResolveFileRequest.SerializeToString,
+                response_deserializer=linuxcnc__pb2.ResolveFileResponse.FromString,
+                _registered_method=True)
 
 
 class LinuxCNCServiceServicer(object):
@@ -143,6 +153,21 @@ class LinuxCNCServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ReadFile(self, request, context):
+        """Read a file (or one chunk of it) from the nc_files directory
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResolveFile(self, request, context):
+        """Resolve a name in the nc_files directory to its canonical path and say
+        whether it is the program LinuxCNC currently has loaded
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LinuxCNCServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -185,6 +210,16 @@ def add_LinuxCNCServiceServicer_to_server(servicer, server):
                     servicer.DeleteFile,
                     request_deserializer=linuxcnc__pb2.DeleteFileRequest.FromString,
                     response_serializer=linuxcnc__pb2.DeleteFileResponse.SerializeToString,
+            ),
+            'ReadFile': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReadFile,
+                    request_deserializer=linuxcnc__pb2.ReadFileRequest.FromString,
+                    response_serializer=linuxcnc__pb2.ReadFileResponse.SerializeToString,
+            ),
+            'ResolveFile': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResolveFile,
+                    request_deserializer=linuxcnc__pb2.ResolveFileRequest.FromString,
+                    response_serializer=linuxcnc__pb2.ResolveFileResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -407,6 +442,60 @@ class LinuxCNCService(object):
             '/linuxcnc.LinuxCNCService/DeleteFile',
             linuxcnc__pb2.DeleteFileRequest.SerializeToString,
             linuxcnc__pb2.DeleteFileResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReadFile(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/linuxcnc.LinuxCNCService/ReadFile',
+            linuxcnc__pb2.ReadFileRequest.SerializeToString,
+            linuxcnc__pb2.ReadFileResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResolveFile(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/linuxcnc.LinuxCNCService/ResolveFile',
+            linuxcnc__pb2.ResolveFileRequest.SerializeToString,
+            linuxcnc__pb2.ResolveFileResponse.FromString,
             options,
             channel_credentials,
             insecure,
