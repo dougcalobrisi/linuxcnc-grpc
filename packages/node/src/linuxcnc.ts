@@ -1732,6 +1732,35 @@ export interface MachineConfig {
   axes: AxisConfig[];
 }
 
+/** Empty - returns the server information */
+export interface GetServerInfoRequest {
+}
+
+/**
+ * What the server is and whether it has LinuxCNC. Returned by GetServerInfo,
+ * which a 1.0 server answers with UNIMPLEMENTED.
+ */
+export interface ServerInfo {
+  /**
+   * Version of the linuxcnc-grpc package the server runs, e.g. "1.1.0".
+   * The package version is the API version.
+   */
+  serverVersion: string;
+  /**
+   * True once the server has connected to LinuxCNC. False while it is waiting
+   * for LinuxCNC to start; the RPCs that need LinuxCNC answer UNAVAILABLE then.
+   * It is what the server holds, not a check of LinuxCNC made for this call.
+   */
+  linuxcncConnected: boolean;
+  /**
+   * Version of LinuxCNC as its Python module on the server's machine reports
+   * it, e.g. "2.9.4"; empty if the module does not say. It comes from the
+   * installed module, so it is also set while linuxcnc_connected is false and
+   * does not by itself mean that LinuxCNC is running.
+   */
+  linuxcncVersion: string;
+}
+
 function createBasePosition(): Position {
   return { x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, u: 0, v: 0, w: 0 };
 }
@@ -10301,6 +10330,141 @@ export const MachineConfig: MessageFns<MachineConfig> = {
   },
 };
 
+function createBaseGetServerInfoRequest(): GetServerInfoRequest {
+  return {};
+}
+
+export const GetServerInfoRequest: MessageFns<GetServerInfoRequest> = {
+  encode(_: GetServerInfoRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetServerInfoRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetServerInfoRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): GetServerInfoRequest {
+    return {};
+  },
+
+  toJSON(_: GetServerInfoRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetServerInfoRequest>, I>>(base?: I): GetServerInfoRequest {
+    return GetServerInfoRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetServerInfoRequest>, I>>(_: I): GetServerInfoRequest {
+    const message = createBaseGetServerInfoRequest();
+    return message;
+  },
+};
+
+function createBaseServerInfo(): ServerInfo {
+  return { serverVersion: "", linuxcncConnected: false, linuxcncVersion: "" };
+}
+
+export const ServerInfo: MessageFns<ServerInfo> = {
+  encode(message: ServerInfo, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.serverVersion !== "") {
+      writer.uint32(10).string(message.serverVersion);
+    }
+    if (message.linuxcncConnected !== false) {
+      writer.uint32(16).bool(message.linuxcncConnected);
+    }
+    if (message.linuxcncVersion !== "") {
+      writer.uint32(26).string(message.linuxcncVersion);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ServerInfo {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseServerInfo();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.serverVersion = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.linuxcncConnected = reader.bool();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.linuxcncVersion = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ServerInfo {
+    return {
+      serverVersion: isSet(object.serverVersion) ? globalThis.String(object.serverVersion) : "",
+      linuxcncConnected: isSet(object.linuxcncConnected) ? globalThis.Boolean(object.linuxcncConnected) : false,
+      linuxcncVersion: isSet(object.linuxcncVersion) ? globalThis.String(object.linuxcncVersion) : "",
+    };
+  },
+
+  toJSON(message: ServerInfo): unknown {
+    const obj: any = {};
+    if (message.serverVersion !== "") {
+      obj.serverVersion = message.serverVersion;
+    }
+    if (message.linuxcncConnected !== false) {
+      obj.linuxcncConnected = message.linuxcncConnected;
+    }
+    if (message.linuxcncVersion !== "") {
+      obj.linuxcncVersion = message.linuxcncVersion;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ServerInfo>, I>>(base?: I): ServerInfo {
+    return ServerInfo.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ServerInfo>, I>>(object: I): ServerInfo {
+    const message = createBaseServerInfo();
+    message.serverVersion = object.serverVersion ?? "";
+    message.linuxcncConnected = object.linuxcncConnected ?? false;
+    message.linuxcncVersion = object.linuxcncVersion ?? "";
+    return message;
+  },
+};
+
 export type LinuxCNCServiceService = typeof LinuxCNCServiceService;
 export const LinuxCNCServiceService = {
   /** Get current status (poll equivalent) */
@@ -10426,6 +10590,21 @@ export const LinuxCNCServiceService = {
     responseSerialize: (value: MachineConfig): Buffer => Buffer.from(MachineConfig.encode(value).finish()),
     responseDeserialize: (value: Buffer): MachineConfig => MachineConfig.decode(value),
   },
+  /**
+   * Get the server's version and whether it is connected to LinuxCNC.
+   * Answers also while the server is waiting for LinuxCNC, and never waits
+   * behind a command. A 1.0 server does not have this RPC and answers
+   * UNIMPLEMENTED, which is how a client tells a 1.0 server from a later one.
+   */
+  getServerInfo: {
+    path: "/linuxcnc.LinuxCNCService/GetServerInfo",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: GetServerInfoRequest): Buffer => Buffer.from(GetServerInfoRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GetServerInfoRequest => GetServerInfoRequest.decode(value),
+    responseSerialize: (value: ServerInfo): Buffer => Buffer.from(ServerInfo.encode(value).finish()),
+    responseDeserialize: (value: Buffer): ServerInfo => ServerInfo.decode(value),
+  },
 } as const;
 
 export interface LinuxCNCServiceServer extends UntypedServiceImplementation {
@@ -10463,6 +10642,13 @@ export interface LinuxCNCServiceServer extends UntypedServiceImplementation {
    * mapping, limits, velocities and units
    */
   getMachineConfig: handleUnaryCall<GetMachineConfigRequest, MachineConfig>;
+  /**
+   * Get the server's version and whether it is connected to LinuxCNC.
+   * Answers also while the server is waiting for LinuxCNC, and never waits
+   * behind a command. A 1.0 server does not have this RPC and answers
+   * UNIMPLEMENTED, which is how a client tells a 1.0 server from a later one.
+   */
+  getServerInfo: handleUnaryCall<GetServerInfoRequest, ServerInfo>;
 }
 
 export interface LinuxCNCServiceClient extends Client {
@@ -10635,6 +10821,27 @@ export interface LinuxCNCServiceClient extends Client {
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: MachineConfig) => void,
+  ): ClientUnaryCall;
+  /**
+   * Get the server's version and whether it is connected to LinuxCNC.
+   * Answers also while the server is waiting for LinuxCNC, and never waits
+   * behind a command. A 1.0 server does not have this RPC and answers
+   * UNIMPLEMENTED, which is how a client tells a 1.0 server from a later one.
+   */
+  getServerInfo(
+    request: GetServerInfoRequest,
+    callback: (error: ServiceError | null, response: ServerInfo) => void,
+  ): ClientUnaryCall;
+  getServerInfo(
+    request: GetServerInfoRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: ServerInfo) => void,
+  ): ClientUnaryCall;
+  getServerInfo(
+    request: GetServerInfoRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: ServerInfo) => void,
   ): ClientUnaryCall;
 }
 

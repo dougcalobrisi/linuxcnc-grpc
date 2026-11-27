@@ -305,6 +305,19 @@ for joint in config.joints:
 
 See [GetMachineConfig](api-reference.md#getmachineconfig).
 
+## Server Version
+
+`GetServerInfo` returns the server's version and whether it is connected to
+LinuxCNC. It works while LinuxCNC is not running, when most other RPCs answer
+`UNAVAILABLE`. A 1.0 server does not have it and answers `UNIMPLEMENTED`.
+
+```python
+server_info = stub.GetServerInfo(linuxcnc_pb2.GetServerInfoRequest())
+print(server_info.server_version, server_info.linuxcnc_connected)
+```
+
+See [GetServerInfo](api-reference.md#getserverinfo).
+
 ## Files
 
 `UploadFile`, `ListFiles`, `ReadFile` and `DeleteFile` manage G-code files in
@@ -318,7 +331,8 @@ All gRPC calls can raise `grpc.RpcError`. Common status codes:
 
 | Code | Meaning |
 |------|---------|
-| `UNAVAILABLE` | Server not reachable, or the server is running but LinuxCNC is not (it connects by itself when LinuxCNC starts) |
+| `UNAVAILABLE` | Server not reachable, or the server is running but LinuxCNC is not (it connects by itself when LinuxCNC starts; `GetServerInfo` tells the two apart) |
+| `UNIMPLEMENTED` | The server is older than the RPC, for example `GetServerInfo` on a 1.0 server |
 | `INVALID_ARGUMENT` | A file RPC was given a bad argument: a file name outside the NC files directory, an empty name, empty or too large upload content |
 | `NOT_FOUND` | A file that does not exist |
 | `FAILED_PRECONDITION` | `StreamErrors` on a server started with `--error-channel off` |

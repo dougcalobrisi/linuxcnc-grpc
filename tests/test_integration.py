@@ -550,6 +550,15 @@ class TestLinuxCNCServiceIntegration:
         assert config.linear_units_name == "mm"
         assert config.joints[0].HasField("home_sequence")
 
+    def test_get_server_info(self, linuxcnc_client):
+        """GetServerInfo returns the server's version and its LinuxCNC connection."""
+        server_info = linuxcnc_client.GetServerInfo(linuxcnc_pb2.GetServerInfoRequest())
+        status = linuxcnc_client.GetStatus(linuxcnc_pb2.GetStatusRequest())
+
+        assert server_info.server_version == "0.0.0-mock"
+        assert server_info.linuxcnc_connected
+        assert server_info.linuxcnc_version == status.version == "2.9.0-mock"
+
     def test_stream_errors_replays_buffered_messages(self, linuxcnc_client):
         """StreamErrors with replay_buffered starts with the server's buffered messages."""
         stream = linuxcnc_client.StreamErrors(

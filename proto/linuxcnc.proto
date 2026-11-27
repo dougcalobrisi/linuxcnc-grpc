@@ -708,6 +708,12 @@ service LinuxCNCService {
   // Get the machine's static configuration: kinematics, joint-to-axis
   // mapping, limits, velocities and units
   rpc GetMachineConfig(GetMachineConfigRequest) returns (MachineConfig);
+
+  // Get the server's version and whether it is connected to LinuxCNC.
+  // Answers also while the server is waiting for LinuxCNC, and never waits
+  // behind a command. A 1.0 server does not have this RPC and answers
+  // UNIMPLEMENTED, which is how a client tells a 1.0 server from a later one.
+  rpc GetServerInfo(GetServerInfoRequest) returns (ServerInfo);
 }
 
 message GetStatusRequest {
@@ -909,4 +915,29 @@ message MachineConfig {
 
   repeated JointConfig joints = 30;     // One per joint
   repeated AxisConfig axes = 31;        // One per axis in axis_mask
+}
+
+// ============================================================================
+// SERVER INFORMATION MESSAGES
+// ============================================================================
+
+message GetServerInfoRequest {
+  // Empty - returns the server information
+}
+
+// What the server is and whether it has LinuxCNC. Returned by GetServerInfo,
+// which a 1.0 server answers with UNIMPLEMENTED.
+message ServerInfo {
+  // Version of the linuxcnc-grpc package the server runs, e.g. "1.1.0".
+  // The package version is the API version.
+  string server_version = 1;
+  // True once the server has connected to LinuxCNC. False while it is waiting
+  // for LinuxCNC to start; the RPCs that need LinuxCNC answer UNAVAILABLE then.
+  // It is what the server holds, not a check of LinuxCNC made for this call.
+  bool linuxcnc_connected = 2;
+  // Version of LinuxCNC as its Python module on the server's machine reports
+  // it, e.g. "2.9.4"; empty if the module does not say. It comes from the
+  // installed module, so it is also set while linuxcnc_connected is false and
+  // does not by itself mean that LinuxCNC is running.
+  string linuxcnc_version = 3;
 }

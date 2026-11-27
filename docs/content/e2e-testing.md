@@ -19,6 +19,7 @@ The suite has about 60 tests organized into these areas:
 - **Jogging** — incremental and continuous jog with stop, what `inpos` and velocity show during a jog, a joint jog refused in teleop
 - **Errors** — fan-out of one message to two streams, `status.errors`, replay of buffered messages, a real MDI rejection
 - **Machine configuration** — `GetMachineConfig` against the simulator's INI file and status
+- **Server information** — `GetServerInfo` reports the package version, the connection and LinuxCNC's version
 - **Coolant** — mist and flood on/off
 - **Rapid rate & max velocity** — override scales
 - **Override config** — feed/spindle override enable/disable

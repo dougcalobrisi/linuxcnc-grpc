@@ -12,6 +12,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   LinuxCNCServiceClient,
   GetStatusRequest,
+  GetServerInfoRequest,
+  ServerInfo,
   LinuxCNCCommand,
   WaitCompleteRequest,
   StreamStatusRequest,
@@ -205,6 +207,18 @@ describe('LinuxCNCService', () => {
     const response = await waitComplete(request);
     expect(response.serial).toBe(50);
     expect(response.status).toBe(RcsStatus.RCS_DONE);
+  });
+
+  it('GetServerInfo returns the server version and the LinuxCNC connection', async () => {
+    const getServerInfo = promisify<GetServerInfoRequest, ServerInfo>(
+      linuxcncClient.getServerInfo.bind(linuxcncClient)
+    );
+
+    const serverInfo = await getServerInfo(GetServerInfoRequest.create());
+
+    expect(serverInfo.serverVersion).toBe('0.0.0-mock');
+    expect(serverInfo.linuxcncConnected).toBe(true);
+    expect(serverInfo.linuxcncVersion).toBe('2.9.0-mock');
   });
 
   it('StreamStatus returns multiple updates', async () => {

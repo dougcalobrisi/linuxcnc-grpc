@@ -30,6 +30,7 @@ const (
 	LinuxCNCService_ReadFile_FullMethodName         = "/linuxcnc.LinuxCNCService/ReadFile"
 	LinuxCNCService_ResolveFile_FullMethodName      = "/linuxcnc.LinuxCNCService/ResolveFile"
 	LinuxCNCService_GetMachineConfig_FullMethodName = "/linuxcnc.LinuxCNCService/GetMachineConfig"
+	LinuxCNCService_GetServerInfo_FullMethodName    = "/linuxcnc.LinuxCNCService/GetServerInfo"
 )
 
 // LinuxCNCServiceClient is the client API for LinuxCNCService service.
@@ -64,6 +65,11 @@ type LinuxCNCServiceClient interface {
 	// Get the machine's static configuration: kinematics, joint-to-axis
 	// mapping, limits, velocities and units
 	GetMachineConfig(ctx context.Context, in *GetMachineConfigRequest, opts ...grpc.CallOption) (*MachineConfig, error)
+	// Get the server's version and whether it is connected to LinuxCNC.
+	// Answers also while the server is waiting for LinuxCNC, and never waits
+	// behind a command. A 1.0 server does not have this RPC and answers
+	// UNIMPLEMENTED, which is how a client tells a 1.0 server from a later one.
+	GetServerInfo(ctx context.Context, in *GetServerInfoRequest, opts ...grpc.CallOption) (*ServerInfo, error)
 }
 
 type linuxCNCServiceClient struct {
@@ -202,6 +208,16 @@ func (c *linuxCNCServiceClient) GetMachineConfig(ctx context.Context, in *GetMac
 	return out, nil
 }
 
+func (c *linuxCNCServiceClient) GetServerInfo(ctx context.Context, in *GetServerInfoRequest, opts ...grpc.CallOption) (*ServerInfo, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ServerInfo)
+	err := c.cc.Invoke(ctx, LinuxCNCService_GetServerInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LinuxCNCServiceServer is the server API for LinuxCNCService service.
 // All implementations must embed UnimplementedLinuxCNCServiceServer
 // for forward compatibility.
@@ -234,6 +250,11 @@ type LinuxCNCServiceServer interface {
 	// Get the machine's static configuration: kinematics, joint-to-axis
 	// mapping, limits, velocities and units
 	GetMachineConfig(context.Context, *GetMachineConfigRequest) (*MachineConfig, error)
+	// Get the server's version and whether it is connected to LinuxCNC.
+	// Answers also while the server is waiting for LinuxCNC, and never waits
+	// behind a command. A 1.0 server does not have this RPC and answers
+	// UNIMPLEMENTED, which is how a client tells a 1.0 server from a later one.
+	GetServerInfo(context.Context, *GetServerInfoRequest) (*ServerInfo, error)
 	mustEmbedUnimplementedLinuxCNCServiceServer()
 }
 
@@ -276,6 +297,9 @@ func (UnimplementedLinuxCNCServiceServer) ResolveFile(context.Context, *ResolveF
 }
 func (UnimplementedLinuxCNCServiceServer) GetMachineConfig(context.Context, *GetMachineConfigRequest) (*MachineConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetMachineConfig not implemented")
+}
+func (UnimplementedLinuxCNCServiceServer) GetServerInfo(context.Context, *GetServerInfoRequest) (*ServerInfo, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetServerInfo not implemented")
 }
 func (UnimplementedLinuxCNCServiceServer) mustEmbedUnimplementedLinuxCNCServiceServer() {}
 func (UnimplementedLinuxCNCServiceServer) testEmbeddedByValue()                         {}
@@ -482,6 +506,24 @@ func _LinuxCNCService_GetMachineConfig_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LinuxCNCService_GetServerInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetServerInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LinuxCNCServiceServer).GetServerInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LinuxCNCService_GetServerInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LinuxCNCServiceServer).GetServerInfo(ctx, req.(*GetServerInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LinuxCNCService_ServiceDesc is the grpc.ServiceDesc for LinuxCNCService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -524,6 +566,10 @@ var LinuxCNCService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetMachineConfig",
 			Handler:    _LinuxCNCService_GetMachineConfig_Handler,
+		},
+		{
+			MethodName: "GetServerInfo",
+			Handler:    _LinuxCNCService_GetServerInfo_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

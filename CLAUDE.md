@@ -299,10 +299,10 @@ of this without re-measuring):
   needs (`UNAVAILABLE` while waiting for LinuxCNC): once it has passed, the channels exist
   and are only ever replaced by newer ones. RPCs covered: GetStatus, SendCommand,
   WaitComplete, StreamStatus, StreamErrors, ResolveFile, GetMachineConfig.
-  Upload/List/Read/Delete need no LinuxCNC. Two RPCs check something else first:
-  StreamErrors answers `FAILED_PRECONDITION` in `off` mode, and ResolveFile validates the
-  name (`INVALID_ARGUMENT`) before it looks at the connection. WaitComplete makes the check
-  under the lock and answers `RCS_EXEC` if it cannot get the lock by its deadline.
+  Upload/List/Read/Delete and GetServerInfo need no LinuxCNC. Two RPCs check something else
+  first: StreamErrors answers `FAILED_PRECONDITION` in `off` mode, and ResolveFile validates
+  the name (`INVALID_ARGUMENT`) before it looks at the connection. WaitComplete makes the
+  check under the lock and answers `RCS_EXEC` if it cannot get the lock by its deadline.
 - **Every RPC that polls turns an unexpected exception into a deliberate status, and never
   catches its own abort.** A poll can fail with something other than `linuxcnc.error`: some
   builds return NULL from `stat.poll()` without setting an exception, which Python raises as
@@ -646,6 +646,32 @@ as `ini_readable = false` like any file that cannot be opened.
   `inf`, `1e999`, all of which `float()` accepts).
 - Unit names are derived from `stat.linear_units`/`angular_units`, not from the INI strings
   (which may be `inch`, `mm`, `metric` or a number).
+
+**GetServerInfo**: returns `ServerInfo` (`server_version`, `linuxcnc_connected`,
+`linuxcnc_version`) and always answers, also while the server is waiting for LinuxCNC.
+- It takes **no lock** and makes **no LinuxCNC call** (no `_abort_if_disconnected`, no
+  `stat.poll()`). `SendCommand` can hold the servicer lock for seconds when LinuxCNC's task is
+  not answering, and a client asking which server it has must not queue behind that. Keep it
+  that way; `TestGetServerInfo` in `tests/test_connection.py` holds the lock in another thread
+  and counts polls.
+- `_connected` is read without the lock: one attribute read, and an answer that is out of date
+  for a moment is harmless. It is the servicer's state, the same one health reports, so it
+  does not show a crashed LinuxCNC either.
+- `server_version` is `linuxcnc_grpc.__version__`, read on every call. `__init__.py` is the
+  one place `sync-versions.sh` writes it; do not copy the string anywhere else.
+  `linuxcnc_service.py` does `import linuxcnc_grpc`, which cannot cycle: `__init__.py` sets
+  `__version__` before its imports and loads the server modules lazily.
+- `linuxcnc_version` is the cached `linuxcnc.version` module attribute (`self._version`), so
+  it is set before LinuxCNC is connected and says nothing about whether LinuxCNC is running.
+  The servicer's placeholder `UNKNOWN_LINUXCNC_VERSION` (`"unknown"`), or anything that is not
+  a string, is sent as an empty string. `LinuxCNCStatus.version` still sends the placeholder
+  as it is (1.0 behaviour).
+- A 1.0 server has no such RPC and answers `UNIMPLEMENTED` (measured with grpcio: details
+  "Method not found!"). That is the documented way for a client to tell a 1.0 server from a
+  later one.
+- The mock reports `MOCK_SERVER_VERSION` (`0.0.0-mock`, deliberately not a release number, and
+  repeated in the Go, Node and Rust tests) and `MOCK_LINUXCNC_VERSION`, which its status uses
+  too.
 
 **ReadFile**: returns `bytes` (not `string`, so chunk boundaries can split UTF-8 and non-UTF-8
 files still read). One response carries at most `MAX_READ_CHUNK_BYTES` (1 MiB), which keeps it

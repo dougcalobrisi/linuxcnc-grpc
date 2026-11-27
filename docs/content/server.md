@@ -144,6 +144,8 @@ is not there, the server starts anyway and waits:
   and `ResolveFile` with an invalid file name fails with `INVALID_ARGUMENT`.
 - The file RPCs (`UploadFile`, `ListFiles`, `ReadFile`, `DeleteFile`) work, so
   programs can be uploaded before LinuxCNC is up.
+- `GetServerInfo` works and reports `linuxcnc_connected = false`, so a client
+  can tell a server that is waiting for LinuxCNC from one that is not there.
 - The HAL service answers, with no pins until LinuxCNC has loaded its HAL
   configuration.
 

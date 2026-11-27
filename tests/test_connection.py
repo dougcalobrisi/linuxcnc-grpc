@@ -222,6 +222,142 @@ class TestStartWithoutLinuxCNC:
         mock_grpc_context.abort.assert_not_called()
 
 
+class TestGetServerInfo:
+    """GetServerInfo answers whatever LinuxCNC and the servicer lock are doing."""
+
+    @staticmethod
+    def _get_server_info(service, context):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        return service.GetServerInfo(linuxcnc_pb2.GetServerInfoRequest(), context)
+
+    def test_answers_while_waiting_for_linuxcnc(
+        self, make_service, linuxcnc_switch, mock_grpc_context
+    ):
+        import linuxcnc_grpc
+
+        linuxcnc_switch.is_running = False
+        service = make_service(require_linuxcnc=False)
+
+        server_info = self._get_server_info(service, mock_grpc_context)
+
+        assert server_info.linuxcnc_connected is False
+        assert server_info.server_version == linuxcnc_grpc.__version__
+        # The version is a constant of the linuxcnc module, so it is known
+        # without a connection.
+        assert server_info.linuxcnc_version == "2.9"
+        mock_grpc_context.abort.assert_not_called()
+        assert linuxcnc_switch.in_process_attempts_while_down == 0
+
+    def test_answers_while_connected(self, make_service, mock_grpc_context):
+        import linuxcnc_grpc
+
+        service = make_service()
+
+        server_info = self._get_server_info(service, mock_grpc_context)
+
+        assert server_info.linuxcnc_connected is True
+        assert server_info.server_version == linuxcnc_grpc.__version__
+        assert server_info.linuxcnc_version == "2.9"
+        mock_grpc_context.abort.assert_not_called()
+
+    def test_server_version_is_read_from_the_package(
+        self, make_service, mock_grpc_context, monkeypatch
+    ):
+        """A release only rewrites the package's __version__; nothing else holds it."""
+        import linuxcnc_grpc
+
+        service = make_service()
+        monkeypatch.setattr(linuxcnc_grpc, "__version__", "9.8.7")
+
+        server_info = self._get_server_info(service, mock_grpc_context)
+
+        assert server_info.server_version == "9.8.7"
+
+    def test_follows_the_connection(self, make_service, linuxcnc_switch, mock_grpc_context):
+        linuxcnc_switch.is_running = False
+        service = make_service(require_linuxcnc=False)
+        assert self._get_server_info(service, mock_grpc_context).linuxcnc_connected is False
+
+        linuxcnc_switch.is_running = True
+        service._connect()
+
+        assert self._get_server_info(service, mock_grpc_context).linuxcnc_connected is True
+
+    @pytest.mark.parametrize("linuxcnc_is_running", [True, False])
+    def test_does_not_wait_for_the_servicer_lock(
+        self, make_service, linuxcnc_switch, mock_grpc_context, linuxcnc_is_running
+    ):
+        """A command stuck in LinuxCNC holds the lock; GetServerInfo must not queue behind it."""
+        linuxcnc_switch.is_running = linuxcnc_is_running
+        # No error reader thread: it would compete for the lock held below.
+        service = make_service(require_linuxcnc=False, error_channel_mode="off")
+        lock_is_held = threading.Event()
+        release_lock = threading.Event()
+        answers = []
+
+        def hold_the_lock():
+            with service._lock:
+                lock_is_held.set()
+                release_lock.wait(timeout=10.0)
+
+        def call_get_server_info():
+            answers.append(self._get_server_info(service, mock_grpc_context))
+
+        # The lock is re-entrant, so holder and caller must be different threads.
+        lock_holder = threading.Thread(target=hold_the_lock)
+        caller = threading.Thread(target=call_get_server_info)
+        lock_holder.start()
+        try:
+            assert lock_is_held.wait(timeout=5.0)
+            caller.start()
+            caller.join(timeout=5.0)
+            answered_while_locked = not caller.is_alive()
+        finally:
+            release_lock.set()
+            lock_holder.join(timeout=5.0)
+            caller.join(timeout=5.0)
+
+        assert answered_while_locked
+        assert answers[0].linuxcnc_connected is linuxcnc_is_running
+
+    def test_does_not_call_into_linuxcnc(
+        self, make_service, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        service = make_service(error_channel_mode="off")
+        # Counted from here: connecting polled once already.
+        polls_before = mock_linuxcnc_stat.poll.call_count
+        channels_created_before = mock_linuxcnc_module.stat.call_count
+
+        self._get_server_info(service, mock_grpc_context)
+
+        assert mock_linuxcnc_stat.poll.call_count == polls_before
+        assert mock_linuxcnc_module.stat.call_count == channels_created_before
+        assert service._command.method_calls == []
+
+    @pytest.mark.parametrize("cached_version", ["unknown", "", None, 2.9])
+    def test_unknown_linuxcnc_version_is_an_empty_string(
+        self, make_service, mock_grpc_context, cached_version
+    ):
+        """The servicer's placeholder for "no version" is not sent to clients."""
+        service = make_service()
+        service._version = cached_version
+
+        server_info = self._get_server_info(service, mock_grpc_context)
+
+        assert server_info.linuxcnc_version == ""
+
+    def test_linuxcnc_module_without_a_version_gives_an_empty_string(
+        self, make_service, mock_linuxcnc_module, mock_grpc_context
+    ):
+        del mock_linuxcnc_module.version
+
+        service = make_service()
+
+        assert service._version == "unknown"
+        assert self._get_server_info(service, mock_grpc_context).linuxcnc_version == ""
+
+
 class TestWaitingForLinuxCNC:
     """The background thread that connects once LinuxCNC is up, and the RPC-side reconnect."""
 

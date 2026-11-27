@@ -6362,6 +6362,113 @@ func (x *MachineConfig) GetAxes() []*AxisConfig {
 	return nil
 }
 
+type GetServerInfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetServerInfoRequest) Reset() {
+	*x = GetServerInfoRequest{}
+	mi := &file_linuxcnc_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetServerInfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetServerInfoRequest) ProtoMessage() {}
+
+func (x *GetServerInfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetServerInfoRequest.ProtoReflect.Descriptor instead.
+func (*GetServerInfoRequest) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{64}
+}
+
+// What the server is and whether it has LinuxCNC. Returned by GetServerInfo,
+// which a 1.0 server answers with UNIMPLEMENTED.
+type ServerInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Version of the linuxcnc-grpc package the server runs, e.g. "1.1.0".
+	// The package version is the API version.
+	ServerVersion string `protobuf:"bytes,1,opt,name=server_version,json=serverVersion,proto3" json:"server_version,omitempty"`
+	// True once the server has connected to LinuxCNC. False while it is waiting
+	// for LinuxCNC to start; the RPCs that need LinuxCNC answer UNAVAILABLE then.
+	// It is what the server holds, not a check of LinuxCNC made for this call.
+	LinuxcncConnected bool `protobuf:"varint,2,opt,name=linuxcnc_connected,json=linuxcncConnected,proto3" json:"linuxcnc_connected,omitempty"`
+	// Version of LinuxCNC as its Python module on the server's machine reports
+	// it, e.g. "2.9.4"; empty if the module does not say. It comes from the
+	// installed module, so it is also set while linuxcnc_connected is false and
+	// does not by itself mean that LinuxCNC is running.
+	LinuxcncVersion string `protobuf:"bytes,3,opt,name=linuxcnc_version,json=linuxcncVersion,proto3" json:"linuxcnc_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ServerInfo) Reset() {
+	*x = ServerInfo{}
+	mi := &file_linuxcnc_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerInfo) ProtoMessage() {}
+
+func (x *ServerInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerInfo.ProtoReflect.Descriptor instead.
+func (*ServerInfo) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *ServerInfo) GetServerVersion() string {
+	if x != nil {
+		return x.ServerVersion
+	}
+	return ""
+}
+
+func (x *ServerInfo) GetLinuxcncConnected() bool {
+	if x != nil {
+		return x.LinuxcncConnected
+	}
+	return false
+}
+
+func (x *ServerInfo) GetLinuxcncVersion() string {
+	if x != nil {
+		return x.LinuxcncVersion
+	}
+	return ""
+}
+
 var File_linuxcnc_proto protoreflect.FileDescriptor
 
 const file_linuxcnc_proto_rawDesc = "" +
@@ -6835,7 +6942,13 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\x14max_spindle_override\x18\x18 \x01(\x01R\x12maxSpindleOverride\x12,\n" +
 	"\x12nc_files_directory\x18\x19 \x01(\tR\x10ncFilesDirectory\x12-\n" +
 	"\x06joints\x18\x1e \x03(\v2\x15.linuxcnc.JointConfigR\x06joints\x12(\n" +
-	"\x04axes\x18\x1f \x03(\v2\x14.linuxcnc.AxisConfigR\x04axes*w\n" +
+	"\x04axes\x18\x1f \x03(\v2\x14.linuxcnc.AxisConfigR\x04axes\"\x16\n" +
+	"\x14GetServerInfoRequest\"\x8d\x01\n" +
+	"\n" +
+	"ServerInfo\x12%\n" +
+	"\x0eserver_version\x18\x01 \x01(\tR\rserverVersion\x12-\n" +
+	"\x12linuxcnc_connected\x18\x02 \x01(\bR\x11linuxcncConnected\x12)\n" +
+	"\x10linuxcnc_version\x18\x03 \x01(\tR\x0flinuxcncVersion*w\n" +
 	"\vInterpState\x12\x1c\n" +
 	"\x18INTERP_STATE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vINTERP_IDLE\x10\x01\x12\x12\n" +
@@ -6924,7 +7037,7 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\vAUTO_RESUME\x10\x02\x12\r\n" +
 	"\tAUTO_STEP\x10\x03\x12\x10\n" +
 	"\fAUTO_REVERSE\x10\x04\x12\x10\n" +
-	"\fAUTO_FORWARD\x10\x05\x1a\x02\x18\x012\xae\x06\n" +
+	"\fAUTO_FORWARD\x10\x05\x1a\x02\x18\x012\xf5\x06\n" +
 	"\x0fLinuxCNCService\x12A\n" +
 	"\tGetStatus\x12\x1a.linuxcnc.GetStatusRequest\x1a\x18.linuxcnc.LinuxCNCStatus\x12C\n" +
 	"\vSendCommand\x12\x19.linuxcnc.LinuxCNCCommand\x1a\x19.linuxcnc.CommandResponse\x12H\n" +
@@ -6938,7 +7051,8 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"DeleteFile\x12\x1b.linuxcnc.DeleteFileRequest\x1a\x1c.linuxcnc.DeleteFileResponse\x12A\n" +
 	"\bReadFile\x12\x19.linuxcnc.ReadFileRequest\x1a\x1a.linuxcnc.ReadFileResponse\x12J\n" +
 	"\vResolveFile\x12\x1c.linuxcnc.ResolveFileRequest\x1a\x1d.linuxcnc.ResolveFileResponse\x12N\n" +
-	"\x10GetMachineConfig\x12!.linuxcnc.GetMachineConfigRequest\x1a\x17.linuxcnc.MachineConfigB7Z5github.com/dougcalobrisi/linuxcnc-grpc/packages/go;pbb\x06proto3"
+	"\x10GetMachineConfig\x12!.linuxcnc.GetMachineConfigRequest\x1a\x17.linuxcnc.MachineConfig\x12E\n" +
+	"\rGetServerInfo\x12\x1e.linuxcnc.GetServerInfoRequest\x1a\x14.linuxcnc.ServerInfoB7Z5github.com/dougcalobrisi/linuxcnc-grpc/packages/go;pbb\x06proto3"
 
 var (
 	file_linuxcnc_proto_rawDescOnce sync.Once
@@ -6953,7 +7067,7 @@ func file_linuxcnc_proto_rawDescGZIP() []byte {
 }
 
 var file_linuxcnc_proto_enumTypes = make([]protoimpl.EnumInfo, 17)
-var file_linuxcnc_proto_msgTypes = make([]protoimpl.MessageInfo, 64)
+var file_linuxcnc_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
 var file_linuxcnc_proto_goTypes = []any{
 	(InterpState)(0),                        // 0: linuxcnc.InterpState
 	(TaskMode)(0),                           // 1: linuxcnc.TaskMode
@@ -7036,6 +7150,8 @@ var file_linuxcnc_proto_goTypes = []any{
 	(*JointConfig)(nil),                     // 78: linuxcnc.JointConfig
 	(*AxisConfig)(nil),                      // 79: linuxcnc.AxisConfig
 	(*MachineConfig)(nil),                   // 80: linuxcnc.MachineConfig
+	(*GetServerInfoRequest)(nil),            // 81: linuxcnc.GetServerInfoRequest
+	(*ServerInfo)(nil),                      // 82: linuxcnc.ServerInfo
 }
 var file_linuxcnc_proto_depIdxs = []int32{
 	4,  // 0: linuxcnc.TaskStatus.state:type_name -> linuxcnc.RcsStatus
@@ -7123,19 +7239,21 @@ var file_linuxcnc_proto_depIdxs = []int32{
 	73, // 82: linuxcnc.LinuxCNCService.ReadFile:input_type -> linuxcnc.ReadFileRequest
 	75, // 83: linuxcnc.LinuxCNCService.ResolveFile:input_type -> linuxcnc.ResolveFileRequest
 	77, // 84: linuxcnc.LinuxCNCService.GetMachineConfig:input_type -> linuxcnc.GetMachineConfigRequest
-	30, // 85: linuxcnc.LinuxCNCService.GetStatus:output_type -> linuxcnc.LinuxCNCStatus
-	61, // 86: linuxcnc.LinuxCNCService.SendCommand:output_type -> linuxcnc.CommandResponse
-	61, // 87: linuxcnc.LinuxCNCService.WaitComplete:output_type -> linuxcnc.CommandResponse
-	30, // 88: linuxcnc.LinuxCNCService.StreamStatus:output_type -> linuxcnc.LinuxCNCStatus
-	29, // 89: linuxcnc.LinuxCNCService.StreamErrors:output_type -> linuxcnc.ErrorMessage
-	67, // 90: linuxcnc.LinuxCNCService.UploadFile:output_type -> linuxcnc.UploadFileResponse
-	70, // 91: linuxcnc.LinuxCNCService.ListFiles:output_type -> linuxcnc.ListFilesResponse
-	72, // 92: linuxcnc.LinuxCNCService.DeleteFile:output_type -> linuxcnc.DeleteFileResponse
-	74, // 93: linuxcnc.LinuxCNCService.ReadFile:output_type -> linuxcnc.ReadFileResponse
-	76, // 94: linuxcnc.LinuxCNCService.ResolveFile:output_type -> linuxcnc.ResolveFileResponse
-	80, // 95: linuxcnc.LinuxCNCService.GetMachineConfig:output_type -> linuxcnc.MachineConfig
-	85, // [85:96] is the sub-list for method output_type
-	74, // [74:85] is the sub-list for method input_type
+	81, // 85: linuxcnc.LinuxCNCService.GetServerInfo:input_type -> linuxcnc.GetServerInfoRequest
+	30, // 86: linuxcnc.LinuxCNCService.GetStatus:output_type -> linuxcnc.LinuxCNCStatus
+	61, // 87: linuxcnc.LinuxCNCService.SendCommand:output_type -> linuxcnc.CommandResponse
+	61, // 88: linuxcnc.LinuxCNCService.WaitComplete:output_type -> linuxcnc.CommandResponse
+	30, // 89: linuxcnc.LinuxCNCService.StreamStatus:output_type -> linuxcnc.LinuxCNCStatus
+	29, // 90: linuxcnc.LinuxCNCService.StreamErrors:output_type -> linuxcnc.ErrorMessage
+	67, // 91: linuxcnc.LinuxCNCService.UploadFile:output_type -> linuxcnc.UploadFileResponse
+	70, // 92: linuxcnc.LinuxCNCService.ListFiles:output_type -> linuxcnc.ListFilesResponse
+	72, // 93: linuxcnc.LinuxCNCService.DeleteFile:output_type -> linuxcnc.DeleteFileResponse
+	74, // 94: linuxcnc.LinuxCNCService.ReadFile:output_type -> linuxcnc.ReadFileResponse
+	76, // 95: linuxcnc.LinuxCNCService.ResolveFile:output_type -> linuxcnc.ResolveFileResponse
+	80, // 96: linuxcnc.LinuxCNCService.GetMachineConfig:output_type -> linuxcnc.MachineConfig
+	82, // 97: linuxcnc.LinuxCNCService.GetServerInfo:output_type -> linuxcnc.ServerInfo
+	86, // [86:98] is the sub-list for method output_type
+	74, // [74:86] is the sub-list for method input_type
 	74, // [74:74] is the sub-list for extension type_name
 	74, // [74:74] is the sub-list for extension extendee
 	0,  // [0:74] is the sub-list for field type_name
@@ -7194,7 +7312,7 @@ func file_linuxcnc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_linuxcnc_proto_rawDesc), len(file_linuxcnc_proto_rawDesc)),
 			NumEnums:      17,
-			NumMessages:   64,
+			NumMessages:   66,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

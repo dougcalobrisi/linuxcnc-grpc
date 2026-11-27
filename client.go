@@ -431,6 +431,10 @@ type (
 	JointConfig             = pb.JointConfig
 	AxisConfig              = pb.AxisConfig
 
+	// Server information types
+	GetServerInfoRequest = pb.GetServerInfoRequest
+	ServerInfo           = pb.ServerInfo
+
 	// HAL request/response types
 	GetSystemStatusRequest  = pb.GetSystemStatusRequest
 	HalStreamStatusRequest  = pb.HalStreamStatusRequest
@@ -607,4 +611,12 @@ func (c *Client) ResolveFile(ctx context.Context, filename string) (*ResolveFile
 // joint-to-axis mapping, limits, velocities and units.
 func (c *Client) GetMachineConfig(ctx context.Context) (*MachineConfig, error) {
 	return c.LinuxCNC.GetMachineConfig(ctx, &GetMachineConfigRequest{})
+}
+
+// GetServerInfo retrieves the server's version, whether it is connected to
+// LinuxCNC, and LinuxCNC's version. It answers also while the server is
+// waiting for LinuxCNC. A 1.0 server does not have this RPC: the error then
+// has the gRPC code Unimplemented (see google.golang.org/grpc/status).
+func (c *Client) GetServerInfo(ctx context.Context) (*ServerInfo, error) {
+	return c.LinuxCNC.GetServerInfo(ctx, &GetServerInfoRequest{})
 }
