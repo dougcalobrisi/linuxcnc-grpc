@@ -7,9 +7,17 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   DISPLAY: ":99"
   LINUXCNC_VERSION: "v2.9.3"
+  # Commit the LINUXCNC_VERSION tag points to in LinuxCNC/linuxcnc. It is part
+  # of the build cache key, and the checkout (fresh or restored from the
+  # cache) is checked against it on every run, so a moved tag fails the job.
+  # Change both together.
+  LINUXCNC_COMMIT: "f24ea9b19ea794ceb8ff614f3f184f5af0d25144"
 
 jobs:
   e2e-linuxcnc:
@@ -18,20 +26,37 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Cache LinuxCNC build
         id: cache-linuxcnc
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/linuxcnc
-          key: linuxcnc-${{ env.LINUXCNC_VERSION }}-ubuntu2404-v1
+          key: linuxcnc-${{ env.LINUXCNC_VERSION }}-${{ env.LINUXCNC_COMMIT }}-ubuntu2404-v1
 
       - name: Clone LinuxCNC
         if: steps.cache-linuxcnc.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 --branch ${{ env.LINUXCNC_VERSION }} \
+          git clone --depth 1 --branch "$LINUXCNC_VERSION" \
             https://github.com/LinuxCNC/linuxcnc.git ~/linuxcnc
+
+      # Runs for a fresh clone and for a checkout restored from the cache (the
+      # cached directory is the clone itself, with its .git directory). It is
+      # before the build, so a wrong checkout is neither built nor, because
+      # the job fails, saved to the cache.
+      - name: Verify LinuxCNC commit
+        run: |
+          if [ ! -d ~/linuxcnc/.git ]; then
+            echo "::error::$HOME/linuxcnc has no .git directory, so its commit cannot be checked"
+            exit 1
+          fi
+          ACTUAL_COMMIT=$(git -C ~/linuxcnc rev-parse HEAD)
+          if [ "$ACTUAL_COMMIT" != "$LINUXCNC_COMMIT" ]; then
+            echo "::error::LinuxCNC ${LINUXCNC_VERSION} is at $ACTUAL_COMMIT, expected $LINUXCNC_COMMIT"
+            exit 1
+          fi
+          echo "LinuxCNC ${LINUXCNC_VERSION} is at $ACTUAL_COMMIT, as expected"
 
       - name: Install LinuxCNC build dependencies
         run: |
@@ -62,9 +87,10 @@ jobs:
           make -j$(nproc)
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Install project dependencies
         run: |
@@ -155,7 +181,47 @@ jobs:
       - name: Run e2e tests
         run: |
           source ~/linuxcnc/scripts/rip-environment
-          uv run python -m pytest tests/test_e2e.py -v -m e2e --tb=long
+          uv run python -m pytest tests/test_e2e.py -v -m e2e --tb=long -rs \
+            --junitxml="$RUNNER_TEMP/e2e-results.xml"
+
+      # The tests skip themselves when the gRPC server cannot be reached, and
+      # pytest counts a run of skipped tests as a success. Here that is a
+      # failure: the job exists to run them.
+      - name: Check that the e2e tests really ran
+        run: |
+          python3 - "$RUNNER_TEMP/e2e-results.xml" <<'EOF'
+          import sys
+          import xml.etree.ElementTree as ElementTree
+
+          # Skips the suite makes on purpose, by the start of their reason.
+          # Anything else that is skipped fails the job.
+          TOLERATED_SKIP_REASONS = ("No known HAL component found",)
+
+          test_cases = list(ElementTree.parse(sys.argv[1]).getroot().iter("testcase"))
+          passed_count = 0
+          unexpected_skips = []
+          for test_case in test_cases:
+              skip = test_case.find("skipped")
+              if skip is None:
+                  if test_case.find("failure") is None and test_case.find("error") is None:
+                      passed_count += 1
+                  continue
+              test_name = f"{test_case.get('classname')}::{test_case.get('name')}"
+              skip_reason = skip.get("message") or ""
+              if skip_reason.startswith(TOLERATED_SKIP_REASONS):
+                  print(f"::warning::skipped: {test_name}: {skip_reason}")
+              else:
+                  unexpected_skips.append(f"{test_name}: {skip_reason}")
+
+          print(f"{len(test_cases)} e2e tests collected, {passed_count} passed, "
+                f"{len(unexpected_skips)} skipped unexpectedly")
+          for unexpected_skip in unexpected_skips[:20]:
+              print(f"::error::skipped: {unexpected_skip}")
+          if passed_count == 0:
+              print("::error::No e2e test ran and passed")
+          if passed_count == 0 or unexpected_skips:
+              sys.exit(1)
+          EOF
 
       - name: Cleanup
         if: always()

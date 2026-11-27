@@ -75,6 +75,49 @@ Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
 ```
 
+### In Docker (macOS, Windows, or any machine without LinuxCNC)
+
+Debian 13 packages the LinuxCNC simulator (`linuxcnc-uspace`, 2.9.4, also for
+arm64), so the suite can run in a container. From the repository root:
+
+```dockerfile
+# Dockerfile.sim
+FROM debian:trixie
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    linuxcnc-uspace python3 python3-venv python3-pip xvfb netcat-openbsd procps sudo \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -m cnc && echo 'cnc ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/cnc
+USER cnc
+RUN python3 -m venv --system-site-packages /home/cnc/venv \
+    && /home/cnc/venv/bin/pip install grpcio grpcio-health-checking protobuf pytest
+```
+
+```bash
+docker build -t linuxcnc-sim -f Dockerfile.sim .
+docker run -d --init --name linuxcnc-sim \
+  --cap-add IPC_OWNER --cap-add SYS_NICE --cap-add IPC_LOCK \
+  -v "$PWD":/repo:ro linuxcnc-sim sleep infinity
+```
+
+Then, inside the container (`docker exec -it linuxcnc-sim bash`), follow the
+same steps as the CI workflow: copy the `sim/axis` sample configuration from
+`/usr/share/doc/linuxcnc/examples/sample-configs/sim/axis`, create the
+`headless` display script, set `DISPLAY = headless` in the copied `axis.ini`,
+start `Xvfb`, start `linuxcnc`, and run the server and the tests with
+`PYTHONPATH=/repo/src:/repo/packages/python` and the venv's Python.
+
+Three things the container needs:
+
+- `--cap-add IPC_OWNER`: LinuxCNC's realtime helper (`rtapi_app`) runs as
+  root and must open shared memory created by the `cnc` user. Docker drops
+  that capability by default, and LinuxCNC then fails with
+  `rtapi_shmem_new failed due to shmget(...): Permission denied`.
+- `--init`: so that stopped LinuxCNC processes are reaped. Without it they
+  stay as zombies, and anything that checks whether LinuxCNC is still running
+  by looking for its processes is fooled.
+- A normal user rather than root, as on a real machine.
+
 ## Adding New E2E Tests
 
 1. Add tests to `tests/test_e2e.py`

@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Keeps the commit SHA pins of the actions in .github/workflows, and the
+  # version comments after them, up to date. Versions set in "env:" or "run:"
+  # (Hugo, hugo-book, uv, npm, protoc and its plugins, LinuxCNC) are not
+  # covered and are changed by hand.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

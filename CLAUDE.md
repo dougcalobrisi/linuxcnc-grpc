@@ -9,6 +9,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 ```
 /                              # Go module at repo root
 ├── go.mod                     # module github.com/dougcalobrisi/linuxcnc-grpc
+├── CHANGELOG.md               # Release notes (see Changelog below)
 ├── *.pb.go                    # Generated Go code
 ├── proto/                     # Proto source files (canonical location)
 │   ├── linuxcnc.proto
@@ -38,6 +39,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── test_integration.py    # Integration tests with mock server
 │   ├── test_*_mapper.py       # Unit tests for proto mappers
 │   ├── test_*_service.py      # Unit tests for gRPC services
+│   ├── test_wait_for_linuxcnc.py  # scripts/wait-for-linuxcnc.py
 │   ├── mock_server.py         # Mock gRPC server for integration tests
 │   └── conftest.py            # Shared fixtures
 ├── docs/                      # Hugo documentation site
@@ -225,10 +227,10 @@ All automation scripts are in the `scripts/` directory:
 | `publish-python.sh` | Publish to PyPI |
 | `publish-node.sh` | Publish to npm |
 | `publish-rust.sh` | Publish to crates.io |
-| `publish-all.sh` | Publish all packages (with confirmation) |
-| `sync-versions.sh` | Synchronize version across all packages and doc examples |
+| `publish-all.sh` | Publish all packages (with confirmation). Refuses a working tree with uncommitted changes unless given `--allow-dirty`; with `--tag`, checks an existing local or remote tag first and creates the tag only if every package was published |
+| `sync-versions.sh` | Synchronize version across all packages, the example projects and doc examples |
 | `common.sh` | Shared helper functions sourced by other scripts |
-| `wait-for-linuxcnc.py` | Poll LinuxCNC readiness (used by e2e CI) |
+| `wait-for-linuxcnc.py` | Poll LinuxCNC readiness (used by e2e CI). Each attempt, and the initial `import linuxcnc` check, runs in a child process with a timeout; `--timeout` covers the whole run |
 
 ### Building Packages
 
@@ -262,14 +264,30 @@ Either format can be passed as input; the script converts to the correct format 
 
 The script also auto-discovers and updates Rust dependency version strings (major.minor) in all `.md` files containing `linuxcnc-grpc = "X.Y"`.
 
+It also sets the versions of the example projects (`examples/rust/Cargo.toml`,
+`examples/node/package.json`) and re-locks `examples/node/package-lock.json` and the Cargo
+lock files.
+
+Lock files: in `uv.lock` the script edits only the project's own version entry (no re-resolve,
+so no dependency moves) and then runs `uv lock --check`. A lock file that cannot be updated is
+reported, the script exits non-zero, and no commit or tag is made. Do not put `uv lock
+--upgrade` back: a newer `uv` re-resolves every dependency, and a new `grpcio-tools` changes
+the generated Python code and fails CI's proto check.
+
+`--tag` requires `--commit`: a tag made without the commit would point at the commit before
+the bump.
+
 ## CI/CD
 
 GitHub Actions workflows:
 
 - **ci.yml**: Runs on push/PR - tests all languages, checks proto freshness, checks package README freshness
-- **e2e.yml**: Runs on push/PR - e2e tests against a real LinuxCNC simulator (builds from source on Ubuntu 24.04)
+- **e2e.yml**: Runs on push/PR - e2e tests against a real LinuxCNC simulator (builds from source on Ubuntu 24.04). The tests skip themselves when the server cannot be reached and pytest counts that as success, so a step after the run reads the JUnit report and fails the job if no test passed or any test was skipped for a reason not listed in `TOLERATED_SKIP_REASONS` The LinuxCNC build cache key includes `LINUXCNC_COMMIT` as well as the tag and platform, and the "Verify LinuxCNC commit" step compares the checkout's `git rev-parse HEAD` with it on every run, restored or freshly cloned; change `LINUXCNC_VERSION` and `LINUXCNC_COMMIT` together.
 - **release.yml**: Unified release workflow (manual dispatch) - publishes to PyPI, npm, and crates.io
 - **version-bump.yml**: Creates a version bump PR (manual dispatch) - updates all package versions via `sync-versions.sh`
+
+Actions in all workflows are pinned to commit SHAs, with the version in a trailing comment
+(`uses: owner/action@<sha> # vX.Y.Z`). Update the SHA and the comment together.
 
 ### CI Job Structure
 
@@ -288,20 +306,47 @@ The CI workflow uses aggressive caching to minimize build times:
 
 | Cache | Key | Jobs |
 |-------|-----|------|
-| protoc binary | `protoc-{VERSION}-linux` | proto-check, test-rust, examples-rust |
+| protoc binary | `protoc-{VERSION}-linux-x86_64-sha256-{PROTOC_SHA256}` | proto-check, test-rust, examples-rust |
 | pip packages | `pyproject.toml` hash | All jobs with Python |
 | npm packages | `package-lock.json` hash | test-node, examples-node |
 | Go modules | Built-in (setup-go@v5) | test-go, examples-go |
 | Cargo (Rust) | `Swatinem/rust-cache` with `shared-key: rust-ci` | test-rust, examples-rust |
-| Cargo bin plugins | `cargo-bin-proto-plugins-{OS}-v1` | proto-check |
+| Cargo bin plugins | `cargo-bin-proto-plugins-{OS}-prost-{VERSION}-tonic-{VERSION}-v2` | proto-check |
+
+The protoc download is checked against `PROTOC_SHA256`, which is also part of the cache key.
+`PROTOC_SHA256` must change together with `PROTOC_VERSION`, in both `ci.yml` and `release.yml`.
+
+The stream examples run under `timeout 5` and never end by themselves, so exit status 124
+(stopped by the timeout) is the only result that passes. Any other status fails the job,
+including 0: an example that stops early without an error has still lost its stream.
+
+### Changelog
+
+`CHANGELOG.md` at the repo root is the release notes. Every user-visible change adds an entry
+under `## Unreleased` in the same commit as the change (sections: Added, Changed, Upgrade
+notes, Deprecated, Fixed, Documentation, and where needed Known issues and Maintainer
+tooling). The version bump commit renames `## Unreleased` to
+the version. The protos carry no version of their own (packages are plain `linuxcnc` and
+`hal`, and renaming them would change every RPC path): the package version is the API version.
+Additive proto changes are a minor bump; anything wire-incompatible is a major one.
 
 ### Releasing
 
 1. Update versions: `make sync-version VERSION=x.y.z`
+   - If the script reports a lock file it could not update, fix that first (see Version
+     Management); nothing has been committed at that point.
+   - Rename `## Unreleased` in `CHANGELOG.md` to the version.
 2. Commit and push to main
 3. Go to GitHub Actions > Release > Run workflow
    - `dry_run`: Test without publishing
    - `create_tag`: Create git tag and GitHub Release after publish
+   - `resume_partial_release`: leave false. Set it to true only when re-running a release
+     that failed part-way, on the same commit (see below)
+
+The GitHub Release body comes from `CHANGELOG.md`: the `create-release` job copies the section
+whose heading is exactly `## <version>` (up to the next `## ` heading) and appends the package
+links. If there is no such section, the body is the package links plus GitHub's generated
+notes. So the heading must be renamed from `## Unreleased` before the release is run.
 
 The release workflow:
 - Validates version consistency across all packages (normalizes PEP 440 vs semver)
@@ -312,6 +357,14 @@ The release workflow:
 - Publishes npm packages with `--provenance` for supply chain attestation
 - Marks GitHub Releases as pre-release when version contains a pre-release suffix
 - Creates git tag and GitHub Release after all succeed
+- Runs one release at a time (`concurrency: release`; a second run waits)
+- Asks the remote for the tag before publishing anything: a tag that points at another commit
+  stops the run, one that points at this commit is accepted
+- Fails if a registry already has the version, unless the run was started with the input
+  `resume_partial_release: true` (default false). Only then is an already-published version
+  skipped (PyPI `skip-existing`, an `npm view` check, the crates.io index). Use it only to
+  re-run a failed release on the same commit as the failed run: on any other commit the skip
+  would let the release be tagged at a commit the published packages were not built from
 
 Authentication (all use OIDC trusted publishing):
 - `pypi` environment: OIDC via `pypa/gh-action-pypi-publish`
