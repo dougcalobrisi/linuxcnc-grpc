@@ -317,7 +317,7 @@ All gRPC calls can raise `grpc.RpcError`. Common status codes:
 
 | Code | Meaning |
 |------|---------|
-| `UNAVAILABLE` | Server not reachable or LinuxCNC disconnected |
+| `UNAVAILABLE` | Server not reachable, or the server is running but LinuxCNC is not (it connects by itself when LinuxCNC starts) |
 | `INVALID_ARGUMENT` | A file RPC was given a bad argument: a file name outside the NC files directory, an empty name, empty or too large upload content |
 | `NOT_FOUND` | A file that does not exist |
 | `FAILED_PRECONDITION` | `StreamErrors` on a server started with `--error-channel off` |
@@ -332,6 +332,10 @@ command that was partly sent (see
 If LinuxCNC rejects it afterwards, `WaitComplete` returns `RCS_ERROR` or
 LinuxCNC reports the problem as an error message (see [StreamErrors](api-reference.md#streamerrors)). So
 check `response.status` as well as catching `grpc.RpcError`.
+
+To check whether the server is connected to LinuxCNC without calling it, use
+the standard gRPC health service: `""` and `linuxcnc.LinuxCNCService` report
+`NOT_SERVING` until LinuxCNC is up.
 
 ```python
 try:

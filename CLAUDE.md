@@ -16,7 +16,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 ├── src/linuxcnc_grpc/         # Python package (PyPI: linuxcnc-grpc)
 │   ├── _generated/            # Re-exports from linuxcnc_pb (backwards compatibility)
 │   ├── server.py              # CLI, create_server, health wiring
-│   ├── linuxcnc_service.py    # LinuxCNCService RPCs
+│   ├── linuxcnc_service.py    # LinuxCNCService RPCs, waiting for LinuxCNC
 │   ├── linuxcnc_mapper.py     # linuxcnc.stat() -> LinuxCNCStatus
 │   ├── machine_config.py      # GetMachineConfig builder (status + INI)
 │   ├── error_broker.py        # Single reader and fan-out of the error channel
@@ -44,6 +44,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── test_integration.py    # Integration tests with mock server
 │   ├── test_*_mapper.py       # Unit tests for proto mappers
 │   ├── test_*_service.py      # Unit tests for gRPC services
+│   ├── test_connection.py     # Start without LinuxCNC, reconnect, health
 │   ├── test_wait_for_linuxcnc.py  # scripts/wait-for-linuxcnc.py
 │   ├── test_error_broker.py   # Error fan-out, StreamErrors, status.errors
 │   ├── test_file_read_resolve.py  # ReadFile, ResolveFile
@@ -182,6 +183,164 @@ and before `_record_dispatch`.
   with `RCS_ERROR` rather than dispatched without a record. A partial dispatch cannot be
   detected in the fallback path.
 
+**Starting without LinuxCNC** (all measured on the 2.9 sim; do not "simplify" or extend any
+of this without re-measuring):
+- **A failed in-process connection attempt poisons the process.** If `linuxcnc.stat().poll()`
+  is tried while LinuxCNC is down, every later attempt in that process fails with "error return
+  without exception set", even after LinuxCNC is up. A fresh process connects fine.
+- Therefore reachability is checked by `_linuxcnc_is_reachable()` in a **child process**
+  (`sys.executable -c REACHABILITY_PROBE_CODE`, judged by exit code; 7 ms with LinuxCNC up,
+  15 ms with it down, on the sim under Python 3.13; not measured on real controller hardware),
+  and `_connect()` is only called in-process right after a child reported success.
+- **The waiting thread gives up after `MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE` (3) failed
+  connects.** If the probe passes and the in-process `_connect()` then raises (LinuxCNC went
+  away in between), the process is poisoned as above, while the child probes pass again once
+  LinuxCNC is back. Retrying for ever would keep the server up and `NOT_SERVING` where no
+  supervisor restarts it. It is three attempts and not one in case the failure was something
+  else. The thread then logs an error, calls `on_unrecoverable(error_text)` (a constructor
+  argument; called once, from the waiting thread, without the lock) and ends; the servicer
+  stays disconnected. `_report_unrecoverable` reads the stop flag right before the call and
+  logs only after it, so it says nothing once it has seen `close()`. Nothing makes `close()`
+  wait for the callback (a lock there would let a slow callback hold up shutdown), so the
+  call can still arrive while `close()` runs or just after it returned: callers must ignore
+  it once they have decided to stop. `create_server` has the same
+  parameter and passes it through. `serve()` passes a callback that only appends to a list
+  (the same rule as its signal handler); its polling loop sees the entry, the `finally` stops
+  the server, and `serve()` then raises `UnrecoverableConnectionError`, which `main()` logs
+  and turns into exit status 1. `_reconnect()` has no such limit.
+- `LinuxCNCServiceServicer(require_linuxcnc=True)` (the constructor default, 1.0 behaviour)
+  connects directly and raises if it can't. `require_linuxcnc=False` probes first and starts
+  disconnected if LinuxCNC is down. `create_server`/`serve`/the CLI default to **not**
+  requiring it; `--require-linuxcnc` restores fail-fast.
+- `start_waiting_for_linuxcnc()` (called by `create_server`, not by the constructor, so
+  directly constructed servicers and unit tests have no extra thread) does nothing if already
+  connected. Otherwise it runs the thread `linuxcnc-connection-waiter`: probe at once, then
+  after 1, 2, 4 s, then every `MAX_WAIT_FOR_LINUXCNC_INTERVAL` (5 s); connect when the probe
+  passes; then **the thread ends**.
+- **Nothing watches the connection once it is made, by decision.** `_connected` only ever
+  goes from False to True. A watcher (probe every 2 s, declare the connection lost after two
+  failures, reconnect when the echo serial went backwards) is deliberately not part of the
+  server, for two reasons. First, it would have nothing to do (measured on the sim):
+  - Normal shutdown: LinuxCNC runs `halcmd unload all`, which signals the server (it owns HAL
+    component `grpc-hal-service`) and stops it. Surviving across LinuxCNC sessions needs a
+    supervisor (`Restart=always`). `hal.component()` works before LinuxCNC starts and sees its
+    pins later.
+  - Crash (`kill -9` of `milltask` and `linuxcncsvr`): the NML shared memory stays, so both a
+    held `stat.poll()` and a fresh one in a child keep succeeding with stale data. Python's
+    `stat` exposes no heartbeat. A command sent then blocks ~5 s and returns without error,
+    and the echo serial never advances. Not detectable without sending something.
+  - Start after a crash: the new `linuxcnc` cleans up HAL first, which stops the server.
+  Second, changing the connection from a background thread while RPC threads use it is hard
+  to get right: a late probe result that replaces a newer connection clears
+  `_latest_dispatch_record`, and a WaitComplete in progress then reports a false `RCS_DONE`.
+  Do not add one without a measured case where LinuxCNC goes away and the server lives.
+- Other measured facts worth keeping: LinuxCNC's command serial is one counter for all
+  clients (two channels in a process and a second process: strictly increasing), and a
+  process that never failed in-process can reconnect after a LinuxCNC restart.
+- `_connect_if_unchanged_since(snapshot)` is how the waiting thread and `_reconnect()`
+  connect: the probe runs without the lock, so each takes `_connection_snapshot()`
+  (`_connected`, `_connection_generation`) first, and the connect happens only if that is
+  still current and `close()` has not been called, checked in the same lock hold.
+- `_reconnect(failed_connection)` is 1.0's RPC-side reconnect (GetStatus/StreamStatus call it
+  when a held `poll()` raises `linuxcnc.error`, which per the above rarely if ever happens).
+  It keeps its backoff loop but asks the probe before every connect. The callers take the
+  snapshot in the lock hold of the poll that failed, so a reconnect for an old failure
+  cannot replace a connection another RPC made since. Failing leaves `_connected` as it was.
+- `_set_connected` calls `on_connection_change` **with the lock held**, so the listener runs
+  before any RPC can use the new connection. `create_server` uses it to set the health status
+  of `""` and `linuxcnc.LinuxCNCService` (`NOT_SERVING` until connected). `hal.HalService` is
+  always `SERVING`. The listener must not call `close()`.
+- `_abort_if_disconnected(context)` at the top of an RPC is the only connection check an RPC
+  needs (`UNAVAILABLE` while waiting for LinuxCNC): once it has passed, the channels exist
+  and are only ever replaced by newer ones. RPCs covered: GetStatus, SendCommand,
+  WaitComplete, StreamStatus, StreamErrors, ResolveFile, GetMachineConfig.
+  Upload/List/Read/Delete need no LinuxCNC. Two RPCs check something else first:
+  StreamErrors answers `FAILED_PRECONDITION` in `off` mode, and ResolveFile validates the
+  name (`INVALID_ARGUMENT`) before it looks at the connection. WaitComplete makes the check
+  under the lock and answers `RCS_EXEC` if it cannot get the lock by its deadline.
+- `create_server` wraps `server.stop`. Stopping does three things, in this order: every
+  health service turns `NOT_SERVING` (`enter_graceful_shutdown`), the gRPC server's own
+  `stop(grace)` is called (it returns its event at once), and `servicer.close()` runs. Each
+  of the three runs whatever the others did, and the first failure is raised at the end. The
+  servicer comes last because `close()` can wait for the servicer lock, and
+  `SendCommand` holds that lock for a whole dispatch, which takes seconds when LinuxCNC's
+  task is not answering. The transport's shutdown and grace period must not start late
+  because of that.
+- `close()` is bounded. It sets the stop flag first, without the lock; a connect checks the
+  flag and publishes its channels in one lock hold, so no connect starts after that. Then it
+  passes through the servicer lock, which waits out a connect that had just checked the
+  flag, for at most `CLOSE_LOCK_TIMEOUT` (1 s). Then it stops the error reader and joins the
+  waiting thread (at most 2 s each). What holds when it returns:
+  - If it got the lock: nothing connects afterwards.
+  - If it did not: a connect that was already under way in the lock hold that blocked it can
+    still finish (its health report is ignored after `enter_graceful_shutdown`). No other
+    connect can.
+  - Either thread can still be alive: the waiting thread during a probe (up to 10 s) and
+    both threads while the lock is held. The waiting thread then ends without connecting,
+    and the error reader ends without reading (`_poll_error_channel` returns nothing once
+    the flag is set).
+  - `close()` may be called again.
+  - A command is not sent afterwards, unless it only stops things. `SendCommand` asks
+    `_reason_not_to_send(request, context)` inside its lock hold, right before the handler:
+    with the stop flag set, or with `context.is_active()` false (the client went away while
+    the command waited for the lock), the answer is `RCS_ERROR` and nothing is sent or
+    recorded. Keep the check inside the lock and before the first thing that talks to
+    LinuxCNC.
+  - **A client must always be able to stop**: sending a stop late is safe, dropping it is
+    not. `_only_stops_things(request)` names the commands that are never refused there:
+    state `STATE_ESTOP` and `STATE_OFF`, program `abort` and `pause`, jog `JOG_STOP`,
+    spindle `SPINDLE_CMD_OFF`. Keep the list short and explicit. Brake engage is not on it
+    (braking a turning spindle is not plainly harmless), nor are overrides set to zero. It
+    is the same principle as never refusing a stop over a field the stop does not use.
+- **`create_server` binds the port last and never starts anything.** Its order: health
+  service, LinuxCNC servicer, HAL servicer, the two registrations, the waiting thread, and
+  only then `add_insecure_port`. A gRPC server that was never started cannot give its port
+  back: `stop()` does nothing on it and the port stays bound until the process exits or the
+  object is collected (measured with grpcio 1.76 on macOS). So the port is taken only when
+  nothing else can fail: the stop wrapper is installed and the last log line written
+  before it, so the bind is the last statement that can raise. Any failure (`BaseException`,
+  so Ctrl+C too) turns health to graceful shutdown and closes the LinuxCNC servicer if it
+  was built, and re-raises with no port bound. A cleanup step that fails is logged
+  (`logger.exception`) and never replaces the failure that caused the cleanup; `serve()`'s
+  `finally` follows the same rule when a failure is already propagating
+  (`failure_is_propagating`). The stop wrapper called on its own runs all three steps and
+  then raises the first failure, logging any later one. Do not start the server on a
+  failure path to free a port: a half-built server could serve the machine RPCs.
+  - What a failure leaves: no port, no transport, no LinuxCNC servicer thread once `close()`
+    has done its work (see the bounds above). The HAL servicer has no `close()`, so a HAL
+    component already created stays until the process exits.
+  - A bad address or a port in use is now found after the servicers exist. In `always` mode
+    with LinuxCNC running, the error reader runs from the servicer's construction until that
+    `close()` (HAL construction and the registrations, milliseconds) and can take a message
+    from LinuxCNC's queue in that time; that message is lost to the GUI. The same was already
+    true of a HAL failure. In `on-demand` and `off` mode nothing is read. No address check
+    before the servicers was added: it would have to copy gRPC's address parsing and still
+    could not promise that the real bind succeeds.
+  - Clients see no difference: nobody can connect before the bind, and health starts as
+    before.
+  - A server that `create_server` returned and that is never started keeps its port after
+    `stop()`, for the same reason. Start it or let the process end.
+- **`serve()`'s signal handler only appends to a list**; the main thread polls it every
+  `SHUTDOWN_POLL_INTERVAL` (0.2 s) and then stops the server in a `finally`, which also
+  covers a failed `server.start()`. The handlers are installed before `create_server` is
+  called (it can take as long as a probe), so a signal during startup is recorded: the
+  server is created, started, and stopped on the loop's first pass. If `create_server`
+  raises there is no server to stop and only the handlers are restored. The stop is
+  `stop(grace=SHUTDOWN_GRACE_PERIOD)` (5 s) and its event is waited on for at most
+  `SHUTDOWN_WAIT_TIMEOUT` (15 s), then an error is logged and `serve()` goes on: gRPC starts
+  its native server before its serving thread, and if that thread cannot start, the event of
+  a later stop is never set. A handler runs in
+  the main thread in the middle of whatever it was doing, so anything that takes a lock
+  there can deadlock against the interrupted code: stopping the server, logging, and also
+  `threading.Event.set()` (its condition lock is not reentrant, and `Event.wait()` holds it
+  briefly). `serve()` puts the previous `SIGINT`/`SIGTERM` handlers back in that `finally`,
+  after the server has stopped, whether it returns or fails. A previous handler of `None`
+  (one not set from Python) cannot be put back; `serve()` installs `signal.SIG_DFL` instead,
+  the closest there is, because leaving its own handler would swallow every later signal.
+- Known and left as in 1.0: `_reconnect()`'s backoff sleeps (up to 16 s) are not interrupted
+  by shutdown, so a process stopping while an RPC is in one can exit later than the grace
+  period.
+
 **Connecting**: `_connect()` holds the lock throughout (as it always did). It creates the
 new `stat`, `command` and `error_channel` in locals and polls the new `stat` first. Only if
 all of that succeeds does it publish the three channels, reset `_latest_dispatch_record` to
@@ -250,20 +409,22 @@ Other behaviour:
 - Timeout (default `DEFAULT_WAIT_COMPLETE_TIMEOUT` = 5 s) or a cancelled RPC returns
   `RCS_EXEC` with an empty message. `linuxcnc.error` returns `RCS_ERROR` with its text.
 - `request.timeout` of 0, a negative number or NaN means the default (NaN fails the `> 0`
-  test). An infinite timeout is allowed: the wait then ends when the command finishes or the
-  client goes away. A gone client is noticed between polls and between attempts at the lock
-  (next point), so within about `LOCK_ACQUIRE_SLICE` plus one poll.
+  test). An infinite timeout is allowed: the wait then ends when the command finishes, the
+  client goes away or the server shuts down (the loop checks `_stop_requested`). A gone client
+  is noticed between polls and between attempts at the lock (next point), so within about
+  `LOCK_ACQUIRE_SLICE` plus one poll.
 - `_acquire_lock_until(deadline, context)` takes the lock in slices of at most
   `LOCK_ACQUIRE_SLICE` (0.1 s). After a slice that timed out it gives up if the deadline has
   passed or `context.is_active()` is false, and otherwise tries again. So a cancelled RPC
   gives up its worker thread even while another RPC holds the lock. The slices also keep the
   timeout below `threading.TIMEOUT_MAX`, above which `Lock.acquire` raises `OverflowError`
   (an infinite deadline used to surface as gRPC `UNKNOWN`).
-- Every lock acquisition in WaitComplete goes through `_acquire_lock_until`: taking the
-  record, and each poll. If another RPC holds the lock past the deadline, or until the client
-  has gone, the wait returns `RCS_EXEC` with an empty message, like any timeout, so it cannot
-  overrun its timeout behind a slow lock holder. The first slice is always tried, so a free
-  lock is still taken at or past the deadline and for an RPC that is already cancelled.
+- Every lock acquisition in WaitComplete goes through `_acquire_lock_until`: the connection
+  check at the top (the same test as `_abort_if_disconnected`, done inline for this reason),
+  taking the record, and each poll. If another RPC holds the lock past the deadline, or until
+  the client has gone, the wait returns `RCS_EXEC` with an empty message, like any timeout, so
+  it cannot overrun its timeout behind a slow lock holder. The first slice is always tried, so
+  a free lock is still taken at or past the deadline and for an RPC that is already cancelled.
 
 **Errors (`error_broker.py`)**: LinuxCNC's NML error channel is one queue and
 `error_channel.poll()` removes what it returns; there is no peek. Verified on the 2.9 sim: a
@@ -291,9 +452,7 @@ the server cannot hide its reading from the GUI; never claim it can.
   has been read (`off`, or `on-demand` with no stream so far).
 - `read_available()` drains synchronously and is what unit tests drive; the thread loop only
   adds the mode gate, the 50 ms idle sleep and a 1 s backoff after a failed poll.
-- `LinuxCNCServiceServicer.close()` stops the reader thread, and may be called more than once.
-  `create_server` wraps `server.stop` so that stopping the server calls it first, and calls it
-  itself if anything fails after the servicer was constructed (HAL, the port bind).
+- `LinuxCNCServiceServicer.close()` stops the reader thread.
 
 **Security**: the server has no authentication or TLS. Docs tell users to bind to
 `127.0.0.1` and use an SSH tunnel, or to run only on a trusted LAN (`docs/content/server.md`).
@@ -414,8 +573,9 @@ cannot be resolved (`RuntimeError` from `resolve()` for a symlink loop, Python <
 
 **Tests and servicer threads**: every `LinuxCNCServiceServicer` whose error-channel mode is
 not `off` starts the `linuxcnc-error-reader` thread in its constructor. Tests must stop it
-(`service.close()`). The fixtures in `test_machine_config.py`,
-`test_file_read_resolve.py` and `test_error_broker.py` close what they
+(`service.close()`), or the thread-counting tests in `tests/test_connection.py` fail when
+they run later in the same session. The fixtures in `test_machine_config.py`,
+`test_file_read_resolve.py`, `test_error_broker.py` and `test_connection.py` close what they
 build; `test_linuxcnc_service.py`, which constructs servicers inline, has an autouse fixture
 that records every `ErrorBroker.start` and stops those brokers after the test.
 

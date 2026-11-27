@@ -14,7 +14,7 @@ Server Usage (requires LinuxCNC environment):
     try:
         server.wait_for_termination()
     finally:
-        server.stop(grace=5)
+        server.stop(grace=5)  # also stops the server's background threads
 
 Client Usage (works anywhere):
     from linuxcnc_grpc import (

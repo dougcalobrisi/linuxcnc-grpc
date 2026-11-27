@@ -789,7 +789,12 @@ class TestServerStopsTheErrorReader:
 
     @pytest.fixture
     def server_module(self, mock_linuxcnc_module, mock_linuxcnc_stat, error_channel):
-        """The server module on a mocked linuxcnc and HAL, with a real gRPC server."""
+        """
+        The server module on a mocked linuxcnc and HAL, with a real gRPC server.
+
+        The tests pass require_linuxcnc=True so that the servicer connects to
+        the mocked linuxcnc directly instead of probing for a real one.
+        """
         mock_linuxcnc_module.OPERATOR_ERROR = OPERATOR_ERROR_KIND
         mock_linuxcnc_module.OPERATOR_TEXT = OPERATOR_TEXT_KIND
         mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
@@ -811,7 +816,8 @@ class TestServerStopsTheErrorReader:
         """Returns the server and the reader thread that creating it started."""
         readers_before = live_error_reader_threads()
         server = server_module.create_server(
-            host="127.0.0.1", port=0, error_channel_mode=ERROR_CHANNEL_ALWAYS
+            host="127.0.0.1", port=0, error_channel_mode=ERROR_CHANNEL_ALWAYS,
+            require_linuxcnc=True,
         )
         new_readers = live_error_reader_threads() - readers_before
         assert len(new_readers) == 1
@@ -868,7 +874,8 @@ class TestServerStopsTheErrorReader:
         with patch.object(server_module, "HalServiceServicer", side_effect=fail_to_access_hal):
             with pytest.raises(RuntimeError, match="Failed to access HAL"):
                 server_module.create_server(
-                    host="127.0.0.1", port=0, error_channel_mode=ERROR_CHANNEL_ALWAYS
+                    host="127.0.0.1", port=0, error_channel_mode=ERROR_CHANNEL_ALWAYS,
+                    require_linuxcnc=True,
                 )
 
         # The reader was running by then, so the check below is not vacuous.
@@ -881,7 +888,8 @@ class TestServerStopsTheErrorReader:
 
         with pytest.raises(Exception):
             server_module.create_server(
-                host="256.256.256.256", port=50051, error_channel_mode=ERROR_CHANNEL_ALWAYS
+                host="256.256.256.256", port=50051, error_channel_mode=ERROR_CHANNEL_ALWAYS,
+                require_linuxcnc=True,
             )
 
         wait_until(lambda: live_error_reader_threads() - readers_before == set())

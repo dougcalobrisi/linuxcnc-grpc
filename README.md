@@ -38,7 +38,7 @@ linuxcnc-grpc --host 0.0.0.0 --port 50051
 > or use `--host 0.0.0.0` only on a trusted LAN. See
 > [Security Considerations](https://doug.sh/docs/linuxcnc-grpc/server/#security-considerations).
 
-LinuxCNC must already be running before starting the server.
+The server can start before LinuxCNC: it waits, reports `NOT_SERVING` on the gRPC health service and answers `UNAVAILABLE` on the RPCs that need LinuxCNC until it is up (`UploadFile`, `ListFiles`, `ReadFile`, `DeleteFile` and the HAL service work meanwhile). Pass `--require-linuxcnc` to make it exit instead.
 
 ### Auto-start with LinuxCNC
 

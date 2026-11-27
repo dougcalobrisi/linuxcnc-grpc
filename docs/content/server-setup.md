@@ -29,7 +29,7 @@ This installs both the gRPC server and the Python client library.
 
 ## Start the Server
 
-LinuxCNC must already be running before you start the gRPC server.
+The server can be started before or after LinuxCNC. If LinuxCNC is not running yet, the server waits for it and answers `UNAVAILABLE` until it has connected.
 
 ```bash
 # Start LinuxCNC (if not already running)
@@ -95,8 +95,9 @@ linuxcnc.LinuxCNCService SERVING
 hal.HalService SERVING
 ```
 
-The server does not offer gRPC reflection, so `grpcurl ... list` does not
-work.
+`linuxcnc.LinuxCNCService` is `NOT_SERVING` while the server is waiting for
+LinuxCNC. The server does not offer gRPC reflection, so `grpcurl ... list`
+does not work.
 
 Or just test network connectivity:
 

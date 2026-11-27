@@ -15,8 +15,10 @@ Example:
 import argparse
 import logging
 import signal
+import time
 import sys
 from concurrent import futures
+from typing import Callable
 
 import grpc
 
@@ -29,6 +31,18 @@ from .hal_service import HalServiceServicer
 # Upload cap plus 1 MB for the filename and protobuf framing.
 MAX_RECEIVE_MESSAGE_BYTES = MAX_UPLOAD_SIZE + 1024 * 1024
 
+# Names the health service reports on, besides "" for the server as a whole.
+LINUXCNC_HEALTH_SERVICE = "linuxcnc.LinuxCNCService"
+HAL_HEALTH_SERVICE = "hal.HalService"
+# How often serve() looks whether a shutdown signal has arrived.
+SHUTDOWN_POLL_INTERVAL = 0.2  # seconds
+# How long serve() lets RPCs in progress finish when it stops the server.
+SHUTDOWN_GRACE_PERIOD = 5  # seconds
+# Longest serve() waits for the stopped server to report that it is done.
+# Longer than the grace period, and never for ever: a transport that never
+# finishes stopping must not keep the process from exiting.
+SHUTDOWN_WAIT_TIMEOUT = 15.0  # seconds
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +50,13 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+
+
+class UnrecoverableConnectionError(RuntimeError):
+    """
+    Raised by serve() after it has stopped the server because this process
+    can no longer connect to LinuxCNC. Only a new process can.
+    """
 
 
 class _RequestLoggingInterceptor(grpc.ServerInterceptor):
@@ -52,6 +73,8 @@ def create_server(
     max_workers: int = 10,
     nc_files_dir: str | None = None,
     error_channel_mode: str = ERROR_CHANNEL_ON_DEMAND,
+    require_linuxcnc: bool = False,
+    on_unrecoverable: Callable[[str], None] | None = None,
 ) -> grpc.Server:
     """
     Create and configure the gRPC server.
@@ -64,9 +87,28 @@ def create_server(
         error_channel_mode: When the server reads LinuxCNC's error channel:
             "on-demand" (only while a StreamErrors client is connected),
             "always" or "off"
+        require_linuxcnc: If True, raise when LinuxCNC is not running (the
+            behaviour up to 1.0). If False, start anyway: the health service
+            reports NOT_SERVING and LinuxCNC RPCs return UNAVAILABLE until
+            the server has connected
+        on_unrecoverable: Called once, with a description, if the server
+            finds that this process can no longer connect to LinuxCNC (see
+            LinuxCNCServiceServicer). The server then stays up and
+            NOT_SERVING until the process is restarted, so the caller should
+            stop it and exit. Called from a background thread; the condition
+            is logged as an error whether or not this is given
 
     Returns:
-        Configured gRPC server (not yet started)
+        Configured gRPC server (not yet started), with the port bound.
+
+    The port is bound last. If this raises, no port is bound and the
+    LinuxCNC servicer, if it was built, is closed; nothing is ever started
+    here. A HAL component already created stays until the process exits.
+
+    Start the returned server, or let the process end: gRPC does nothing
+    when stop() is called on a server that was never started, so such a
+    server keeps its port until the process exits or the object is
+    collected.
     """
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=max_workers),
@@ -81,46 +123,109 @@ def create_server(
         ]
     )
 
-    # Register services
-    linuxcnc_servicer = LinuxCNCServiceServicer(
-        nc_files_dir=nc_files_dir,
-        error_channel_mode=error_channel_mode,
-    )
-
+    address = f"{host}:{port}"
+    health_servicer = health.HealthServicer()
+    linuxcnc_servicer = None
     try:
+        # Health check service. The overall status ("") and the LinuxCNC
+        # service follow the connection to LinuxCNC; they start as
+        # NOT_SERVING and the servicer reports when it connects.
+        health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+
+        def report_linuxcnc_connection(connected: bool) -> None:
+            serving_status = (
+                health_pb2.HealthCheckResponse.SERVING if connected
+                else health_pb2.HealthCheckResponse.NOT_SERVING
+            )
+            health_servicer.set(LINUXCNC_HEALTH_SERVICE, serving_status)
+            health_servicer.set("", serving_status)
+            logger.info(f"LinuxCNC connection: {'up' if connected else 'down'}")
+
+        health_servicer.set(LINUXCNC_HEALTH_SERVICE, health_pb2.HealthCheckResponse.NOT_SERVING)
+        health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
+
+        # Register services
+        linuxcnc_servicer = LinuxCNCServiceServicer(
+            nc_files_dir=nc_files_dir,
+            error_channel_mode=error_channel_mode,
+            require_linuxcnc=require_linuxcnc,
+            on_connection_change=report_linuxcnc_connection,
+            on_unrecoverable=on_unrecoverable,
+        )
         linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(linuxcnc_servicer, server)
         hal_servicer = HalServiceServicer()
         hal_pb2_grpc.add_HalServiceServicer_to_server(hal_servicer, server)
+        health_servicer.set(HAL_HEALTH_SERVICE, health_pb2.HealthCheckResponse.SERVING)
 
-        # Register health check service
-        health_servicer = health.HealthServicer()
-        health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
-        health_servicer.set("linuxcnc.LinuxCNCService", health_pb2.HealthCheckResponse.SERVING)
-        health_servicer.set("hal.HalService", health_pb2.HealthCheckResponse.SERVING)
-        health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+        # If LinuxCNC is not up yet, keep checking and connect when it is.
+        linuxcnc_servicer.start_waiting_for_linuxcnc()
 
-        # Add insecure port (for development/testing)
-        address = f"{host}:{port}"
+        # The servicer runs background threads (the wait for LinuxCNC and
+        # the error channel reader). Stop them with the server, whoever
+        # stops it, so a stopped server does not keep reading LinuxCNC's
+        # error channel.
+        stop_grpc_server = server.stop
+
+        def stop_server_and_servicer(grace):
+            # Health watchers are told first: every service turns
+            # NOT_SERVING. Then the transport, and only then the servicer.
+            # Closing the servicer can wait for its lock, which a command
+            # that LinuxCNC is not answering holds for seconds; the
+            # transport's shutdown and its grace period must not start late
+            # because of that. Every step runs whatever the others did; the
+            # first failure is raised once all three have run.
+            failures = []
+            stopped = None
+            try:
+                health_servicer.enter_graceful_shutdown()
+            except Exception as health_failure:
+                failures.append(health_failure)
+            try:
+                stopped = stop_grpc_server(grace)
+            except Exception as transport_failure:
+                failures.append(transport_failure)
+            try:
+                linuxcnc_servicer.close()
+            except Exception as close_failure:
+                failures.append(close_failure)
+            for later_failure in failures[1:]:
+                logger.error(
+                    "Another step of stopping the server failed as well",
+                    exc_info=later_failure,
+                )
+            if failures:
+                raise failures[0]
+            return stopped
+
+        server.stop = stop_server_and_servicer
+        logger.info(f"Server configured; binding {address}")
+
+        # Bind last: this is the last statement that can fail. A gRPC server
+        # that was never started cannot give its port back (stop() does
+        # nothing on it), so the port is only taken once nothing else can
+        # fail. A bad address or a port in use fails here, and the cleanup
+        # below stops what was built.
         server.add_insecure_port(address)
-    except Exception:
+    except BaseException:
         # No server will be returned, so nothing else would ever stop the
-        # LinuxCNC servicer's background thread (in "always" mode the error
-        # reader would go on taking LinuxCNC's messages).
-        linuxcnc_servicer.close()
+        # LinuxCNC servicer's background threads (in "always" mode the error
+        # reader would go on taking LinuxCNC's messages). No port is bound
+        # and nothing was started, so there is no transport to stop. A
+        # cleanup step that fails is logged: the caller must see the failure
+        # that brought us here, not one from the cleanup.
+        try:
+            health_servicer.enter_graceful_shutdown()
+        except Exception:
+            logger.exception("Cleaning up after a failed start: the health service failed")
+        if linuxcnc_servicer is not None:
+            try:
+                linuxcnc_servicer.close()
+            except Exception:
+                logger.exception(
+                    "Cleaning up after a failed start: closing the LinuxCNC servicer failed"
+                )
         raise
 
-    # The servicer runs a background thread (the error channel reader). Stop
-    # it with the server, whoever stops it, so a stopped server does not keep
-    # reading LinuxCNC's error channel.
-    stop_grpc_server = server.stop
-
-    def stop_server_and_servicer(grace):
-        linuxcnc_servicer.close()
-        return stop_grpc_server(grace)
-
-    server.stop = stop_server_and_servicer
-
-    logger.info(f"Server configured on {address}")
     return server
 
 
@@ -129,6 +234,7 @@ def serve(
     port: int = 50051,
     nc_files_dir: str | None = None,
     error_channel_mode: str = ERROR_CHANNEL_ON_DEMAND,
+    require_linuxcnc: bool = False,
 ):
     """
     Start the gRPC server and run until interrupted.
@@ -139,42 +245,123 @@ def serve(
         nc_files_dir: Override directory for NC files
         error_channel_mode: When the server reads LinuxCNC's error channel
             ("on-demand", "always" or "off")
-    """
-    server = create_server(
-        host, port, nc_files_dir=nc_files_dir, error_channel_mode=error_channel_mode
-    )
+        require_linuxcnc: Fail instead of waiting if LinuxCNC is not running
 
-    # Handle shutdown signals gracefully
-    shutdown_event = False
+    Raises:
+        UnrecoverableConnectionError: after stopping the server, if this
+            process can no longer connect to LinuxCNC and has to be
+            restarted.
+    """
+    # Handle shutdown signals gracefully. The handler only records the
+    # request: it runs in the main thread between two instructions of whatever
+    # that thread was doing, so anything that takes a lock there (stopping the
+    # server, logging, even threading.Event.set) can deadlock against a lock
+    # the interrupted code already holds.
+    shutdown_signals_received = []
 
     def signal_handler(signum, frame):
-        nonlocal shutdown_event
-        if not shutdown_event:
-            shutdown_event = True
+        shutdown_signals_received.append(signum)
+
+    # Filled in from the thread that waits for LinuxCNC, if it finds that
+    # this process can no longer connect. Like the signal handler it only
+    # records; the loop below acts on it.
+    unrecoverable_errors = []
+
+    def record_unrecoverable_error(error_text):
+        unrecoverable_errors.append(error_text)
+
+    # What was installed before, to put back when serve() ends: a signal
+    # arriving later must not land in this call's list, where nobody looks.
+    previous_signal_handlers = {}
+    server = None
+    # True until the body below has run to its end, so the cleanup knows
+    # whether a failure is already on its way to the caller.
+    failure_is_propagating = True
+
+    try:
+        # Installed before the server is created, which can take as long as
+        # a check for LinuxCNC: a signal during that time is recorded and
+        # ends the loop below on its first pass, with a normal stop.
+        for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
+            previous_signal_handlers[shutdown_signal] = signal.signal(
+                shutdown_signal, signal_handler
+            )
+
+        server = create_server(
+            host,
+            port,
+            nc_files_dir=nc_files_dir,
+            error_channel_mode=error_channel_mode,
+            require_linuxcnc=require_linuxcnc,
+            on_unrecoverable=record_unrecoverable_error,
+        )
+
+        server.start()
+        logger.info("=" * 60)
+        logger.info("LinuxCNC + HAL gRPC Server")
+        logger.info("=" * 60)
+        logger.info(f"Listening on {host}:{port}")
+        logger.info("")
+        logger.info("Services available:")
+        logger.info("  - LinuxCNCService (linuxcnc.proto)")
+        logger.info("  - HalService (hal.proto)")
+        logger.info("  - Health (grpc.health.v1)")
+        logger.info("")
+        logger.info("Press Ctrl+C to stop")
+        logger.info("=" * 60)
+
+        # Wait for a shutdown signal. Polling, because the handler must not
+        # touch anything the waiting code could be holding.
+        while not shutdown_signals_received and not unrecoverable_errors:
+            time.sleep(SHUTDOWN_POLL_INTERVAL)
+        if unrecoverable_errors:
+            logger.error(
+                "This process can no longer connect to LinuxCNC and must be "
+                "restarted; stopping server..."
+            )
+        else:
             logger.info("Shutdown signal received, stopping server...")
-            server.stop(grace=5)  # 5 second grace period
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    # Start server
-    server.start()
-    logger.info("=" * 60)
-    logger.info("LinuxCNC + HAL gRPC Server")
-    logger.info("=" * 60)
-    logger.info(f"Listening on {host}:{port}")
-    logger.info("")
-    logger.info("Services available:")
-    logger.info("  - LinuxCNCService (linuxcnc.proto)")
-    logger.info("  - HalService (hal.proto)")
-    logger.info("  - Health (grpc.health.v1)")
-    logger.info("")
-    logger.info("Press Ctrl+C to stop")
-    logger.info("=" * 60)
-
-    # Wait for termination
-    server.wait_for_termination()
+        failure_is_propagating = False
+    finally:
+        # Also on a failure above (a server.start() that raised included),
+        # so the servicer's threads never outlive serve(). If create_server
+        # failed there is no server, and it has cleaned up after itself.
+        try:
+            try:
+                if server is not None:
+                    stopped = server.stop(grace=SHUTDOWN_GRACE_PERIOD)
+                    # Bounded: a transport that never reports having stopped
+                    # (one whose start failed half-way, for example) must
+                    # not hold serve() for ever.
+                    if not stopped.wait(SHUTDOWN_WAIT_TIMEOUT):
+                        logger.error(
+                            f"The gRPC server did not finish stopping within "
+                            f"{SHUTDOWN_WAIT_TIMEOUT:g} seconds; not waiting any longer"
+                        )
+            finally:
+                for shutdown_signal, previous_handler in previous_signal_handlers.items():
+                    # None means the previous handler was not set from
+                    # Python. It cannot be put back, and leaving this call's
+                    # handler would swallow later signals, so the default
+                    # action is the closest there is.
+                    signal.signal(
+                        shutdown_signal,
+                        signal.SIG_DFL if previous_handler is None else previous_handler,
+                    )
+        except Exception:
+            # The caller must see the failure that ended serve(), not one
+            # from cleaning up after it.
+            if not failure_is_propagating:
+                raise
+            logger.exception("Stopping the server after a failure failed as well")
     logger.info("Server stopped")
+    if unrecoverable_errors:
+        # main() turns this into exit status 1, so a supervisor restarts
+        # the process.
+        raise UnrecoverableConnectionError(
+            "This process can no longer connect to LinuxCNC and must be "
+            f"restarted: {unrecoverable_errors[0]}"
+        )
 
 
 def main():
@@ -211,6 +398,15 @@ def main():
         ),
     )
     parser.add_argument(
+        "--require-linuxcnc",
+        action="store_true",
+        help=(
+            "Exit with an error if LinuxCNC is not running at startup, as "
+            "versions up to 1.0 did. By default the server starts anyway and "
+            "connects when LinuxCNC comes up"
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging"
@@ -228,6 +424,7 @@ def main():
             port=args.port,
             nc_files_dir=args.nc_files,
             error_channel_mode=args.error_channel,
+            require_linuxcnc=args.require_linuxcnc,
         )
     except Exception as e:
         logger.error(f"Server error: {e}")
