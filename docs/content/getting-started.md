@@ -17,6 +17,8 @@ pip install linuxcnc-grpc
 ```bash
 go get github.com/dougcalobrisi/linuxcnc-grpc
 ```
+
+Requires Go 1.25 or later.
 {{%  /tab  %}}
 {{%  tab "Node.js / TypeScript"  %}}
 ```bash

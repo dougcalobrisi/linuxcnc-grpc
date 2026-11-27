@@ -1114,6 +1114,34 @@ The stream examples run under `timeout 5` and never end by themselves, so exit s
 (stopped by the timeout) is the only result that passes. Any other status fails the job,
 including 0: an example that stops early without an error has still lost its stream.
 
+### Dependency updates
+
+Dependabot only watches `github-actions`. Security updates of the other ecosystems are done by
+hand, one package at a time (`uv lock --upgrade-package <name>`, `npm update <name>`,
+`cargo update -p <name> --precise <version>`), never a full re-resolve: `grpcio-tools`,
+`protobuf` (Python) and `ts-proto` decide what the generated code looks like, and CI's proto
+check fails if it changes. Run the generator afterwards and check nothing generated changed.
+- `@grpc/grpc-js` is held to one minor series with `~` on purpose: 1.14.x crashed with the
+  ts-proto client ("Incorrect arguments passed"). Test the client against the mock server
+  before moving to a new series.
+- Go is at `go 1.25.0` in `go.mod` and `examples/go/go.mod`. CI's `test-go` job runs on 1.25
+  (the declared minimum) and on the current stable Go; the proto check and the examples job
+  use 1.25.
+  `google.golang.org/grpc` 1.81 and newer and `golang.org/x/net` 0.51 and newer need Go 1.25,
+  and every grpc release with the security fixes of 2026 is newer than that, so the minimum
+  was raised from 1.24. The `go` line is what users must have: raise it only when a
+  dependency demands it, together with CI's `go-version` (three places in `ci.yml`), the
+  changelog (Upgrade notes), `examples/go/README.md` and `docs/content/getting-started.md`.
+  No `toolchain` line.
+- Update Go modules with `go get <module>@<version>` then `go mod tidy`, in the root and in
+  `examples/go`, never `go get -u`. grpc is at the latest patch of the lowest minor series
+  that fixes every advisory (1.83.2; an advisory's later ranges are not shown in a Dependabot
+  alert, so check `gh api "/advisories?ecosystem=go&affects=<module>@<version>"`).
+  `protoc-gen-go` and `protoc-gen-go-grpc` are pinned in `ci.yml` and are separate from the
+  runtime versions in `go.mod`, so a runtime update does not change the generated Go code.
+- `examples/node/package-lock.json` only records the link to `packages/node` and its ranges;
+  the versions are in `packages/node/package-lock.json`.
+
 ### Changelog
 
 `CHANGELOG.md` at the repo root is the release notes. Every user-visible change adds an entry
