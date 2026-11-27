@@ -414,17 +414,21 @@ type (
 	StreamErrorsRequest = pb.StreamErrorsRequest
 
 	// File management types
-	UploadFileRequest   = pb.UploadFileRequest
-	UploadFileResponse  = pb.UploadFileResponse
-	ListFilesRequest    = pb.ListFilesRequest
-	ListFilesResponse   = pb.ListFilesResponse
-	FileInfo            = pb.FileInfo
-	DeleteFileRequest   = pb.DeleteFileRequest
-	DeleteFileResponse  = pb.DeleteFileResponse
-	ReadFileRequest     = pb.ReadFileRequest
-	ReadFileResponse    = pb.ReadFileResponse
-	ResolveFileRequest  = pb.ResolveFileRequest
-	ResolveFileResponse = pb.ResolveFileResponse
+	UploadFileRequest       = pb.UploadFileRequest
+	UploadFileResponse      = pb.UploadFileResponse
+	ListFilesRequest        = pb.ListFilesRequest
+	ListFilesResponse       = pb.ListFilesResponse
+	FileInfo                = pb.FileInfo
+	DeleteFileRequest       = pb.DeleteFileRequest
+	DeleteFileResponse      = pb.DeleteFileResponse
+	ReadFileRequest         = pb.ReadFileRequest
+	ReadFileResponse        = pb.ReadFileResponse
+	ResolveFileRequest      = pb.ResolveFileRequest
+	ResolveFileResponse     = pb.ResolveFileResponse
+	GetMachineConfigRequest = pb.GetMachineConfigRequest
+	MachineConfig           = pb.MachineConfig
+	JointConfig             = pb.JointConfig
+	AxisConfig              = pb.AxisConfig
 
 	// HAL request/response types
 	GetSystemStatusRequest  = pb.GetSystemStatusRequest
@@ -592,4 +596,10 @@ func (c *Client) ReadFile(ctx context.Context, filename string) ([]byte, error) 
 // and reports whether it is the program LinuxCNC currently has loaded.
 func (c *Client) ResolveFile(ctx context.Context, filename string) (*ResolveFileResponse, error) {
 	return c.LinuxCNC.ResolveFile(ctx, &ResolveFileRequest{Filename: filename})
+}
+
+// GetMachineConfig retrieves the machine's configuration: kinematics,
+// joint-to-axis mapping, limits, velocities and units.
+func (c *Client) GetMachineConfig(ctx context.Context) (*MachineConfig, error) {
+	return c.LinuxCNC.GetMachineConfig(ctx, &GetMachineConfigRequest{})
 }

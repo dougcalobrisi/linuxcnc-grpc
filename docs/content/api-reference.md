@@ -18,6 +18,7 @@ Complete API documentation for LinuxCNC gRPC services.
   - [DeleteFile](#deletefile)
   - [ReadFile](#readfile)
   - [ResolveFile](#resolvefile)
+  - [GetMachineConfig](#getmachineconfig)
 - [HalService](#halservice)
   - [GetSystemStatus](#getsystemstatus)
   - [GetValue](#getvalue)
@@ -602,6 +603,111 @@ if resolved.is_loaded_program and resolved.interp_state != linuxcnc_pb2.INTERP_I
     print(f"{resolved.path} is running; not touching it")
 else:
     stub.DeleteFile(linuxcnc_pb2.DeleteFileRequest(filename="my_part.ngc"))
+```
+
+### GetMachineConfig
+
+Get the machine's configuration: kinematics, which joint drives which axis,
+limits, velocities and units. This is the information a client otherwise has
+to guess or ask the user for, for example which joint to jog on an unhomed
+gantry or lathe.
+
+```protobuf
+rpc GetMachineConfig(GetMachineConfigRequest) returns (MachineConfig)
+```
+
+**Request:** `GetMachineConfigRequest` (empty)
+
+**Response:** `MachineConfig`
+
+| Field | Type | Source | Description |
+|-------|------|--------|-------------|
+| `ini_filename` | string | status | INI file LinuxCNC was started with |
+| `ini_readable` | bool | | False if the server could not read that file |
+| `machine_name` | string | INI | `[EMC]MACHINE` |
+| `kinematics` | string | INI | `[KINS]KINEMATICS` in full, e.g. `trivkins coordinates=XYYZ kinstype=BOTH` |
+| `kinematics_module` | string | INI | Its first word, e.g. `trivkins` |
+| `kinematics_type` | KinematicsType | status | Identity, forward only, inverse only or both |
+| `coordinates` | string | INI | `[TRAJ]COORDINATES` without spaces, upper case |
+| `axis_mask` | int32 | status | Bit 0 = X … bit 8 = W |
+| `joint_count`, `spindle_count` | int32 | status | |
+| `joint_axis_mapping_known` | bool | | True if the server could work out which axis each joint drives (see below) |
+| `linear_units`, `angular_units` | double | status | Machine units per mm, and per degree |
+| `linear_units_name` | string | status | `mm`, `inch` or `cm`; empty for anything else |
+| `angular_units_name` | string | status | `degree`, `radian` or `grad`; empty for anything else |
+| `max_linear_velocity`, `default_linear_velocity` | double | INI | `[TRAJ]`, machine units per second |
+| `max_angular_velocity`, `default_angular_velocity` | double | INI | `[TRAJ]` |
+| `lathe`, `back_tool_lathe` | bool | INI | `[DISPLAY]LATHE`, `[DISPLAY]BACK_TOOL_LATHE` |
+| `max_feed_override` | double | INI | `[DISPLAY]MAX_FEED_OVERRIDE` (1.2 means 120%) |
+| `min_spindle_override`, `max_spindle_override` | double | INI | `[DISPLAY]` |
+| `nc_files_directory` | string | server | Directory the file RPCs and `program open` work in |
+| `joints` | repeated JointConfig | | One per joint |
+| `axes` | repeated AxisConfig | | One per axis in `axis_mask` |
+
+`JointConfig`:
+
+| Field | Type | Source | Description |
+|-------|------|--------|-------------|
+| `joint_number` | int32 | | |
+| `joint_type` | JointType | status | Linear or angular |
+| `axis_letter` | string | INI | Axis this joint drives; empty if the mapping is not known |
+| `min_limit`, `max_limit` | double | status | Soft limits, machine units |
+| `max_velocity`, `max_acceleration` | double | INI | `[JOINT_n]` |
+| `home_sequence` | optional int32 | INI | `[JOINT_n]HOME_SEQUENCE`; unset if the INI has none |
+| `units` | double | status | Joint units per mm or per degree |
+
+`AxisConfig`:
+
+| Field | Type | Source | Description |
+|-------|------|--------|-------------|
+| `axis_number` | int32 | | 0 = X … 8 = W |
+| `letter` | string | | `X`, `Y`, … |
+| `min_limit`, `max_limit` | double | status | Soft limits, machine units |
+| `max_velocity`, `max_acceleration` | double | INI | `[AXIS_<letter>]` |
+| `joints` | repeated int32 | INI | Joints that drive this axis; empty if the mapping is not known |
+
+Notes:
+
+- **Joint-to-axis mapping.** With `trivkins`, joint N drives the Nth letter of
+  the `coordinates=` parameter, or of `XYZABCUVW` when there is none. So a
+  lathe with `trivkins coordinates=XZ` has joint 1 on Z, and a gantry with
+  `coordinates=XYYZ` has joints 1 and 2 on Y. For every other kinematics
+  module (scara, delta, 5-axis and so on) a joint does not correspond to one
+  axis: `joint_axis_mapping_known` is false, and `axis_letter` and `joints`
+  are empty.
+- **INI values are read on every call** from the file named in status. They
+  are the configured values: a limit changed at run time with `set_limit`
+  shows in the status-based limits, but a velocity changed in HAL does not
+  show anywhere here.
+- **A value missing from the INI is 0** (or empty, or unset for
+  `home_sequence`). If the server cannot read the INI file at all,
+  `ini_readable` is false, the INI-based fields are empty and the
+  status-based ones are still filled.
+- **An INI value the response cannot carry is treated as missing**, with a
+  warning in the server log: a number that is not finite (`nan`, `inf`, or
+  one that overflows such as `1e999`) is reported as 0, and an integer
+  outside the int32 range (`home_sequence`) is left unset.
+- Velocities are in machine units (see `linear_units_name`) per second and
+  accelerations in machine units per second squared, as written in the INI.
+
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `UNAVAILABLE` | LinuxCNC could not be read |
+| `INTERNAL` | The server's NC files directory could not be resolved (a symbolic link loop). The message names the error |
+
+**Example (Python):**
+
+```python
+config = stub.GetMachineConfig(linuxcnc_pb2.GetMachineConfigRequest())
+print(f"{config.machine_name}: {config.kinematics} in {config.linear_units_name}")
+for joint in config.joints:
+    print(f"joint {joint.joint_number} -> {joint.axis_letter or '?'} "
+          f"[{joint.min_limit}, {joint.max_limit}]")
+
+# Find the joints to jog for the Y axis on an unhomed machine
+y_joints = [j.joint_number for j in config.joints if j.axis_letter == "Y"]
 ```
 
 ---

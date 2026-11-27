@@ -88,6 +88,11 @@ class LinuxCNCServiceStub(object):
                 request_serializer=linuxcnc__pb2.ResolveFileRequest.SerializeToString,
                 response_deserializer=linuxcnc__pb2.ResolveFileResponse.FromString,
                 _registered_method=True)
+        self.GetMachineConfig = channel.unary_unary(
+                '/linuxcnc.LinuxCNCService/GetMachineConfig',
+                request_serializer=linuxcnc__pb2.GetMachineConfigRequest.SerializeToString,
+                response_deserializer=linuxcnc__pb2.MachineConfig.FromString,
+                _registered_method=True)
 
 
 class LinuxCNCServiceServicer(object):
@@ -168,6 +173,14 @@ class LinuxCNCServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetMachineConfig(self, request, context):
+        """Get the machine's static configuration: kinematics, joint-to-axis
+        mapping, limits, velocities and units
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LinuxCNCServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -220,6 +233,11 @@ def add_LinuxCNCServiceServicer_to_server(servicer, server):
                     servicer.ResolveFile,
                     request_deserializer=linuxcnc__pb2.ResolveFileRequest.FromString,
                     response_serializer=linuxcnc__pb2.ResolveFileResponse.SerializeToString,
+            ),
+            'GetMachineConfig': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetMachineConfig,
+                    request_deserializer=linuxcnc__pb2.GetMachineConfigRequest.FromString,
+                    response_serializer=linuxcnc__pb2.MachineConfig.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -496,6 +514,33 @@ class LinuxCNCService(object):
             '/linuxcnc.LinuxCNCService/ResolveFile',
             linuxcnc__pb2.ResolveFileRequest.SerializeToString,
             linuxcnc__pb2.ResolveFileResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetMachineConfig(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/linuxcnc.LinuxCNCService/GetMachineConfig',
+            linuxcnc__pb2.GetMachineConfigRequest.SerializeToString,
+            linuxcnc__pb2.MachineConfig.FromString,
             options,
             channel_credentials,
             insecure,

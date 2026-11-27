@@ -19,16 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LinuxCNCService_GetStatus_FullMethodName    = "/linuxcnc.LinuxCNCService/GetStatus"
-	LinuxCNCService_SendCommand_FullMethodName  = "/linuxcnc.LinuxCNCService/SendCommand"
-	LinuxCNCService_WaitComplete_FullMethodName = "/linuxcnc.LinuxCNCService/WaitComplete"
-	LinuxCNCService_StreamStatus_FullMethodName = "/linuxcnc.LinuxCNCService/StreamStatus"
-	LinuxCNCService_StreamErrors_FullMethodName = "/linuxcnc.LinuxCNCService/StreamErrors"
-	LinuxCNCService_UploadFile_FullMethodName   = "/linuxcnc.LinuxCNCService/UploadFile"
-	LinuxCNCService_ListFiles_FullMethodName    = "/linuxcnc.LinuxCNCService/ListFiles"
-	LinuxCNCService_DeleteFile_FullMethodName   = "/linuxcnc.LinuxCNCService/DeleteFile"
-	LinuxCNCService_ReadFile_FullMethodName     = "/linuxcnc.LinuxCNCService/ReadFile"
-	LinuxCNCService_ResolveFile_FullMethodName  = "/linuxcnc.LinuxCNCService/ResolveFile"
+	LinuxCNCService_GetStatus_FullMethodName        = "/linuxcnc.LinuxCNCService/GetStatus"
+	LinuxCNCService_SendCommand_FullMethodName      = "/linuxcnc.LinuxCNCService/SendCommand"
+	LinuxCNCService_WaitComplete_FullMethodName     = "/linuxcnc.LinuxCNCService/WaitComplete"
+	LinuxCNCService_StreamStatus_FullMethodName     = "/linuxcnc.LinuxCNCService/StreamStatus"
+	LinuxCNCService_StreamErrors_FullMethodName     = "/linuxcnc.LinuxCNCService/StreamErrors"
+	LinuxCNCService_UploadFile_FullMethodName       = "/linuxcnc.LinuxCNCService/UploadFile"
+	LinuxCNCService_ListFiles_FullMethodName        = "/linuxcnc.LinuxCNCService/ListFiles"
+	LinuxCNCService_DeleteFile_FullMethodName       = "/linuxcnc.LinuxCNCService/DeleteFile"
+	LinuxCNCService_ReadFile_FullMethodName         = "/linuxcnc.LinuxCNCService/ReadFile"
+	LinuxCNCService_ResolveFile_FullMethodName      = "/linuxcnc.LinuxCNCService/ResolveFile"
+	LinuxCNCService_GetMachineConfig_FullMethodName = "/linuxcnc.LinuxCNCService/GetMachineConfig"
 )
 
 // LinuxCNCServiceClient is the client API for LinuxCNCService service.
@@ -56,6 +57,9 @@ type LinuxCNCServiceClient interface {
 	// Resolve a name in the nc_files directory to its canonical path and say
 	// whether it is the program LinuxCNC currently has loaded
 	ResolveFile(ctx context.Context, in *ResolveFileRequest, opts ...grpc.CallOption) (*ResolveFileResponse, error)
+	// Get the machine's static configuration: kinematics, joint-to-axis
+	// mapping, limits, velocities and units
+	GetMachineConfig(ctx context.Context, in *GetMachineConfigRequest, opts ...grpc.CallOption) (*MachineConfig, error)
 }
 
 type linuxCNCServiceClient struct {
@@ -184,6 +188,16 @@ func (c *linuxCNCServiceClient) ResolveFile(ctx context.Context, in *ResolveFile
 	return out, nil
 }
 
+func (c *linuxCNCServiceClient) GetMachineConfig(ctx context.Context, in *GetMachineConfigRequest, opts ...grpc.CallOption) (*MachineConfig, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MachineConfig)
+	err := c.cc.Invoke(ctx, LinuxCNCService_GetMachineConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LinuxCNCServiceServer is the server API for LinuxCNCService service.
 // All implementations must embed UnimplementedLinuxCNCServiceServer
 // for forward compatibility.
@@ -209,6 +223,9 @@ type LinuxCNCServiceServer interface {
 	// Resolve a name in the nc_files directory to its canonical path and say
 	// whether it is the program LinuxCNC currently has loaded
 	ResolveFile(context.Context, *ResolveFileRequest) (*ResolveFileResponse, error)
+	// Get the machine's static configuration: kinematics, joint-to-axis
+	// mapping, limits, velocities and units
+	GetMachineConfig(context.Context, *GetMachineConfigRequest) (*MachineConfig, error)
 	mustEmbedUnimplementedLinuxCNCServiceServer()
 }
 
@@ -248,6 +265,9 @@ func (UnimplementedLinuxCNCServiceServer) ReadFile(context.Context, *ReadFileReq
 }
 func (UnimplementedLinuxCNCServiceServer) ResolveFile(context.Context, *ResolveFileRequest) (*ResolveFileResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResolveFile not implemented")
+}
+func (UnimplementedLinuxCNCServiceServer) GetMachineConfig(context.Context, *GetMachineConfigRequest) (*MachineConfig, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetMachineConfig not implemented")
 }
 func (UnimplementedLinuxCNCServiceServer) mustEmbedUnimplementedLinuxCNCServiceServer() {}
 func (UnimplementedLinuxCNCServiceServer) testEmbeddedByValue()                         {}
@@ -436,6 +456,24 @@ func _LinuxCNCService_ResolveFile_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LinuxCNCService_GetMachineConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMachineConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LinuxCNCServiceServer).GetMachineConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LinuxCNCService_GetMachineConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LinuxCNCServiceServer).GetMachineConfig(ctx, req.(*GetMachineConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LinuxCNCService_ServiceDesc is the grpc.ServiceDesc for LinuxCNCService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -474,6 +512,10 @@ var LinuxCNCService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveFile",
 			Handler:    _LinuxCNCService_ResolveFile_Handler,
+		},
+		{
+			MethodName: "GetMachineConfig",
+			Handler:    _LinuxCNCService_GetMachineConfig_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

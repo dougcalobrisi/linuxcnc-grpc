@@ -1171,6 +1171,10 @@ class TestSymlinkLoopOutsideTheName:
                 lambda linuxcnc_pb2: linuxcnc_pb2.ResolveFileRequest(filename="part.ngc"),
             ),
             ("ListFiles", lambda linuxcnc_pb2: linuxcnc_pb2.ListFilesRequest()),
+            (
+                "GetMachineConfig",
+                lambda linuxcnc_pb2: linuxcnc_pb2.GetMachineConfigRequest(),
+            ),
         ],
     )
     def test_nc_files_directory_in_a_loop_is_internal_when_resolve_does_not_raise(

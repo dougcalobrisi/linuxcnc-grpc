@@ -757,3 +757,31 @@ func TestClientResolveFile(t *testing.T) {
 		t.Errorf("path %q should equal loaded program %q", resolved.Path, resolved.LoadedProgram)
 	}
 }
+
+func TestClientGetMachineConfig(t *testing.T) {
+	client, err := NewClient(serverAddr)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	config, err := client.GetMachineConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetMachineConfig failed: %v", err)
+	}
+	if !config.JointAxisMappingKnown {
+		t.Errorf("expected the joint-to-axis mapping to be known")
+	}
+	if len(config.Joints) != 3 || len(config.Axes) != 3 {
+		t.Fatalf("expected 3 joints and 3 axes, got %d and %d", len(config.Joints), len(config.Axes))
+	}
+	if config.Joints[1].AxisLetter != "Y" {
+		t.Errorf("expected joint 1 to drive Y, got %q", config.Joints[1].AxisLetter)
+	}
+	if config.LinearUnitsName != "mm" {
+		t.Errorf("expected mm, got %q", config.LinearUnitsName)
+	}
+}

@@ -344,6 +344,17 @@ class TestLinuxCNCServiceIntegration:
         )
         assert not resolved.exists
 
+    def test_get_machine_config(self, linuxcnc_client):
+        """GetMachineConfig returns the joint-to-axis mapping and units."""
+        config = linuxcnc_client.GetMachineConfig(linuxcnc_pb2.GetMachineConfigRequest())
+
+        assert config.kinematics_module == "trivkins"
+        assert config.joint_axis_mapping_known
+        assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Z"]
+        assert [list(axis.joints) for axis in config.axes] == [[0], [1], [2]]
+        assert config.linear_units_name == "mm"
+        assert config.joints[0].HasField("home_sequence")
+
     def test_wait_complete(self, linuxcnc_client):
         """Test WaitComplete returns immediately in mock."""
         request = linuxcnc_pb2.WaitCompleteRequest(serial=50, timeout=5.0)

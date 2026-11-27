@@ -307,6 +307,55 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             interp_state=linuxcnc_pb2.INTERP_IDLE,
         )
 
+    def GetMachineConfig(self, request, context):
+        """Return a fixed three-axis trivkins mill in mm."""
+        axis_letters = "XYZ"
+        return linuxcnc_pb2.MachineConfig(
+            ini_filename="/mock/configs/mock.ini",
+            ini_readable=True,
+            machine_name="MockMachine",
+            kinematics="trivkins coordinates=XYZ",
+            kinematics_module="trivkins",
+            kinematics_type=linuxcnc_pb2.KINEMATICS_IDENTITY,
+            coordinates=axis_letters,
+            axis_mask=7,
+            joint_count=3,
+            spindle_count=1,
+            joint_axis_mapping_known=True,
+            linear_units=1.0,
+            angular_units=1.0,
+            linear_units_name="mm",
+            angular_units_name="degree",
+            max_linear_velocity=100.0,
+            nc_files_directory=MOCK_NC_FILES_DIR,
+            joints=[
+                linuxcnc_pb2.JointConfig(
+                    joint_number=joint_number,
+                    joint_type=linuxcnc_pb2.JOINT_LINEAR,
+                    axis_letter=axis_letter,
+                    min_limit=-100.0,
+                    max_limit=100.0,
+                    max_velocity=100.0,
+                    max_acceleration=1000.0,
+                    home_sequence=0,
+                    units=1.0,
+                )
+                for joint_number, axis_letter in enumerate(axis_letters)
+            ],
+            axes=[
+                linuxcnc_pb2.AxisConfig(
+                    axis_number=axis_number,
+                    letter=axis_letter,
+                    min_limit=-100.0,
+                    max_limit=100.0,
+                    max_velocity=100.0,
+                    max_acceleration=1000.0,
+                    joints=[axis_number],
+                )
+                for axis_number, axis_letter in enumerate(axis_letters)
+            ],
+        )
+
     def _build_status(self):
         """Build a complete mock status response."""
         # Use milliseconds for timestamp (nanoseconds exceeds JavaScript's MAX_SAFE_INTEGER)

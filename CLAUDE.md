@@ -15,7 +15,11 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   └── hal.proto
 ├── src/linuxcnc_grpc/         # Python package (PyPI: linuxcnc-grpc)
 │   ├── _generated/            # Re-exports from linuxcnc_pb (backwards compatibility)
-│   └── *.py                   # Server implementation
+│   ├── server.py              # CLI, create_server, health wiring
+│   ├── linuxcnc_service.py    # LinuxCNCService RPCs
+│   ├── linuxcnc_mapper.py     # linuxcnc.stat() -> LinuxCNCStatus
+│   ├── machine_config.py      # GetMachineConfig builder (status + INI)
+│   └── hal_service.py, hal_mapper.py  # HalService
 ├── packages/
 │   ├── go/                    # Generated Go code (*.pb.go, package pb)
 │   ├── python/linuxcnc_pb/    # Python generated protobuf code
@@ -41,6 +45,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── test_*_service.py      # Unit tests for gRPC services
 │   ├── test_wait_for_linuxcnc.py  # scripts/wait-for-linuxcnc.py
 │   ├── test_file_read_resolve.py  # ReadFile, ResolveFile
+│   ├── test_machine_config.py # GetMachineConfig
 │   ├── mock_server.py         # Mock gRPC server for integration tests
 │   └── conftest.py            # Shared fixtures
 ├── docs/                      # Hugo documentation site
@@ -269,7 +274,7 @@ and so consumes messages from the single NML error queue, taking them away from 
 - `_validate_joint_index(index, is_joint)` checks bounds against `stat.joint`/`stat.axis`; index -1 is only valid for joint operations (home/unhome all).
 - `_validate_spindle_index(index)` checks bounds against `stat.spindle`.
 - `_validate_nc_path(filename)` resolves paths relative to the NC files directory and rejects path traversal, null bytes, empty filenames and symlink loops (all as `ValueError`, so `INVALID_ARGUMENT`). Used by both `_handle_program_cmd` and the file management RPCs. A loop is caught two ways because Python versions differ: `Path.resolve()` raises `RuntimeError` up to 3.12, and from 3.13 returns a path that still contains the link, so the function also calls `os.stat` and checks for `ELOOP`.
-- `_resolved_nc_files_dir()` resolves the directory itself for ListFiles and ResolveFile and raises `OSError(ELOOP)` for a loop (or a link chain longer than the kernel follows) on every Python version: it turns the `RuntimeError` of Python <= 3.12 into that error, and also calls `os.stat` on the directory, because from 3.13 `resolve()` does not raise. Those RPCs report it as `INTERNAL`. ResolveFile calls it before `_validate_nc_path`, so a loop in the directory is not blamed on the file name. Upload/Read/Delete resolve the directory inside `_validate_nc_path`, where a directory loop is still `INVALID_ARGUMENT` naming the file. Left that way to keep `_validate_nc_path` raising only `ValueError`.
+- `_resolved_nc_files_dir()` resolves the directory itself for ListFiles, ResolveFile and GetMachineConfig and raises `OSError(ELOOP)` for a loop (or a link chain longer than the kernel follows) on every Python version: it turns the `RuntimeError` of Python <= 3.12 into that error, and also calls `os.stat` on the directory, because from 3.13 `resolve()` does not raise. Those RPCs report it as `INTERNAL`. ResolveFile calls it before `_validate_nc_path`, so a loop in the directory is not blamed on the file name. Upload/Read/Delete resolve the directory inside `_validate_nc_path`, where a directory loop is still `INVALID_ARGUMENT` naming the file. Left that way to keep `_validate_nc_path` raising only `ValueError`.
 - MDI commands reject empty strings, null bytes and commands over `MAX_MDI_COMMAND_LENGTH` (10000 characters). The full command is logged at INFO after it is sent (and its `repr` at DEBUG on arrival).
 
 **File Management RPCs**: `UploadFile`, `ListFiles`, `DeleteFile`, `ReadFile` and `ResolveFile` provide remote file
@@ -314,6 +319,24 @@ What happens if the final path component is swapped for a symlink after validati
 replaces the link, link refuses it); `DeleteFile`'s `unlink` removes the link, not its
 target; `ListFiles` follows a directory swapped for a link. None of them is protected
 against a hostile local user changing ancestor directories.
+
+**GetMachineConfig**: `machine_config.py` builds `MachineConfig` from a polled `stat` plus an
+INI lookup (`linuxcnc.ini(stat.ini_filename).find`, opened on every call, inside the lock).
+- Status supplies limits, units, `axis_mask`, counts and `kinematics_type`; the INI supplies
+  kinematics, coordinates, velocities, accelerations, home sequences and display hints.
+- `stat.joint` always has 16 entries; only the first `stat.joints` are real, and only those
+  are reported.
+- Joint-to-axis mapping (`joint_axis_letters`) is only derived for `trivkins`: joint N drives
+  letter N of `coordinates=` (default `XYZABCUVW`), letters may repeat (gantry). Any other
+  module gives `joint_axis_mapping_known = false`. Do not guess a mapping for other kinematics.
+- A missing INI value is 0/empty (`home_sequence` is `optional`, since 0 is a real sequence).
+  An INI file that can't be opened is not an error: `ini_readable = false`.
+- INI values the proto cannot carry are treated like unparsable ones, with a warning in the
+  log: `_ini_int` returns `None` (field left unset) for an integer outside int32, which would
+  otherwise raise when assigned; `_ini_float` returns 0.0 for anything not finite (`nan`,
+  `inf`, `1e999`, all of which `float()` accepts).
+- Unit names are derived from `stat.linear_units`/`angular_units`, not from the INI strings
+  (which may be `inch`, `mm`, `metric` or a number).
 
 **ReadFile**: returns `bytes` (not `string`, so chunk boundaries can split UTF-8 and non-UTF-8
 files still read). One response carries at most `MAX_READ_CHUNK_BYTES` (1 MiB), which keeps it

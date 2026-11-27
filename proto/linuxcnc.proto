@@ -676,6 +676,10 @@ service LinuxCNCService {
   // Resolve a name in the nc_files directory to its canonical path and say
   // whether it is the program LinuxCNC currently has loaded
   rpc ResolveFile(ResolveFileRequest) returns (ResolveFileResponse);
+
+  // Get the machine's static configuration: kinematics, joint-to-axis
+  // mapping, limits, velocities and units
+  rpc GetMachineConfig(GetMachineConfigRequest) returns (MachineConfig);
 }
 
 message GetStatusRequest {
@@ -783,4 +787,84 @@ message ResolveFileResponse {
   bool is_loaded_program = 5;           // True if this is the file LinuxCNC has loaded (TaskStatus.file), by canonical path or by being the same file on disk
   string loaded_program = 6;            // Canonical path of the loaded program, empty if none
   InterpState interp_state = 7;         // Interpreter state when checked; anything but INTERP_IDLE means the loaded program is in use
+}
+
+// ============================================================================
+// MACHINE CONFIGURATION MESSAGES
+// ============================================================================
+
+message GetMachineConfigRequest {
+  // Empty - returns the full configuration
+}
+
+// Configuration of one joint.
+// Limits come from live status; velocity, acceleration and home sequence come
+// from the [JOINT_n] section of the INI file.
+message JointConfig {
+  int32 joint_number = 1;
+  JointType joint_type = 2;             // Linear or angular
+  string axis_letter = 3;               // Axis this joint drives ("X", "Y", ...); empty if the mapping is not known
+  double min_limit = 4;                 // Soft limit, machine units
+  double max_limit = 5;                 // Soft limit, machine units
+  double max_velocity = 6;              // [JOINT_n]MAX_VELOCITY, machine units per second; 0 if not set or the INI is unreadable
+  double max_acceleration = 7;          // [JOINT_n]MAX_ACCELERATION, machine units per second squared; 0 if not set
+  optional int32 home_sequence = 8;     // [JOINT_n]HOME_SEQUENCE; unset if the INI has none
+  double units = 9;                     // Joint units per mm (linear) or per degree (angular)
+}
+
+// Configuration of one axis in the machine's axis mask.
+// Limits come from live status; velocity and acceleration come from the
+// [AXIS_<letter>] section of the INI file.
+message AxisConfig {
+  int32 axis_number = 1;                // 0=X, 1=Y, 2=Z, 3=A, 4=B, 5=C, 6=U, 7=V, 8=W
+  string letter = 2;                    // "X", "Y", ...
+  double min_limit = 3;                 // Soft limit, machine units
+  double max_limit = 4;                 // Soft limit, machine units
+  double max_velocity = 5;              // [AXIS_<letter>]MAX_VELOCITY; 0 if not set or the INI is unreadable
+  double max_acceleration = 6;          // [AXIS_<letter>]MAX_ACCELERATION; 0 if not set
+  repeated int32 joints = 7;            // Joints that drive this axis (two for a gantry); empty if the mapping is not known
+}
+
+message MachineConfig {
+  string ini_filename = 1;              // INI file LinuxCNC was started with
+  bool ini_readable = 2;                // False if the server could not read that file; INI-based fields are then empty or 0
+  string machine_name = 3;              // [EMC]MACHINE
+
+  // Kinematics
+  string kinematics = 4;                // [KINS]KINEMATICS in full, e.g. "trivkins coordinates=XYYZ kinstype=BOTH"
+  string kinematics_module = 5;         // Its first word, e.g. "trivkins"
+  KinematicsType kinematics_type = 6;   // From status
+  string coordinates = 7;               // [TRAJ]COORDINATES without spaces, upper case, e.g. "XYZ" or "XYYZ"
+  int32 axis_mask = 8;                  // Bit 0=X ... bit 8=W, from status
+  int32 joint_count = 9;
+  int32 spindle_count = 10;
+  // True when the server could work out which axis each joint drives. That
+  // is the case for trivkins, where joints follow the coordinates= letters in
+  // order. For other kinematics modules there is no fixed joint-to-axis
+  // relation, so JointConfig.axis_letter and AxisConfig.joints stay empty.
+  bool joint_axis_mapping_known = 11;
+
+  // Units
+  double linear_units = 12;             // Machine units per mm (1.0 for mm, about 0.03937 for inch), from status
+  double angular_units = 13;            // Machine units per degree, from status
+  string linear_units_name = 14;        // "mm", "inch" or "cm", derived from linear_units; empty if it is none of these
+  string angular_units_name = 15;       // "degree", "radian" or "grad", derived from angular_units; empty if none of these
+
+  // Velocities, in machine units per second; 0 if not set in the INI
+  double max_linear_velocity = 16;      // [TRAJ]MAX_LINEAR_VELOCITY
+  double default_linear_velocity = 17;  // [TRAJ]DEFAULT_LINEAR_VELOCITY
+  double max_angular_velocity = 18;     // [TRAJ]MAX_ANGULAR_VELOCITY
+  double default_angular_velocity = 19; // [TRAJ]DEFAULT_ANGULAR_VELOCITY
+
+  // Display hints from the [DISPLAY] section
+  bool lathe = 20;                      // [DISPLAY]LATHE = 1
+  bool back_tool_lathe = 21;            // [DISPLAY]BACK_TOOL_LATHE = 1
+  double max_feed_override = 22;        // [DISPLAY]MAX_FEED_OVERRIDE (1.2 = 120%); 0 if not set
+  double min_spindle_override = 23;     // [DISPLAY]MIN_SPINDLE_OVERRIDE; 0 if not set
+  double max_spindle_override = 24;     // [DISPLAY]MAX_SPINDLE_OVERRIDE; 0 if not set
+
+  string nc_files_directory = 25;       // Directory the server's file RPCs and program open work in
+
+  repeated JointConfig joints = 30;     // One per joint
+  repeated AxisConfig axes = 31;        // One per axis in axis_mask
 }

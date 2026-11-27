@@ -290,6 +290,20 @@ for pin in response.pins:
     print(f"{pin.name}: {pin.value}")
 ```
 
+## Machine Configuration
+
+`GetMachineConfig` tells a client what kind of machine it is talking to:
+units, limits, and which joint drives which axis.
+
+```python
+config = stub.GetMachineConfig(linuxcnc_pb2.GetMachineConfigRequest())
+print(config.machine_name, config.linear_units_name)
+for joint in config.joints:
+    print(joint.joint_number, joint.axis_letter, joint.min_limit, joint.max_limit)
+```
+
+See [GetMachineConfig](api-reference.md#getmachineconfig).
+
 ## Files
 
 `UploadFile`, `ListFiles`, `ReadFile` and `DeleteFile` manage G-code files in

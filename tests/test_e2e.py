@@ -572,6 +572,49 @@ class TestE2EFiles:
             delete_test_file(linuxcnc_stub, other_name)
 
 
+@pytest.mark.e2e
+class TestE2EMachineConfig:
+    """Verify GetMachineConfig against the sim's real INI file and status."""
+
+    def test_machine_config_matches_sim_axis_config(self, linuxcnc_stub):
+        config = linuxcnc_stub.GetMachineConfig(linuxcnc_pb2.GetMachineConfigRequest())
+        status = linuxcnc_stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
+
+        assert config.ini_readable
+        assert config.ini_filename == status.task.ini_filename
+        assert config.kinematics_module == "trivkins"
+        assert config.kinematics_type == status.trajectory.kinematics_type
+        assert config.coordinates == "XYZ"
+        assert config.axis_mask == status.trajectory.axis_mask == 7
+        assert config.joint_count == status.trajectory.joints == 3
+        assert config.spindle_count >= 1
+
+        # The sim axis config is in inches.
+        assert config.linear_units == status.trajectory.linear_units
+        assert config.linear_units_name == "inch"
+        assert config.angular_units_name == "degree"
+        assert config.max_linear_velocity > 0
+
+        assert config.joint_axis_mapping_known
+        assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Z"]
+        assert [axis.letter for axis in config.axes] == ["X", "Y", "Z"]
+        assert [list(axis.joints) for axis in config.axes] == [[0], [1], [2]]
+
+        for joint_config, joint_status in zip(config.joints, status.joints):
+            assert joint_config.joint_type == linuxcnc_pb2.JOINT_LINEAR
+            assert joint_config.min_limit == joint_status.min_position_limit
+            assert joint_config.max_limit == joint_status.max_position_limit
+            assert joint_config.max_velocity > 0
+            assert joint_config.max_acceleration > 0
+            assert joint_config.HasField("home_sequence")
+
+        for axis_config in config.axes:
+            assert axis_config.max_limit > axis_config.min_limit
+            assert axis_config.max_velocity > 0
+
+        assert config.nc_files_directory
+
+
 # ---------------------------------------------------------------------------
 # WaitComplete Tests
 # ---------------------------------------------------------------------------
