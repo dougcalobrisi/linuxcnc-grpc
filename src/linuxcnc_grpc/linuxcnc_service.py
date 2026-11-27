@@ -38,6 +38,16 @@ MAX_WAIT_FOR_LINUXCNC_INTERVAL = 5.0  # seconds
 # _linuxcnc_is_reachable for why). This is that process's whole program.
 REACHABILITY_PROBE_CODE = "import linuxcnc; linuxcnc.stat().poll()"
 REACHABILITY_PROBE_TIMEOUT = 10.0  # seconds
+# How many times the waiting thread tries to connect after a check found
+# LinuxCNC running. One failed attempt normally leaves the linuxcnc module
+# unable to connect for the rest of the process; the further tries are for a
+# failure that was something else.
+MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE = 3
+# Longest close() waits for the servicer lock, which a command that LinuxCNC
+# is not answering can hold for seconds.
+CLOSE_LOCK_TIMEOUT = 1.0  # seconds
+# Longest close() waits for the waiting thread to end.
+CLOSE_JOIN_TIMEOUT = 2.0  # seconds
 
 LINUXCNC_UNAVAILABLE_MESSAGE = (
     "LinuxCNC is not running, or the server has not connected to it yet"
@@ -138,6 +148,11 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     RPCs that need LinuxCNC then abort with UNAVAILABLE until the waiting
     thread (start_waiting_for_linuxcnc) has connected. Once connected, the
     servicer does not watch whether LinuxCNC stays up.
+
+    If the waiting thread's own connection attempts fail although LinuxCNC
+    is running, this process cannot connect any more (see
+    _linuxcnc_is_reachable). The thread then gives up and reports it through
+    on_unrecoverable; the servicer stays disconnected.
     """
 
     def __init__(
@@ -146,6 +161,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         error_channel_mode: str = ERROR_CHANNEL_ON_DEMAND,
         require_linuxcnc: bool = True,
         on_connection_change: Callable[[bool], None] | None = None,
+        on_unrecoverable: Callable[[str], None] | None = None,
     ):
         """
         Initialize the service with real LinuxCNC connection.
@@ -161,6 +177,11 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 connecting to start_waiting_for_linuxcnc().
             on_connection_change: Called with True when the servicer
                 connects to LinuxCNC, from the thread that connected.
+            on_unrecoverable: Called once, with a description, when the
+                waiting thread gives up because this process can no longer
+                connect to LinuxCNC and has to be restarted. Called from
+                the waiting thread without the servicer lock, and not after
+                close(). The condition is logged as an error either way.
 
         Raises:
             Exception: If require_linuxcnc is True and LinuxCNC is not
@@ -171,6 +192,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         self._connected = False
         self._nc_files_dir = nc_files_dir
         self._on_connection_change = on_connection_change
+        self._on_unrecoverable = on_unrecoverable
         # Channels to LinuxCNC; None until the first successful _connect().
         self._stat = None
         self._command = None
@@ -361,8 +383,10 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         (INITIAL_RECONNECT_INTERVAL doubling up to
         MAX_WAIT_FOR_LINUXCNC_INTERVAL, for as long as it takes), connects
         when it is there, and then ends. It does not watch the connection
-        afterwards. Does nothing if LinuxCNC is already connected or the
-        thread was already started.
+        afterwards. It also ends, after reporting through on_unrecoverable,
+        once MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE connection attempts have
+        failed. Does nothing if LinuxCNC is already connected or the thread
+        was already started.
         """
         with self._lock:
             if self._connected or self._waiting_thread is not None:
@@ -381,6 +405,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         """Waiting thread: check until LinuxCNC is running, connect, end."""
         retry_interval = INITIAL_RECONNECT_INTERVAL
         seconds_until_next_check = 0.0
+        failed_connect_attempts = 0
         while not self._stop_requested.wait(seconds_until_next_check):
             seconds_until_next_check = retry_interval
             retry_interval = min(retry_interval * 2, MAX_WAIT_FOR_LINUXCNC_INTERVAL)
@@ -394,13 +419,46 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 if self._connect_if_unchanged_since(snapshot):
                     logger.info(f"Connected to LinuxCNC v{self._version}")
             except Exception as e:
-                # LinuxCNC went away between the check and the connect.
-                # That failed attempt may have left the linuxcnc module
-                # unusable in this process; keep trying, but say so.
-                logger.error(
-                    f"Connecting to LinuxCNC failed although it was reachable: {e}. "
-                    "If this repeats while LinuxCNC is running, restart the server."
+                # LinuxCNC went away between the check and the connect. That
+                # failed attempt normally leaves the linuxcnc module unable
+                # to connect in this process, while the checks (made in
+                # child processes) pass again once LinuxCNC is back. Trying
+                # for ever would keep the server up and useless, so the
+                # attempts are limited.
+                failed_connect_attempts += 1
+                if failed_connect_attempts < MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE:
+                    logger.warning(
+                        f"Connecting to LinuxCNC failed although it was reachable "
+                        f"(attempt {failed_connect_attempts} of "
+                        f"{MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE}): {e}"
+                    )
+                    continue
+                self._report_unrecoverable(
+                    f"connecting to LinuxCNC failed {failed_connect_attempts} times "
+                    f"although LinuxCNC was reachable (last error: {e})"
                 )
+                return
+
+    def _report_unrecoverable(self, error_text: str) -> None:
+        """
+        Log that this process can no longer connect, and tell the listener.
+
+        Called from the waiting thread with the lock not held, so the
+        listener may take its time or stop the server. Says nothing once
+        close() has been called: a server that is stopping needs no restart.
+        """
+        if self._stop_requested.is_set():
+            return
+        logger.error(
+            f"This process can no longer connect to LinuxCNC: {error_text}. "
+            "The server stays disconnected until it is restarted."
+        )
+        if self._on_unrecoverable is None:
+            return
+        try:
+            self._on_unrecoverable(error_text)
+        except Exception as e:
+            logger.error(f"Unrecoverable-connection listener failed: {e}")
 
     def _reconnect(self, failed_connection: tuple[bool, int] | None = None) -> bool:
         """
@@ -453,7 +511,9 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     def _poll_error_channel(self):
         """Read one message from LinuxCNC's error channel, for the error broker."""
         with self._lock:
-            if not self._connected:
+            # Nothing is read once close() has been called, also by a reader
+            # that was waiting for the lock at the time.
+            if not self._connected or self._stop_requested.is_set():
                 return None
             return self._error_channel.poll()
 
@@ -482,18 +542,38 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         return mapper.map_to_proto(errors=self._recent_errors())
 
     def close(self) -> None:
-        """Stop the servicer's background threads. Call when the server shuts down."""
-        # Set under the lock: a connect checks the flag and publishes its
-        # channels in one lock hold, so none can land after this returns.
-        with self._lock:
-            self._stop_requested.set()
-            waiting_thread = self._waiting_thread
+        """
+        Stop the servicer's background threads. Call when the server shuts down.
+
+        Returns within CLOSE_LOCK_TIMEOUT plus the two thread joins (2 s
+        each) even if the servicer lock is never released, so a thread can
+        still be alive then. Normally nothing connects to LinuxCNC after
+        this has returned. The exception is a connect that was already under
+        way and held the lock for longer than CLOSE_LOCK_TIMEOUT: it can
+        still finish afterwards. No connect starts and the error channel is
+        not read after close() was called. May be called more than once.
+        """
+        # A connect checks this flag and publishes its channels in one lock
+        # hold, so from here on no new connect starts.
+        self._stop_requested.set()
+        # Passing through the lock waits out a connect that checked the flag
+        # just before. The wait is bounded: an RPC can hold the lock for
+        # seconds (a command LinuxCNC is not answering), and shutdown must
+        # not hang on that.
+        if self._lock.acquire(timeout=CLOSE_LOCK_TIMEOUT):
+            self._lock.release()
+        else:
+            logger.warning(
+                "The servicer lock was not released in time during shutdown; "
+                "going on without it"
+            )
+        waiting_thread = self._waiting_thread
         self._error_broker.stop()
         if waiting_thread is not None and waiting_thread is not threading.current_thread():
-            # Normally immediate. A reachability check in progress can hold
-            # the thread a little longer; it exits right after without
-            # connecting, so there is no need to wait that out.
-            waiting_thread.join(timeout=2.0)
+            # Normally immediate. A reachability check in progress, or the
+            # lock being held, can keep the thread longer; it exits right
+            # after without connecting, so there is no need to wait that out.
+            waiting_thread.join(timeout=CLOSE_JOIN_TIMEOUT)
 
     def _next_serial(self) -> int:
         """Get next command serial number, within 1..MAX_RESPONSE_SERIAL."""

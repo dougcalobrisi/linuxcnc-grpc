@@ -134,7 +134,9 @@ is not there, the server starts anyway and waits:
   `linuxcnc.LinuxCNCService`.
 - RPCs that need LinuxCNC (`GetStatus`, `SendCommand`, `WaitComplete`,
   `StreamStatus`, `StreamErrors`, `ResolveFile`, `GetMachineConfig`) fail with
-  `UNAVAILABLE`.
+  `UNAVAILABLE`. Two of them check something else first: `StreamErrors` on a
+  server started with `--error-channel off` fails with `FAILED_PRECONDITION`,
+  and `ResolveFile` with an invalid file name fails with `INVALID_ARGUMENT`.
 - The file RPCs (`UploadFile`, `ListFiles`, `ReadFile`, `DeleteFile`) work, so
   programs can be uploaded before LinuxCNC is up.
 - The HAL service answers, with no pins until LinuxCNC has loaded its HAL
@@ -149,6 +151,21 @@ that had been started first.
 Pass `--require-linuxcnc` to get the old behaviour: the server exits with
 status 1 if LinuxCNC is not running. Use it where something else is watching
 for that exit.
+
+**The server exits with an error if it finds it can no longer connect.** If
+LinuxCNC goes away in the moment between the server's check and its
+connection attempt, the attempt fails, and after that LinuxCNC's Python
+module cannot connect again from the same process, even once LinuxCNC is
+back. The server tries 3 times in all, then logs an error, stops and exits
+with status 1. A supervisor such as systemd with `Restart=always` starts a
+fresh process, which connects normally. Without a supervisor, start the
+server again by hand.
+
+A program that builds the server with `create_server()` instead of running
+`linuxcnc-grpc` gets the error in the log, and can pass
+`on_unrecoverable=callback` to be told: the callback is called once, from a
+background thread, with a description. The server stays up and `NOT_SERVING`
+until the program stops it; only a new process can connect.
 
 ### What happens when LinuxCNC stops
 

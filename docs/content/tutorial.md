@@ -832,7 +832,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---------|----------|
 | `UNAVAILABLE: failed to connect` | Check that the gRPC server is running and `LINUXCNC_IP:50051` is reachable (try `telnet LINUXCNC_IP 50051`) |
 | `UNAVAILABLE: LinuxCNC is not running…` | The server is up but LinuxCNC is not. Start LinuxCNC; the server connects within a few seconds |
-| `FAILED_PRECONDITION` on MDI commands | Machine must be powered on and in MDI mode first (see Step 5 examples) |
+| MDI command has no effect, or `WaitComplete` returns `RCS_ERROR` | Machine must be powered on, homed and in MDI mode first (see Step 5 examples). `SendCommand` still answers `RCS_DONE`, which only means the command was sent; LinuxCNC reports its refusal as an operator error message (`StreamErrors` or `status.errors`) |
 | `SendCommand` returns `RCS_ERROR` | Read `error_message`. Either the server rejected the command before sending it (for example a joint or spindle index out of range or an empty MDI command), or a LinuxCNC call failed. After an error from `coolant`, `set_limit`, `override_config` or `program_options`, check the status before retrying: part of the command may have been sent (see [`RCS_ERROR` from `SendCommand`](server.md#rcs_error-from-sendcommand)). This is a normal response, not a gRPC error |
 | `INVALID_ARGUMENT` | A file RPC was given a bad file name (outside the NC files directory, empty) or bad content |
 | Connection timeout | Ensure no firewall is blocking port 50051 between the two machines |

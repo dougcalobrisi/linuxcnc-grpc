@@ -2,8 +2,10 @@
 Unit tests for starting without LinuxCNC, connecting when it comes up, and health reporting.
 """
 
+import contextlib
 import importlib
 import logging
+import socket
 import sys
 import threading
 import time
@@ -418,6 +420,213 @@ class TestWaitingForLinuxCNC:
 
         assert len(connect_attempts) == 2
 
+    @staticmethod
+    def _failing_connect(mock_linuxcnc_module, connect_attempts, real_connect=None,
+                         failures_before_success=None, before_attempt=None):
+        """A stand-in for _connect that fails, optionally only the first few times."""
+        def connect():
+            connect_attempts.append(len(connect_attempts) + 1)
+            if before_attempt is not None:
+                before_attempt(len(connect_attempts))
+            succeeds = (
+                failures_before_success is not None
+                and len(connect_attempts) > failures_before_success
+            )
+            if succeeds:
+                real_connect()
+                return
+            raise mock_linuxcnc_module.error("emcStatusBuffer invalid err=3")
+        return connect
+
+    def test_gives_up_after_a_bounded_number_of_failed_connects(
+        self, make_service, linuxcnc_switch, mock_linuxcnc_module, service_module
+    ):
+        """
+        A connect that fails after a good check leaves this process unable
+        to connect, so the thread stops trying and reports it, once, without
+        holding the servicer lock.
+        """
+        linuxcnc_switch.is_running = False
+        connection_changes = []
+        reports = []
+        service_holder = []
+
+        def on_unrecoverable(error_text):
+            service = service_holder[0]
+            lock_taken_by_another_thread = []
+
+            def take_the_lock():
+                lock_was_free = service._lock.acquire(timeout=5.0)
+                if lock_was_free:
+                    service._lock.release()
+                lock_taken_by_another_thread.append(lock_was_free)
+
+            other_thread = threading.Thread(target=take_the_lock)
+            other_thread.start()
+            other_thread.join(timeout=10.0)
+            reports.append(
+                (error_text, service._lock._is_owned(), lock_taken_by_another_thread)
+            )
+
+        service = make_service(
+            require_linuxcnc=False,
+            on_connection_change=connection_changes.append,
+            on_unrecoverable=on_unrecoverable,
+        )
+        service_holder.append(service)
+        connect_attempts = []
+
+        linuxcnc_switch.is_running = True
+        with patch.object(
+            service, "_connect",
+            side_effect=self._failing_connect(mock_linuxcnc_module, connect_attempts),
+        ):
+            service.start_waiting_for_linuxcnc()
+            service._waiting_thread.join(timeout=5.0)
+
+        assert not service._waiting_thread.is_alive()
+        assert len(connect_attempts) == service_module.MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE
+        assert len(reports) == 1
+        error_text, lock_owned_by_the_reporting_thread, lock_taken_by_another_thread = reports[0]
+        assert "emcStatusBuffer invalid" in error_text
+        assert lock_owned_by_the_reporting_thread is False
+        assert lock_taken_by_another_thread == [True]
+        assert service._connected is False
+        assert connection_changes == []
+
+    def test_giving_up_without_a_listener_logs_an_error(
+        self, make_service, linuxcnc_switch, mock_linuxcnc_module, caplog
+    ):
+        linuxcnc_switch.is_running = False
+        service = make_service(require_linuxcnc=False)
+
+        linuxcnc_switch.is_running = True
+        with caplog.at_level(logging.ERROR, logger="linuxcnc_grpc.linuxcnc_service"), \
+                patch.object(
+                    service, "_connect",
+                    side_effect=self._failing_connect(mock_linuxcnc_module, []),
+                ):
+            service.start_waiting_for_linuxcnc()
+            service._waiting_thread.join(timeout=5.0)
+
+        assert not service._waiting_thread.is_alive()
+        error_messages = [
+            record.getMessage() for record in caplog.records if record.levelno == logging.ERROR
+        ]
+        assert len(error_messages) == 1
+        assert "can no longer connect to LinuxCNC" in error_messages[0]
+
+    def test_connect_that_succeeds_within_the_bound_reports_nothing(
+        self, make_service, linuxcnc_switch, mock_linuxcnc_module, service_module
+    ):
+        linuxcnc_switch.is_running = False
+        connection_changes = []
+        reports = []
+        service = make_service(
+            require_linuxcnc=False,
+            on_connection_change=connection_changes.append,
+            on_unrecoverable=reports.append,
+        )
+        connect_attempts = []
+        failures_before_success = service_module.MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE - 1
+
+        linuxcnc_switch.is_running = True
+        with patch.object(
+            service, "_connect",
+            side_effect=self._failing_connect(
+                mock_linuxcnc_module, connect_attempts, real_connect=service._connect,
+                failures_before_success=failures_before_success,
+            ),
+        ):
+            service.start_waiting_for_linuxcnc()
+            service._waiting_thread.join(timeout=5.0)
+
+        assert not service._waiting_thread.is_alive()
+        assert len(connect_attempts) == failures_before_success + 1
+        assert connection_changes == [True]
+        assert reports == []
+
+    def test_close_during_the_retries_prevents_the_report(
+        self, make_service, linuxcnc_switch, mock_linuxcnc_module, service_module
+    ):
+        """A server that is being stopped does not also ask to be restarted."""
+        linuxcnc_switch.is_running = False
+        reports = []
+        service = make_service(require_linuxcnc=False, on_unrecoverable=reports.append)
+        connect_attempts = []
+        closer = threading.Thread(target=service.close)
+
+        def close_during_the_last_attempt(attempt_number):
+            if attempt_number == service_module.MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE:
+                # close() is called from another thread while this attempt
+                # holds the lock; the attempt fails once close() has begun.
+                closer.start()
+                assert service._stop_requested.wait(5.0)
+
+        linuxcnc_switch.is_running = True
+        with patch.object(
+            service, "_connect",
+            side_effect=self._failing_connect(
+                mock_linuxcnc_module, connect_attempts,
+                before_attempt=close_during_the_last_attempt,
+            ),
+        ):
+            service.start_waiting_for_linuxcnc()
+            waiting_thread = service._waiting_thread
+            waiting_thread.join(timeout=5.0)
+            closer.join(timeout=5.0)
+
+        assert not waiting_thread.is_alive()
+        assert not closer.is_alive()
+        assert len(connect_attempts) == service_module.MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE
+        assert reports == []
+
+    def test_close_is_bounded_while_the_lock_is_held(
+        self, make_service, linuxcnc_switch, service_module
+    ):
+        """
+        close() returns although another thread holds the servicer lock (as
+        a command LinuxCNC is not answering does), and still stops any later
+        connect.
+        """
+        linuxcnc_switch.is_running = False
+        service = make_service(require_linuxcnc=False)
+        linuxcnc_switch.is_running = True
+        snapshot_before_close = service._connection_snapshot()
+        lock_is_held = threading.Event()
+        release_lock = threading.Event()
+
+        def hold_the_lock():
+            with service._lock:
+                lock_is_held.set()
+                release_lock.wait(timeout=10.0)
+
+        # The lock is re-entrant, so holder and closer must be different threads.
+        lock_holder = threading.Thread(target=hold_the_lock)
+        closer = threading.Thread(target=service.close)
+        lock_holder.start()
+        try:
+            assert lock_is_held.wait(timeout=5.0)
+            with patch.object(service_module, "CLOSE_LOCK_TIMEOUT", 0.01):
+                closer.start()
+                closer.join(timeout=5.0)
+            closed_while_the_lock_was_held = not closer.is_alive()
+        finally:
+            release_lock.set()
+            lock_holder.join(timeout=5.0)
+            closer.join(timeout=5.0)
+
+        assert closed_while_the_lock_was_held
+        assert service._connect_if_unchanged_since(snapshot_before_close) is False
+        assert service._connected is False
+        # A reader that was waiting for the lock takes no message afterwards.
+        service._connected = True
+        service._error_channel = MagicMock()
+        assert service._poll_error_channel() is None
+        service._error_channel.poll.assert_not_called()
+        # Closing again, with the lock free, is harmless.
+        service.close()
+
     def test_nothing_connects_once_close_has_returned(self, make_service, linuxcnc_switch):
         """After close(), neither the waiting thread's nor an RPC's connect path publishes channels."""
         linuxcnc_switch.is_running = False
@@ -555,6 +764,72 @@ class TestServerHealthAndOptions:
             health_pb2.HealthCheckRequest(service=service_name), timeout=5.0
         ).status
 
+    @staticmethod
+    @contextlib.contextmanager
+    def _recording_transport(server_module, events):
+        """
+        Let create_server build real gRPC servers, recording on each one the
+        port it bound and every call of its own stop(), the one create_server
+        wraps. Yields the list of servers built, which also keeps them alive.
+        """
+        real_grpc_server = server_module.grpc.server
+        servers_built = []
+
+        def recording_grpc_server(*arguments, **keyword_arguments):
+            grpc_server = real_grpc_server(*arguments, **keyword_arguments)
+            real_add_insecure_port = grpc_server.add_insecure_port
+            real_stop = grpc_server.stop
+            grpc_server.bound_ports = []
+
+            def recording_add_insecure_port(address):
+                bound_port = real_add_insecure_port(address)
+                grpc_server.bound_ports.append(bound_port)
+                return bound_port
+
+            def recording_stop(grace):
+                events.append(("transport stop", grace))
+                return real_stop(grace)
+
+            grpc_server.add_insecure_port = recording_add_insecure_port
+            grpc_server.stop = recording_stop
+            servers_built.append(grpc_server)
+            return grpc_server
+
+        with patch.object(server_module.grpc, "server", recording_grpc_server):
+            yield servers_built
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _recording_servicers(server_module):
+        """Yield the list of LinuxCNC servicers create_server builds."""
+        real_servicer_class = server_module.LinuxCNCServiceServicer
+        servicers_built = []
+
+        def recording_servicer(**servicer_arguments):
+            servicer = real_servicer_class(**servicer_arguments)
+            servicers_built.append(servicer)
+            return servicer
+
+        with patch.object(server_module, "LinuxCNCServiceServicer", recording_servicer):
+            yield servicers_built
+
+    @staticmethod
+    def _port_can_be_bound(port):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+            try:
+                probe_socket.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+        return True
+
+    @staticmethod
+    def _servicer_threads():
+        return {
+            thread for thread in threading.enumerate()
+            if thread.name in ("linuxcnc-error-reader", "linuxcnc-connection-waiter")
+            and thread.is_alive()
+        }
+
     def test_health_follows_the_linuxcnc_connection(self, server_module, linuxcnc_switch):
         """NOT_SERVING until connected, SERVING after, over a real gRPC connection."""
         from grpc_health.v1 import health_pb2
@@ -655,6 +930,142 @@ class TestServerHealthAndOptions:
             t for t in threading.enumerate()
             if t.name == "linuxcnc-error-reader" and t not in threads_before and t.is_alive()
         ] == [])
+
+    @pytest.mark.parametrize("failing_step", ["linuxcnc servicer", "hal servicer", "waiting thread"])
+    def test_failed_start_frees_the_port_and_leaves_no_thread(
+        self, server_module, linuxcnc_switch, failing_step
+    ):
+        """Whatever fails after the port was bound, create_server gives the port back."""
+        threads_before = self._servicer_threads()
+        events = []
+        servicer_class = sys.modules["linuxcnc_grpc.linuxcnc_service"].LinuxCNCServiceServicer
+        server_arguments = {"host": "127.0.0.1", "port": 0, "error_channel_mode": "always"}
+
+        with contextlib.ExitStack() as patches:
+            servers_built = patches.enter_context(
+                self._recording_transport(server_module, events)
+            )
+            if failing_step == "linuxcnc servicer":
+                linuxcnc_switch.is_running = False
+                server_arguments["require_linuxcnc"] = True
+                expected_error = "emcStatusBuffer invalid"
+            elif failing_step == "hal servicer":
+                patches.enter_context(patch.object(
+                    server_module, "HalServiceServicer",
+                    side_effect=RuntimeError("Failed to access HAL"),
+                ))
+                expected_error = "Failed to access HAL"
+            else:
+                linuxcnc_switch.is_running = False
+                patches.enter_context(patch.object(
+                    servicer_class, "start_waiting_for_linuxcnc",
+                    side_effect=RuntimeError("can't start new thread"),
+                ))
+                expected_error = "can't start new thread"
+
+            with pytest.raises(Exception, match=expected_error):
+                server_module.create_server(**server_arguments)
+
+        # The server object is still referenced here, so it is the stop and
+        # not garbage collection that freed the port.
+        (failed_server,) = servers_built
+        (bound_port,) = failed_server.bound_ports
+        assert events == [("transport stop", 0)]
+        wait_until(lambda: self._port_can_be_bound(bound_port))
+        wait_until(lambda: self._servicer_threads() <= threads_before)
+
+    def test_failed_start_never_offers_the_linuxcnc_or_hal_service(self, server_module):
+        """
+        Freeing the port starts the server for a moment. Only the health
+        service may be registered then.
+        """
+        services_registered = []
+        with patch.object(
+            server_module.linuxcnc_pb2_grpc, "add_LinuxCNCServiceServicer_to_server",
+            side_effect=lambda servicer, server: services_registered.append("linuxcnc"),
+        ), patch.object(
+            server_module.hal_pb2_grpc, "add_HalServiceServicer_to_server",
+            side_effect=lambda servicer, server: services_registered.append("hal"),
+        ), patch.object(
+            sys.modules["linuxcnc_grpc.linuxcnc_service"].LinuxCNCServiceServicer,
+            "start_waiting_for_linuxcnc", side_effect=RuntimeError("can't start new thread"),
+        ):
+            with pytest.raises(RuntimeError, match="can't start new thread"):
+                server_module.create_server(host="127.0.0.1", port=0)
+
+        assert services_registered == []
+
+    def test_stop_does_not_wait_for_the_servicer_lock(self, server_module):
+        """
+        A command that LinuxCNC is not answering holds the servicer lock for
+        seconds. Stopping the server must start the transport shutdown at
+        once and return; closing the servicer finishes when the lock is free.
+        """
+        events = []
+        lock_is_held = threading.Event()
+        release_lock = threading.Event()
+        stop_results = []
+
+        with self._recording_transport(server_module, events), \
+                self._recording_servicers(server_module) as servicers_built:
+            server = server_module.create_server(host="127.0.0.1", port=0)
+        (servicer,) = servicers_built
+        server.start()
+        error_reader = servicer._error_broker._reader_thread
+
+        def hold_the_lock():
+            with servicer._lock:
+                lock_is_held.set()
+                release_lock.wait(timeout=10.0)
+
+        # The lock is re-entrant, so holder and stopper must be different threads.
+        lock_holder = threading.Thread(target=hold_the_lock)
+        stopper = threading.Thread(target=lambda: stop_results.append(server.stop(0)))
+        lock_holder.start()
+        try:
+            assert lock_is_held.wait(timeout=5.0)
+            with patch.object(
+                sys.modules["linuxcnc_grpc.linuxcnc_service"], "CLOSE_LOCK_TIMEOUT", 0.01
+            ):
+                stopper.start()
+                stopper.join(timeout=3.0)
+            stop_returned_while_the_lock_was_held = not stopper.is_alive()
+            events_while_the_lock_was_held = list(events)
+        finally:
+            release_lock.set()
+            lock_holder.join(timeout=5.0)
+            stopper.join(timeout=10.0)
+
+        assert stop_returned_while_the_lock_was_held
+        assert events_while_the_lock_was_held == [("transport stop", 0)]
+        assert stop_results[0].wait(timeout=5.0)
+        # With the lock free again, closing completes and the threads are gone.
+        servicer.close()
+        error_reader.join(timeout=5.0)
+        assert not error_reader.is_alive()
+
+    def test_unrecoverable_connection_reaches_the_callback_given_to_create_server(
+        self, server_module, linuxcnc_switch, mock_linuxcnc_module
+    ):
+        linuxcnc_switch.is_running = False
+        reports = []
+        servicer_class = sys.modules["linuxcnc_grpc.linuxcnc_service"].LinuxCNCServiceServicer
+
+        with patch.object(
+            servicer_class, "_connect",
+            side_effect=mock_linuxcnc_module.error("emcStatusBuffer invalid err=3"),
+        ):
+            server = server_module.create_server(
+                host="127.0.0.1", port=0, on_unrecoverable=reports.append
+            )
+            server.start()
+            try:
+                linuxcnc_switch.is_running = True
+                wait_until(lambda: len(reports) == 1)
+            finally:
+                server.stop(grace=0)
+
+        assert "emcStatusBuffer invalid" in reports[0]
 
     def test_signal_handler_only_records_the_request(self, server_module):
         """
@@ -818,14 +1229,25 @@ class TestServerHealthAndOptions:
 
         fake_server.stop.assert_called_once_with(grace=5)
 
-    def test_stopping_the_server_turns_health_to_not_serving_first(self, server_module):
-        """Health watchers are told before the transport goes away."""
+    def test_stop_sets_health_then_stops_the_transport_then_closes_the_servicer(
+        self, server_module
+    ):
+        """The order of the three steps of stopping, as recorded server-side."""
         from grpc_health.v1 import health_pb2
 
         events = []
-        server = server_module.create_server(host="127.0.0.1", port=0)
+        with self._recording_transport(server_module, events):
+            server = server_module.create_server(host="127.0.0.1", port=0)
         port = server.add_insecure_port("127.0.0.1:0")
         server.start()
+        servicer_class = sys.modules["linuxcnc_grpc.linuxcnc_service"].LinuxCNCServiceServicer
+        real_close = servicer_class.close
+
+        def recording_close(servicer):
+            events.append("servicer closed")
+            # The real one too, or this server's error reader would run on.
+            real_close(servicer)
+
         with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
             assert self._health_status(channel, "") == health_pb2.HealthCheckResponse.SERVING
             real_health_set = server_module.health.HealthServicer.set
@@ -835,15 +1257,38 @@ class TestServerHealthAndOptions:
                 real_health_set(health_servicer, service_name, serving_status)
 
             with patch.object(server_module.health.HealthServicer, "set", recording_set), \
-                    patch.object(
-                        sys.modules["linuxcnc_grpc.linuxcnc_service"].LinuxCNCServiceServicer,
-                        "close", lambda servicer: events.append("servicer closed"),
-                    ):
+                    patch.object(servicer_class, "close", recording_close):
                 server.stop(grace=0)
 
-        assert "servicer closed" in events
-        statuses_before_close = events[:events.index("servicer closed")]
-        assert ("", health_pb2.HealthCheckResponse.NOT_SERVING) in statuses_before_close
+        health_turned_not_serving = events.index(("", health_pb2.HealthCheckResponse.NOT_SERVING))
+        transport_stopped = events.index(("transport stop", 0))
+        servicer_closed = events.index("servicer closed")
+        assert health_turned_not_serving < transport_stopped < servicer_closed
+
+    def test_health_watcher_sees_not_serving_when_the_server_stops(self, server_module):
+        """What a client watching the health service gets before the transport goes away."""
+        from grpc_health.v1 import health_pb2, health_pb2_grpc
+
+        server = server_module.create_server(host="127.0.0.1", port=0)
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        stopped = None
+        try:
+            with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+                health_updates = health_pb2_grpc.HealthStub(channel).Watch(
+                    health_pb2.HealthCheckRequest(service=""), timeout=10.0
+                )
+                assert next(health_updates).status == health_pb2.HealthCheckResponse.SERVING
+
+                # The grace period keeps the watch open while the update is delivered.
+                stopped = server.stop(grace=5)
+
+                assert next(health_updates).status == health_pb2.HealthCheckResponse.NOT_SERVING
+                health_updates.cancel()
+        finally:
+            if stopped is None:
+                stopped = server.stop(grace=0)
+            assert stopped.wait(timeout=10.0)
 
     def test_failed_port_bind_starts_no_threads(self, server_module):
         """A bad address fails before any servicer thread exists."""
@@ -858,6 +1303,127 @@ class TestServerHealthAndOptions:
 
         servicer_init.assert_not_called()
         assert {t for t in threading.enumerate() if t.name in thread_names} == threads_before
+
+    def test_serve_restores_the_default_action_for_a_handler_not_set_from_python(
+        self, server_module
+    ):
+        """
+        signal.signal() returns None for a handler that was not installed
+        from Python. serve() cannot put that back, and must not leave its
+        own handler, so it restores the default action.
+        """
+        real_signal = server_module.signal
+        fake_server = MagicMock()
+        signal_calls = []
+
+        def signal_reporting_no_python_handler(signal_number, handler):
+            signal_calls.append((signal_number, handler))
+            if len(signal_calls) == 2:
+                # Both of serve()'s handlers are in place: ask it to stop.
+                handler(real_signal.SIGTERM, None)
+            return None
+
+        with patch.object(server_module, "create_server", return_value=fake_server), \
+                patch.object(server_module, "SHUTDOWN_POLL_INTERVAL", 0.01), \
+                patch.object(
+                    real_signal, "signal", side_effect=signal_reporting_no_python_handler
+                ):
+            server_module.serve(port=0)
+
+        assert signal_calls[2:] == [
+            (real_signal.SIGINT, real_signal.SIG_DFL),
+            (real_signal.SIGTERM, real_signal.SIG_DFL),
+        ]
+
+    def test_serve_installs_its_handlers_before_creating_the_server(self, server_module):
+        """A signal that arrives while the server is being created still stops it normally."""
+        real_signal = server_module.signal
+        fake_server = MagicMock()
+        installed_handlers = {}
+        handlers_seen_by_create_server = []
+
+        def create_server_during_which_a_signal_arrives(*arguments, **keyword_arguments):
+            handlers_seen_by_create_server.append(dict(installed_handlers))
+            installed_handlers[real_signal.SIGTERM](real_signal.SIGTERM, None)
+            return fake_server
+
+        with patch.object(
+            server_module, "create_server",
+            side_effect=create_server_during_which_a_signal_arrives,
+        ), patch.object(
+            real_signal, "signal",
+            side_effect=lambda signal_number, handler: installed_handlers.__setitem__(
+                signal_number, handler
+            ),
+        ), patch.object(server_module, "SHUTDOWN_POLL_INTERVAL", 0.01):
+            server_module.serve(port=0)
+
+        assert set(handlers_seen_by_create_server[0]) == {real_signal.SIGINT, real_signal.SIGTERM}
+        fake_server.stop.assert_called_once_with(grace=5)
+
+    def test_serve_restores_the_signal_handlers_if_creating_the_server_fails(
+        self, server_module
+    ):
+        """create_server cleans up after itself; serve() has no server to stop."""
+        real_signal = server_module.signal
+        signal_calls = []
+
+        def previous_handler(signal_number, frame):
+            pass
+
+        def recording_signal(signal_number, handler):
+            signal_calls.append((signal_number, handler))
+            return previous_handler
+
+        with patch.object(
+            server_module, "create_server", side_effect=RuntimeError("port in use")
+        ), patch.object(real_signal, "signal", side_effect=recording_signal):
+            with pytest.raises(RuntimeError, match="port in use"):
+                server_module.serve(port=0)
+
+        assert signal_calls[2:] == [
+            (real_signal.SIGINT, previous_handler),
+            (real_signal.SIGTERM, previous_handler),
+        ]
+
+    def test_serve_stops_the_server_and_raises_when_the_process_cannot_connect_any_more(
+        self, server_module
+    ):
+        fake_server = MagicMock()
+        callbacks_given = []
+
+        def create_server_keeping_the_callback(*arguments, **keyword_arguments):
+            callbacks_given.append(keyword_arguments["on_unrecoverable"])
+            return fake_server
+
+        # "Starting" the server is when the waiting thread gives up.
+        fake_server.start.side_effect = lambda: callbacks_given[0]("connecting failed 3 times")
+
+        with patch.object(
+            server_module, "create_server", side_effect=create_server_keeping_the_callback
+        ), patch.object(server_module, "SHUTDOWN_POLL_INTERVAL", 0.01), \
+                patch.object(server_module.signal, "signal"):
+            with pytest.raises(
+                server_module.UnrecoverableConnectionError, match="connecting failed 3 times"
+            ):
+                server_module.serve(port=0)
+
+        fake_server.stop.assert_called_once_with(grace=5)
+
+    def test_main_exits_with_an_error_when_the_process_cannot_connect_any_more(
+        self, server_module, caplog
+    ):
+        unrecoverable = server_module.UnrecoverableConnectionError(
+            "This process can no longer connect to LinuxCNC and must be restarted: test"
+        )
+        with patch.object(server_module, "serve", side_effect=unrecoverable), \
+                patch.object(sys, "argv", ["linuxcnc-grpc"]), \
+                caplog.at_level(logging.ERROR, logger=server_module.logger.name):
+            with pytest.raises(SystemExit) as exit_info:
+                server_module.main()
+
+        assert exit_info.value.code == 1
+        assert "must be restarted" in caplog.text
 
     def test_command_line_flag(self, server_module):
         with patch.object(server_module, "serve") as serve, \
@@ -921,7 +1487,7 @@ class TestReachabilityProbe:
         import subprocess
 
         child_can_import_linuxcnc = subprocess.run(
-            [sys.executable, "-c", "import linuxcnc"], capture_output=True
+            [sys.executable, "-c", "import linuxcnc"], capture_output=True, timeout=60
         ).returncode == 0
         if child_can_import_linuxcnc:
             pytest.skip("the linuxcnc module is installed here")

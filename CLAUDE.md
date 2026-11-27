@@ -192,6 +192,18 @@ of this without re-measuring):
   (`sys.executable -c REACHABILITY_PROBE_CODE`, judged by exit code; 7 ms with LinuxCNC up,
   15 ms with it down, on the sim under Python 3.13; not measured on real controller hardware),
   and `_connect()` is only called in-process right after a child reported success.
+- **The waiting thread gives up after `MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE` (3) failed
+  connects.** If the probe passes and the in-process `_connect()` then raises (LinuxCNC went
+  away in between), the process is poisoned as above, while the child probes pass again once
+  LinuxCNC is back. Retrying for ever would keep the server up and `NOT_SERVING` where no
+  supervisor restarts it. It is three attempts and not one in case the failure was something
+  else. The thread then logs an error, calls `on_unrecoverable(error_text)` (a constructor
+  argument; called once, from the waiting thread, without the lock, and not once `close()`
+  has been called) and ends; the servicer stays disconnected. `create_server` has the same
+  parameter and passes it through. `serve()` passes a callback that only appends to a list
+  (the same rule as its signal handler); its polling loop sees the entry, the `finally` stops
+  the server, and `serve()` then raises `UnrecoverableConnectionError`, which `main()` logs
+  and turns into exit status 1. `_reconnect()` has no such limit.
 - `LinuxCNCServiceServicer(require_linuxcnc=True)` (the constructor default, 1.0 behaviour)
   connects directly and raises if it can't. `require_linuxcnc=False` probes first and starts
   disconnected if LinuxCNC is down. `create_server`/`serve`/the CLI default to **not**
@@ -238,21 +250,56 @@ of this without re-measuring):
   needs (`UNAVAILABLE` while waiting for LinuxCNC): once it has passed, the channels exist
   and are only ever replaced by newer ones. RPCs covered: GetStatus, SendCommand,
   WaitComplete, StreamStatus, StreamErrors, ResolveFile, GetMachineConfig.
-  Upload/List/Read/Delete need no LinuxCNC.
-- `create_server` wraps `server.stop` so that stopping the server first turns every health
-  service to `NOT_SERVING` (`enter_graceful_shutdown`) and then calls `servicer.close()`
-  (stops and joins the waiting thread, stops the error reader). `close()` sets the stop flag
-  under the servicer lock, so nothing connects after it returns. The waiting thread is
-  started last in `create_server`, and any failure after the servicer exists closes it.
+  Upload/List/Read/Delete need no LinuxCNC. Two RPCs check something else first:
+  StreamErrors answers `FAILED_PRECONDITION` in `off` mode, and ResolveFile validates the
+  name (`INVALID_ARGUMENT`) before it looks at the connection. WaitComplete makes the check
+  under the lock and answers `RCS_EXEC` if it cannot get the lock by its deadline.
+- `create_server` wraps `server.stop`. Stopping does three things, in this order: every
+  health service turns `NOT_SERVING` (`enter_graceful_shutdown`), the gRPC server's own
+  `stop(grace)` is called (it returns its event at once), and `servicer.close()` runs (in a
+  `finally`). The servicer comes last because `close()` can wait for the servicer lock, and
+  `SendCommand` holds that lock for a whole dispatch, which takes seconds when LinuxCNC's
+  task is not answering. The transport's shutdown and grace period must not start late
+  because of that.
+- `close()` is bounded. It sets the stop flag first, without the lock; a connect checks the
+  flag and publishes its channels in one lock hold, so no connect starts after that. Then it
+  passes through the servicer lock, which waits out a connect that had just checked the
+  flag, for at most `CLOSE_LOCK_TIMEOUT` (1 s). Then it stops the error reader and joins the
+  waiting thread (at most 2 s each). What holds when it returns:
+  - If it got the lock: nothing connects afterwards.
+  - If it did not: a connect that was already under way in the lock hold that blocked it can
+    still finish (its health report is ignored after `enter_graceful_shutdown`). No other
+    connect can.
+  - Either thread can still be alive: the waiting thread during a probe (up to 10 s) and
+    both threads while the lock is held. The waiting thread then ends without connecting,
+    and the error reader ends without reading (`_poll_error_channel` returns nothing once
+    the flag is set).
+  - `close()` may be called again.
+- **A failed `create_server` frees the port and closes the LinuxCNC servicer.** The port is
+  bound first, so a bad address fails before any thread exists. Every failure after that
+  closes the LinuxCNC servicer (if it was built) and frees the port. The HAL servicer has no
+  `close()`: a HAL component already created stays until the process exits. Freeing the port
+  takes a detour, measured with grpcio 1.76 on macOS (not measured on Linux, where the
+  detour is harmless at worst): a gRPC server that was never started keeps its port for the
+  life of the process (`stop()` does nothing on it, and dropping the object does not help),
+  while starting it and stopping it at once frees the port.
+  `_release_port_of_unstarted_server` does that. For that reason the LinuxCNC and HAL
+  services are registered last, after everything that can fail, so the server started for
+  that moment offers only the health service, already in graceful shutdown. Do not move the
+  registrations up.
 - **`serve()`'s signal handler only appends to a list**; the main thread polls it every
   `SHUTDOWN_POLL_INTERVAL` (0.2 s) and then stops the server in a `finally`, which also
-  covers a failed `server.start()`. A handler runs in the main thread in the middle of
-  whatever it was doing, so anything that takes a lock there can deadlock against the
-  interrupted code: stopping the server, logging, and also `threading.Event.set()` (its
-  condition lock is not reentrant, and `Event.wait()` holds it briefly). `serve()` puts the
-  previous `SIGINT`/`SIGTERM` handlers back in that `finally`, after the server has stopped,
-  whether it returns or fails (a previous handler of `None`, one not set from Python, cannot
-  be put back and is skipped).
+  covers a failed `server.start()`. The handlers are installed before `create_server` is
+  called (it can take as long as a probe), so a signal during startup is recorded: the
+  server is created, started, and stopped on the loop's first pass. If `create_server`
+  raises there is no server to stop and only the handlers are restored. A handler runs in
+  the main thread in the middle of whatever it was doing, so anything that takes a lock
+  there can deadlock against the interrupted code: stopping the server, logging, and also
+  `threading.Event.set()` (its condition lock is not reentrant, and `Event.wait()` holds it
+  briefly). `serve()` puts the previous `SIGINT`/`SIGTERM` handlers back in that `finally`,
+  after the server has stopped, whether it returns or fails. A previous handler of `None`
+  (one not set from Python) cannot be put back; `serve()` installs `signal.SIG_DFL` instead,
+  the closest there is, because leaving its own handler would swallow every later signal.
 - Known and left as in 1.0: `_reconnect()`'s backoff sleeps (up to 16 s) are not interrupted
   by shutdown, so a process stopping while an RPC is in one can exit later than the grace
   period.
