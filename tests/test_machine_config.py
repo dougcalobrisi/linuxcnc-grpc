@@ -3,6 +3,7 @@ Unit tests for the machine configuration builder and the GetMachineConfig RPC.
 """
 
 import math
+import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -44,7 +45,7 @@ def machine_config_module(mock_linuxcnc_module):
 
     with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
         sys.modules.pop("linuxcnc_grpc.machine_config", None)
-        from linuxcnc_grpc import machine_config
+        machine_config = importlib.import_module("linuxcnc_grpc.machine_config")
 
         yield machine_config
     sys.modules.pop("linuxcnc_grpc.machine_config", None)

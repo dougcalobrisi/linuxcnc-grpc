@@ -20,7 +20,7 @@ The linuxcnc-grpc server runs on your LinuxCNC machine and exposes both LinuxCNC
 
 ## Requirements
 
-- Linux with LinuxCNC 2.9 or newer installed and running
+- Linux with LinuxCNC 2.9 or newer installed (it does not have to be running when the server starts)
 - Python 3.10+
 - Network access to the machine (for remote clients)
 
@@ -59,6 +59,7 @@ python -m linuxcnc_grpc.server --host 0.0.0.0 --port 50051
 | `--port` | `50051` | Port number to listen on |
 | `--nc-files` | `/home/linuxcnc/linuxcnc/nc_files` | Directory for G-code file operations |
 | `--error-channel` | `on-demand` | When to read LinuxCNC's error channel: `on-demand`, `always` or `off`. See [Error messages and the GUI](#error-messages-and-the-gui) |
+| `--require-linuxcnc` | off | Exit with an error if LinuxCNC is not running at startup, as versions up to 1.0 did. See [Starting before LinuxCNC](#starting-before-linuxcnc) |
 | `--debug` | off | Enable debug logging |
 
 ## Auto-Start with LinuxCNC
@@ -97,12 +98,12 @@ Create `/etc/systemd/system/linuxcnc-grpc.service`:
 ```ini
 [Unit]
 Description=LinuxCNC gRPC Server
-After=linuxcnc.service
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/linuxcnc-grpc --host 0.0.0.0 --port 50051
-Restart=on-failure
+Restart=always
+RestartSec=2
 User=your-username
 
 [Install]
@@ -116,6 +117,72 @@ sudo systemctl daemon-reload
 sudo systemctl enable linuxcnc-grpc
 sudo systemctl start linuxcnc-grpc
 ```
+
+The service can start at boot, before LinuxCNC: the server waits for LinuxCNC
+and connects when it comes up. Use `Restart=always`, not `on-failure`: when
+LinuxCNC shuts down it stops the server too, with a normal exit, and systemd
+has to start it again for the next LinuxCNC session (see
+[Starting before LinuxCNC](#starting-before-linuxcnc)). Run it as the same
+user that runs LinuxCNC.
+
+## Starting before LinuxCNC
+
+The server no longer needs LinuxCNC to be running when it starts. If LinuxCNC
+is not there, the server starts anyway and waits:
+
+- The gRPC health service reports `NOT_SERVING` for `""` and
+  `linuxcnc.LinuxCNCService`.
+- RPCs that need LinuxCNC (`GetStatus`, `SendCommand`, `WaitComplete`,
+  `StreamStatus`, `StreamErrors`, `ResolveFile`, `GetMachineConfig`) fail with
+  `UNAVAILABLE`.
+- The file RPCs (`UploadFile`, `ListFiles`, `ReadFile`, `DeleteFile`) work, so
+  programs can be uploaded before LinuxCNC is up.
+- The HAL service answers, with no pins until LinuxCNC has loaded its HAL
+  configuration.
+
+The server looks for LinuxCNC after 1, 2 and 4 seconds and then every
+5 seconds, connects as soon as it is there, and health turns to `SERVING`.
+On the LinuxCNC 2.9 simulator the server connected within a few seconds of
+LinuxCNC starting, and the full end-to-end test suite passed against a server
+that had been started first.
+
+Pass `--require-linuxcnc` to get the old behaviour: the server exits with
+status 1 if LinuxCNC is not running. Use it where something else is watching
+for that exit.
+
+### What happens when LinuxCNC stops
+
+**A normal LinuxCNC shutdown stops the server too.** The server owns a HAL
+component (`grpc-hal-service`), and LinuxCNC unloads every HAL component when
+it shuts down, which signals the server to exit. That was already the case in
+1.0. So a server meant to outlive LinuxCNC sessions needs a supervisor that
+starts it again, such as systemd with `Restart=always`. A server started with
+`loadusr` from a HAL file simply starts and stops with LinuxCNC.
+
+**A crashed LinuxCNC is not detected.** Measured on the 2.9 simulator by
+killing the task processes with `kill -9`: LinuxCNC's status memory stays in
+place, so the server keeps running, keeps returning the last status, and
+health stays `SERVING`. A command sent in that state blocks for about 5
+seconds and then reports `RCS_DONE` (LinuxCNC's own send timeout does not
+raise an error); a `WaitComplete` on it never completes and returns
+`RCS_EXEC` at its timeout. LinuxCNC's Python interface exposes no heartbeat,
+so the server has no cheap way to tell a dead task from an idle one. Clients
+that need to know should watch for a `WaitComplete` that times out on a
+command that should be quick. The next start of LinuxCNC after a crash cleans
+up HAL, which stops the server just as a normal shutdown does.
+
+**Once connected, the server does not watch LinuxCNC.** It keeps the
+connection it made. On the simulator there was nothing for a watcher to do:
+a normal shutdown stops the server, a crash cannot be told from an idle
+machine, and the LinuxCNC start after a crash stops the server before it
+could reconnect. If a status poll does raise an error, the RPC that hit it
+reconnects, as in 1.0.
+
+While waiting for LinuxCNC, each check starts a short-lived Python process
+(the LinuxCNC Python module cannot be asked safely from inside the server
+while LinuxCNC is down). It took 7 ms on the simulator; the cost on a slow
+controller PC has not been measured. The checks stop once the server has
+connected.
 
 ## Network Configuration
 
@@ -320,7 +387,7 @@ command. It is set whenever the command was dispatched:
   so `task.echo_serial_number` is normally at or past this value by the time
   you get the response. But if the task does not answer, the send gives up
   after about 5 seconds without an error and the serial is returned all the
-  same.
+  same (see [What happens when LinuxCNC stops](#what-happens-when-linuxcnc-stops)).
   The server does not check the echo itself. To confirm that the command was
   received, call `WaitComplete` with the value or compare it with
   `task.echo_serial_number` in the status.
@@ -392,8 +459,9 @@ The rest of this section describes the wait without `linuxcnc_serial`.
 
 - A `timeout` of 0 means the default of 5 seconds.
 - The timeout covers the whole call, including the time it waits for the
-  server's internal lock. If another RPC holds the lock past the deadline, the
-  answer is `RCS_EXEC`, as for any timeout.
+  server's internal lock (and the connection check at the start). If another
+  RPC holds the lock past the deadline, the answer is `RCS_EXEC`, as for any
+  timeout.
 - The command it waits on is the latest one dispatched when the call arrives.
   A command sent while the wait is in progress does not change its target.
 - The command counts as finished when LinuxCNC has picked it up and is no
@@ -520,9 +588,15 @@ linuxcnc-grpc --debug
 
 The server automatically handles LinuxCNC connection issues:
 
-- Detects when LinuxCNC disconnects
-- Returns `UNAVAILABLE` status to clients during disconnection
-- Automatically reconnects when LinuxCNC becomes available
+- Starts without LinuxCNC and connects when it comes up
+- Stops with LinuxCNC on a normal shutdown (run it under a supervisor to come back)
+- Does not detect a crashed LinuxCNC (see "What happens when LinuxCNC stops")
+- Returns `UNAVAILABLE` to clients and `NOT_SERVING` from the health service
+  while disconnected
+- Reconnects if a status poll raises an error (rare: see below)
+
+See [Starting before LinuxCNC](#starting-before-linuxcnc) for the details and
+for what a LinuxCNC shutdown does to the server.
 
 ### Thread Pool
 
@@ -534,17 +608,19 @@ The server uses a thread pool for handling concurrent requests:
 
 ## Troubleshooting
 
-### "LinuxCNC not running"
+### RPCs return `UNAVAILABLE` ("LinuxCNC is not running…")
 
-The server requires LinuxCNC to be running first:
+The server is up but not connected to LinuxCNC. Start LinuxCNC; the server
+connects within a few seconds:
 
 ```bash
-# Start LinuxCNC
 linuxcnc /path/to/your/machine.ini
-
-# Then start the gRPC server
-linuxcnc-grpc
 ```
+
+If LinuxCNC is running and the server still does not connect, check that both
+run as the same user and that the server's Python can import the `linuxcnc`
+module (a venv needs `--system-site-packages`). With `--require-linuxcnc` the
+server exits at startup instead of waiting.
 
 ### "Address already in use"
 

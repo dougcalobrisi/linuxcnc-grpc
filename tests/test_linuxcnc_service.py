@@ -1437,6 +1437,76 @@ class TestWaitComplete:
         assert mock_linuxcnc_stat.poll.call_count == polls_before_wait
         mock_grpc_context.abort.assert_not_called()
 
+    def test_times_out_while_another_rpc_holds_the_lock_when_taking_the_record(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """The acquisition that resolves the dispatch record is bounded too."""
+        import threading
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G1 X5 F5"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+        polls_before_wait = mock_linuxcnc_stat.poll.call_count
+        real_lock = service._lock
+        lock_holds = []
+        wait_responses = []
+        hold_service_lock = self._hold_service_lock
+
+        class LockTakenElsewhereBeforeSecondTake:
+            """Passes everything to the real lock; another thread takes it
+            just before WaitComplete takes it the second time (the first
+            time is the connection check)."""
+
+            def __init__(self):
+                self.takes_by_the_wait = 0
+
+            def _before_take(self):
+                if threading.current_thread() is not wait_thread:
+                    return
+                self.takes_by_the_wait += 1
+                if self.takes_by_the_wait == 2:
+                    lock_holds.append(hold_service_lock(service))
+
+            def acquire(self, *args, **kwargs):
+                self._before_take()
+                return real_lock.acquire(*args, **kwargs)
+
+            def release(self):
+                real_lock.release()
+
+            def __enter__(self):
+                self._before_take()
+                return real_lock.__enter__()
+
+            def __exit__(self, *exception_details):
+                return real_lock.__exit__(*exception_details)
+
+        def run_wait():
+            wait_responses.append(service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.2),
+                mock_grpc_context,
+            ))
+
+        wait_thread = threading.Thread(target=run_wait, daemon=True)
+        service._lock = LockTakenElsewhereBeforeSecondTake()
+        try:
+            wait_thread.start()
+            wait_thread.join(timeout=10)
+            wait_returned_while_lock_was_held = not wait_thread.is_alive()
+        finally:
+            for release_lock, lock_holder in lock_holds:
+                release_lock.set()
+                lock_holder.join(timeout=5)
+            service._lock = real_lock
+
+        assert len(lock_holds) == 1
+        assert wait_returned_while_lock_was_held, "WaitComplete overran its timeout"
+        assert wait_responses[0].status == linuxcnc_pb2.RCS_EXEC
+        assert wait_responses[0].error_message == ""
+        assert mock_linuxcnc_stat.poll.call_count == polls_before_wait
+
     def test_times_out_while_another_rpc_holds_the_lock_between_polls(
         self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
     ):
@@ -3114,6 +3184,31 @@ class TestWaitCompleteTimeoutValues:
         )
 
         assert response.status == linuxcnc_pb2.RCS_DONE
+
+    def test_infinite_wait_ends_when_the_servicer_closes(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        service = self._service_with_one_command_sent(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+        )
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+        sleeps_before_close = []
+
+        def close_during_the_first_sleep(duration):
+            sleeps_before_close.append(duration)
+            assert len(sleeps_before_close) == 1, "the wait went on after close()"
+            service.close()
+
+        with patch.object(time, "sleep", side_effect=close_during_the_first_sleep):
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(timeout=float("inf")), mock_grpc_context
+            )
+
+        assert response.status == linuxcnc_pb2.RCS_EXEC
+        assert response.error_message == ""
 
     def test_nan_timeout_means_the_default_like_zero(
         self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context

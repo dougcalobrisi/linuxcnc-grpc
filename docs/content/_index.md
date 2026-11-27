@@ -80,4 +80,5 @@ HAL (Hardware Abstraction Layer) introspection:
 - [LinuxCNCService API](api-reference.md#linuxcncservice)
 - [HalService API](api-reference.md#halservice)
 - [Error messages and the GUI](server.md#error-messages-and-the-gui)
+- [Starting before LinuxCNC](server.md#starting-before-linuxcnc)
 - [Using with Claude (MCP)](using-with-claude.md)

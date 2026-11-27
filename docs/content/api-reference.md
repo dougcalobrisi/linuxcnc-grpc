@@ -65,6 +65,12 @@ rpc GetStatus(GetStatusRequest) returns (LinuxCNCStatus)
 | `limits` | LimitStatus | Limit switch states |
 | `errors` | ErrorMessage[] | The most recent messages the server has read from LinuxCNC's error channel (at most 20, oldest first). Empty unless the server reads the channel: see [StreamErrors](#streamerrors) |
 
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `UNAVAILABLE` | The server is not connected to LinuxCNC, or LinuxCNC could not be read |
+
 **Example (Python):**
 
 ```python
@@ -152,7 +158,7 @@ rpc WaitComplete(WaitCompleteRequest) returns (CommandResponse)
 | Field | Type | Description |
 |-------|------|-------------|
 | `serial` | int32 | Ignored. The wait is always on the most recent command sent through this server; the value is only echoed back in the response |
-| `timeout` | double | Timeout in seconds. 0, a negative number or NaN means the default, 5 seconds. An infinite timeout waits until the command finishes or the client goes away |
+| `timeout` | double | Timeout in seconds. 0, a negative number or NaN means the default, 5 seconds. An infinite timeout waits until the command finishes, the client goes away or the server shuts down |
 | `linuxcnc_serial` | optional int32 | Wait on this serial: the `linuxcnc_serial` that `SendCommand` returned for a command. It must be a serial this server issued on its current connection to LinuxCNC; any other value gets `RCS_ERROR`. When unset, the wait is on the most recent command sent through this server |
 
 **Response:** `CommandResponse`

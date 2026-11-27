@@ -77,6 +77,11 @@ Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
 ```
 
+The server can be started before LinuxCNC (it waits), and
+`scripts/wait-for-linuxcnc.py` can be started before LinuxCNC too. Its
+`--timeout` covers the whole run, including the first check that the
+`linuxcnc` module can be imported.
+
 ### In Docker (macOS, Windows, or any machine without LinuxCNC)
 
 Debian 13 packages the LinuxCNC simulator (`linuxcnc-uspace`, 2.9.4, also for
