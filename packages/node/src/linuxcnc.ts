@@ -1511,6 +1511,59 @@ export interface DeleteFileResponse {
   path: string;
 }
 
+/**
+ * Read a file from the nc_files directory, whole or in chunks.
+ * One response carries at most 1 MiB of content, so every response fits in a
+ * client's default 4 MB receive limit. To read a larger file, call again with
+ * offset advanced by len(content) until end_of_file is true.
+ */
+export interface ReadFileRequest {
+  /** Relative path within nc_files dir */
+  filename: string;
+  /** Byte offset to start reading from (default 0) */
+  offset: number;
+  /** Most bytes to return (0 or more than 1 MiB means 1 MiB) */
+  maxBytes: number;
+}
+
+export interface ReadFileResponse {
+  /** Absolute, canonical path of the file read */
+  path: string;
+  /** File bytes from offset (a chunk may end inside a UTF-8 character) */
+  content: Uint8Array;
+  /** Offset this content starts at */
+  offset: number;
+  /** Size of the whole file when it was read */
+  totalSizeBytes: number;
+  /** True if this content reaches the end of the file */
+  endOfFile: boolean;
+  /** Last modified time (unix timestamp in nanoseconds). A change in it or in total_size_bytes between chunks means the file was modified */
+  modifiedTimestamp: number;
+}
+
+/** Resolve a name in the nc_files directory */
+export interface ResolveFileRequest {
+  /** Relative path within nc_files dir */
+  filename: string;
+}
+
+export interface ResolveFileResponse {
+  /** Absolute, canonical path (symlinks resolved): the file UploadFile, DeleteFile and ReadFile act on for this name */
+  path: string;
+  /** True if something exists at that path */
+  exists: boolean;
+  /** True if it is a directory */
+  isDirectory: boolean;
+  /** True if resolving the name goes through a symbolic link at any component */
+  isSymlink: boolean;
+  /** True if this is the file LinuxCNC has loaded (TaskStatus.file), by canonical path or by being the same file on disk */
+  isLoadedProgram: boolean;
+  /** Canonical path of the loaded program, empty if none */
+  loadedProgram: string;
+  /** Interpreter state when checked; anything but INTERP_IDLE means the loaded program is in use */
+  interpState: InterpState;
+}
+
 function createBasePosition(): Position {
   return { x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, u: 0, v: 0, w: 0 };
 }
@@ -8661,6 +8714,460 @@ export const DeleteFileResponse: MessageFns<DeleteFileResponse> = {
   },
 };
 
+function createBaseReadFileRequest(): ReadFileRequest {
+  return { filename: "", offset: 0, maxBytes: 0 };
+}
+
+export const ReadFileRequest: MessageFns<ReadFileRequest> = {
+  encode(message: ReadFileRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.filename !== "") {
+      writer.uint32(10).string(message.filename);
+    }
+    if (message.offset !== 0) {
+      writer.uint32(16).int64(message.offset);
+    }
+    if (message.maxBytes !== 0) {
+      writer.uint32(24).int32(message.maxBytes);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ReadFileRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseReadFileRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.filename = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.offset = longToNumber(reader.int64());
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.maxBytes = reader.int32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ReadFileRequest {
+    return {
+      filename: isSet(object.filename) ? globalThis.String(object.filename) : "",
+      offset: isSet(object.offset) ? globalThis.Number(object.offset) : 0,
+      maxBytes: isSet(object.maxBytes) ? globalThis.Number(object.maxBytes) : 0,
+    };
+  },
+
+  toJSON(message: ReadFileRequest): unknown {
+    const obj: any = {};
+    if (message.filename !== "") {
+      obj.filename = message.filename;
+    }
+    if (message.offset !== 0) {
+      obj.offset = Math.round(message.offset);
+    }
+    if (message.maxBytes !== 0) {
+      obj.maxBytes = Math.round(message.maxBytes);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ReadFileRequest>, I>>(base?: I): ReadFileRequest {
+    return ReadFileRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ReadFileRequest>, I>>(object: I): ReadFileRequest {
+    const message = createBaseReadFileRequest();
+    message.filename = object.filename ?? "";
+    message.offset = object.offset ?? 0;
+    message.maxBytes = object.maxBytes ?? 0;
+    return message;
+  },
+};
+
+function createBaseReadFileResponse(): ReadFileResponse {
+  return { path: "", content: new Uint8Array(0), offset: 0, totalSizeBytes: 0, endOfFile: false, modifiedTimestamp: 0 };
+}
+
+export const ReadFileResponse: MessageFns<ReadFileResponse> = {
+  encode(message: ReadFileResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.path !== "") {
+      writer.uint32(10).string(message.path);
+    }
+    if (message.content.length !== 0) {
+      writer.uint32(18).bytes(message.content);
+    }
+    if (message.offset !== 0) {
+      writer.uint32(24).int64(message.offset);
+    }
+    if (message.totalSizeBytes !== 0) {
+      writer.uint32(32).int64(message.totalSizeBytes);
+    }
+    if (message.endOfFile !== false) {
+      writer.uint32(40).bool(message.endOfFile);
+    }
+    if (message.modifiedTimestamp !== 0) {
+      writer.uint32(48).int64(message.modifiedTimestamp);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ReadFileResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseReadFileResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.path = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.content = reader.bytes();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.offset = longToNumber(reader.int64());
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.totalSizeBytes = longToNumber(reader.int64());
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.endOfFile = reader.bool();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.modifiedTimestamp = longToNumber(reader.int64());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ReadFileResponse {
+    return {
+      path: isSet(object.path) ? globalThis.String(object.path) : "",
+      content: isSet(object.content) ? bytesFromBase64(object.content) : new Uint8Array(0),
+      offset: isSet(object.offset) ? globalThis.Number(object.offset) : 0,
+      totalSizeBytes: isSet(object.totalSizeBytes) ? globalThis.Number(object.totalSizeBytes) : 0,
+      endOfFile: isSet(object.endOfFile) ? globalThis.Boolean(object.endOfFile) : false,
+      modifiedTimestamp: isSet(object.modifiedTimestamp) ? globalThis.Number(object.modifiedTimestamp) : 0,
+    };
+  },
+
+  toJSON(message: ReadFileResponse): unknown {
+    const obj: any = {};
+    if (message.path !== "") {
+      obj.path = message.path;
+    }
+    if (message.content.length !== 0) {
+      obj.content = base64FromBytes(message.content);
+    }
+    if (message.offset !== 0) {
+      obj.offset = Math.round(message.offset);
+    }
+    if (message.totalSizeBytes !== 0) {
+      obj.totalSizeBytes = Math.round(message.totalSizeBytes);
+    }
+    if (message.endOfFile !== false) {
+      obj.endOfFile = message.endOfFile;
+    }
+    if (message.modifiedTimestamp !== 0) {
+      obj.modifiedTimestamp = Math.round(message.modifiedTimestamp);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ReadFileResponse>, I>>(base?: I): ReadFileResponse {
+    return ReadFileResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ReadFileResponse>, I>>(object: I): ReadFileResponse {
+    const message = createBaseReadFileResponse();
+    message.path = object.path ?? "";
+    message.content = object.content ?? new Uint8Array(0);
+    message.offset = object.offset ?? 0;
+    message.totalSizeBytes = object.totalSizeBytes ?? 0;
+    message.endOfFile = object.endOfFile ?? false;
+    message.modifiedTimestamp = object.modifiedTimestamp ?? 0;
+    return message;
+  },
+};
+
+function createBaseResolveFileRequest(): ResolveFileRequest {
+  return { filename: "" };
+}
+
+export const ResolveFileRequest: MessageFns<ResolveFileRequest> = {
+  encode(message: ResolveFileRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.filename !== "") {
+      writer.uint32(10).string(message.filename);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ResolveFileRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseResolveFileRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.filename = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ResolveFileRequest {
+    return { filename: isSet(object.filename) ? globalThis.String(object.filename) : "" };
+  },
+
+  toJSON(message: ResolveFileRequest): unknown {
+    const obj: any = {};
+    if (message.filename !== "") {
+      obj.filename = message.filename;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ResolveFileRequest>, I>>(base?: I): ResolveFileRequest {
+    return ResolveFileRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ResolveFileRequest>, I>>(object: I): ResolveFileRequest {
+    const message = createBaseResolveFileRequest();
+    message.filename = object.filename ?? "";
+    return message;
+  },
+};
+
+function createBaseResolveFileResponse(): ResolveFileResponse {
+  return {
+    path: "",
+    exists: false,
+    isDirectory: false,
+    isSymlink: false,
+    isLoadedProgram: false,
+    loadedProgram: "",
+    interpState: 0,
+  };
+}
+
+export const ResolveFileResponse: MessageFns<ResolveFileResponse> = {
+  encode(message: ResolveFileResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.path !== "") {
+      writer.uint32(10).string(message.path);
+    }
+    if (message.exists !== false) {
+      writer.uint32(16).bool(message.exists);
+    }
+    if (message.isDirectory !== false) {
+      writer.uint32(24).bool(message.isDirectory);
+    }
+    if (message.isSymlink !== false) {
+      writer.uint32(32).bool(message.isSymlink);
+    }
+    if (message.isLoadedProgram !== false) {
+      writer.uint32(40).bool(message.isLoadedProgram);
+    }
+    if (message.loadedProgram !== "") {
+      writer.uint32(50).string(message.loadedProgram);
+    }
+    if (message.interpState !== 0) {
+      writer.uint32(56).int32(message.interpState);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ResolveFileResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseResolveFileResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.path = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.exists = reader.bool();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.isDirectory = reader.bool();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.isSymlink = reader.bool();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.isLoadedProgram = reader.bool();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.loadedProgram = reader.string();
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.interpState = reader.int32() as any;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ResolveFileResponse {
+    return {
+      path: isSet(object.path) ? globalThis.String(object.path) : "",
+      exists: isSet(object.exists) ? globalThis.Boolean(object.exists) : false,
+      isDirectory: isSet(object.isDirectory) ? globalThis.Boolean(object.isDirectory) : false,
+      isSymlink: isSet(object.isSymlink) ? globalThis.Boolean(object.isSymlink) : false,
+      isLoadedProgram: isSet(object.isLoadedProgram) ? globalThis.Boolean(object.isLoadedProgram) : false,
+      loadedProgram: isSet(object.loadedProgram) ? globalThis.String(object.loadedProgram) : "",
+      interpState: isSet(object.interpState) ? interpStateFromJSON(object.interpState) : 0,
+    };
+  },
+
+  toJSON(message: ResolveFileResponse): unknown {
+    const obj: any = {};
+    if (message.path !== "") {
+      obj.path = message.path;
+    }
+    if (message.exists !== false) {
+      obj.exists = message.exists;
+    }
+    if (message.isDirectory !== false) {
+      obj.isDirectory = message.isDirectory;
+    }
+    if (message.isSymlink !== false) {
+      obj.isSymlink = message.isSymlink;
+    }
+    if (message.isLoadedProgram !== false) {
+      obj.isLoadedProgram = message.isLoadedProgram;
+    }
+    if (message.loadedProgram !== "") {
+      obj.loadedProgram = message.loadedProgram;
+    }
+    if (message.interpState !== 0) {
+      obj.interpState = interpStateToJSON(message.interpState);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ResolveFileResponse>, I>>(base?: I): ResolveFileResponse {
+    return ResolveFileResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ResolveFileResponse>, I>>(object: I): ResolveFileResponse {
+    const message = createBaseResolveFileResponse();
+    message.path = object.path ?? "";
+    message.exists = object.exists ?? false;
+    message.isDirectory = object.isDirectory ?? false;
+    message.isSymlink = object.isSymlink ?? false;
+    message.isLoadedProgram = object.isLoadedProgram ?? false;
+    message.loadedProgram = object.loadedProgram ?? "";
+    message.interpState = object.interpState ?? 0;
+    return message;
+  },
+};
+
 export type LinuxCNCServiceService = typeof LinuxCNCServiceService;
 export const LinuxCNCServiceService = {
   /** Get current status (poll equivalent) */
@@ -8743,6 +9250,29 @@ export const LinuxCNCServiceService = {
     responseSerialize: (value: DeleteFileResponse): Buffer => Buffer.from(DeleteFileResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): DeleteFileResponse => DeleteFileResponse.decode(value),
   },
+  /** Read a file (or one chunk of it) from the nc_files directory */
+  readFile: {
+    path: "/linuxcnc.LinuxCNCService/ReadFile",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: ReadFileRequest): Buffer => Buffer.from(ReadFileRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): ReadFileRequest => ReadFileRequest.decode(value),
+    responseSerialize: (value: ReadFileResponse): Buffer => Buffer.from(ReadFileResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): ReadFileResponse => ReadFileResponse.decode(value),
+  },
+  /**
+   * Resolve a name in the nc_files directory to its canonical path and say
+   * whether it is the program LinuxCNC currently has loaded
+   */
+  resolveFile: {
+    path: "/linuxcnc.LinuxCNCService/ResolveFile",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: ResolveFileRequest): Buffer => Buffer.from(ResolveFileRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): ResolveFileRequest => ResolveFileRequest.decode(value),
+    responseSerialize: (value: ResolveFileResponse): Buffer => Buffer.from(ResolveFileResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): ResolveFileResponse => ResolveFileResponse.decode(value),
+  },
 } as const;
 
 export interface LinuxCNCServiceServer extends UntypedServiceImplementation {
@@ -8762,6 +9292,13 @@ export interface LinuxCNCServiceServer extends UntypedServiceImplementation {
   listFiles: handleUnaryCall<ListFilesRequest, ListFilesResponse>;
   /** Delete a file from the nc_files directory */
   deleteFile: handleUnaryCall<DeleteFileRequest, DeleteFileResponse>;
+  /** Read a file (or one chunk of it) from the nc_files directory */
+  readFile: handleUnaryCall<ReadFileRequest, ReadFileResponse>;
+  /**
+   * Resolve a name in the nc_files directory to its canonical path and say
+   * whether it is the program LinuxCNC currently has loaded
+   */
+  resolveFile: handleUnaryCall<ResolveFileRequest, ResolveFileResponse>;
 }
 
 export interface LinuxCNCServiceClient extends Client {
@@ -8875,6 +9412,41 @@ export interface LinuxCNCServiceClient extends Client {
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: DeleteFileResponse) => void,
   ): ClientUnaryCall;
+  /** Read a file (or one chunk of it) from the nc_files directory */
+  readFile(
+    request: ReadFileRequest,
+    callback: (error: ServiceError | null, response: ReadFileResponse) => void,
+  ): ClientUnaryCall;
+  readFile(
+    request: ReadFileRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: ReadFileResponse) => void,
+  ): ClientUnaryCall;
+  readFile(
+    request: ReadFileRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: ReadFileResponse) => void,
+  ): ClientUnaryCall;
+  /**
+   * Resolve a name in the nc_files directory to its canonical path and say
+   * whether it is the program LinuxCNC currently has loaded
+   */
+  resolveFile(
+    request: ResolveFileRequest,
+    callback: (error: ServiceError | null, response: ResolveFileResponse) => void,
+  ): ClientUnaryCall;
+  resolveFile(
+    request: ResolveFileRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: ResolveFileResponse) => void,
+  ): ClientUnaryCall;
+  resolveFile(
+    request: ResolveFileRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: ResolveFileResponse) => void,
+  ): ClientUnaryCall;
 }
 
 export const LinuxCNCServiceClient = makeGenericClientConstructor(
@@ -8885,6 +9457,31 @@ export const LinuxCNCServiceClient = makeGenericClientConstructor(
   service: typeof LinuxCNCServiceService;
   serviceName: string;
 };
+
+function bytesFromBase64(b64: string): Uint8Array {
+  if ((globalThis as any).Buffer) {
+    return Uint8Array.from(globalThis.Buffer.from(b64, "base64"));
+  } else {
+    const bin = globalThis.atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; ++i) {
+      arr[i] = bin.charCodeAt(i);
+    }
+    return arr;
+  }
+}
+
+function base64FromBytes(arr: Uint8Array): string {
+  if ((globalThis as any).Buffer) {
+    return globalThis.Buffer.from(arr).toString("base64");
+  } else {
+    const bin: string[] = [];
+    arr.forEach((byte) => {
+      bin.push(globalThis.String.fromCharCode(byte));
+    });
+    return globalThis.btoa(bin.join(""));
+  }
+}
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | undefined;
 

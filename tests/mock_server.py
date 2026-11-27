@@ -18,6 +18,7 @@ import signal
 import sys
 import threading
 import time
+import posixpath
 from concurrent import futures
 from pathlib import Path
 
@@ -129,6 +130,40 @@ MOCK_HAL_COMPONENTS = [
 MOCK_LINUXCNC_SERIAL_BASE = 1000
 
 
+# The small program the mock's ReadFile and ResolveFile know about.
+MOCK_NC_FILES_DIR = "/mock/nc_files"
+MOCK_PROGRAM_NAME = "mock_program.ngc"
+MOCK_PROGRAM_CONTENT = b"G21\nG0 X1 Y1\nM2\n"
+MOCK_PROGRAM_MODIFIED_NS = 1700000000000000000
+
+# The most one ReadFile response carries, the same cap as the real server.
+MOCK_MAX_READ_CHUNK_BYTES = 1024 * 1024
+
+# A file that takes three ReadFile responses: byte N is N modulo
+# MOCK_LARGE_PROGRAM_PATTERN_PERIOD. The period is prime, so the pattern does
+# not line up with chunk boundaries and a chunk served from the wrong offset
+# shows up as wrong content.
+MOCK_LARGE_PROGRAM_NAME = "mock_large_program.ngc"
+MOCK_LARGE_PROGRAM_PATTERN_PERIOD = 251
+MOCK_LARGE_PROGRAM_SIZE_BYTES = 2 * MOCK_MAX_READ_CHUNK_BYTES + 4321
+MOCK_LARGE_PROGRAM_CONTENT = (
+    bytes(range(MOCK_LARGE_PROGRAM_PATTERN_PERIOD))
+    * (MOCK_LARGE_PROGRAM_SIZE_BYTES // MOCK_LARGE_PROGRAM_PATTERN_PERIOD + 1)
+)[:MOCK_LARGE_PROGRAM_SIZE_BYTES]
+
+# Same content as the large program, but every response past offset 0 reports
+# a later modified_timestamp, as if the file were rewritten between two pages.
+MOCK_CHANGING_PROGRAM_NAME = "mock_changing_program.ngc"
+MOCK_CHANGING_PROGRAM_LATER_MODIFIED_NS = MOCK_PROGRAM_MODIFIED_NS + 1
+
+# What ReadFile serves, by name.
+MOCK_READABLE_FILES = {
+    MOCK_PROGRAM_NAME: MOCK_PROGRAM_CONTENT,
+    MOCK_LARGE_PROGRAM_NAME: MOCK_LARGE_PROGRAM_CONTENT,
+    MOCK_CHANGING_PROGRAM_NAME: MOCK_LARGE_PROGRAM_CONTENT,
+}
+
+
 class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     """Mock LinuxCNC gRPC service returning deterministic responses."""
 
@@ -198,6 +233,79 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         # In mock, we don't generate errors, just keep connection alive
         while context.is_active():
             time.sleep(1.0)
+
+    @staticmethod
+    def _abort_unless_name_is_valid(filename, context):
+        """
+        Refuse the names the real server refuses, with its messages: empty,
+        containing a null byte, or leading outside the NC files directory.
+        """
+        if not filename or not filename.strip():
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Filename must not be empty")
+        if "\x00" in filename:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT, "Filename must not contain null bytes"
+            )
+        normalised_path = posixpath.normpath(posixpath.join(MOCK_NC_FILES_DIR, filename))
+        is_inside_directory = (
+            normalised_path == MOCK_NC_FILES_DIR
+            or normalised_path.startswith(MOCK_NC_FILES_DIR + "/")
+        )
+        if not is_inside_directory:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"Path must be within allowed directory: {MOCK_NC_FILES_DIR}",
+            )
+
+    def ReadFile(self, request, context):
+        """
+        Serve the fixed files in MOCK_READABLE_FILES; other names are not found.
+
+        Validation and the chunk cap follow the real server: negative offset
+        or max_bytes is INVALID_ARGUMENT, so is a name the real server
+        refuses, and one response carries at most MOCK_MAX_READ_CHUNK_BYTES
+        (max_bytes of 0 or above the cap means the cap).
+        """
+        if request.offset < 0:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "offset must not be negative")
+        if request.max_bytes < 0:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "max_bytes must not be negative")
+        self._abort_unless_name_is_valid(request.filename, context)
+        file_content = MOCK_READABLE_FILES.get(request.filename)
+        if file_content is None:
+            context.abort(grpc.StatusCode.NOT_FOUND, f"File not found: {request.filename}")
+        chunk_size = request.max_bytes or MOCK_MAX_READ_CHUNK_BYTES
+        chunk_size = min(chunk_size, MOCK_MAX_READ_CHUNK_BYTES)
+        content = file_content[request.offset:request.offset + chunk_size]
+        modified_timestamp = MOCK_PROGRAM_MODIFIED_NS
+        if request.filename == MOCK_CHANGING_PROGRAM_NAME and request.offset > 0:
+            modified_timestamp = MOCK_CHANGING_PROGRAM_LATER_MODIFIED_NS
+        return linuxcnc_pb2.ReadFileResponse(
+            path=f"{MOCK_NC_FILES_DIR}/{request.filename}",
+            content=content,
+            offset=request.offset,
+            total_size_bytes=len(file_content),
+            end_of_file=request.offset + len(content) >= len(file_content),
+            modified_timestamp=modified_timestamp,
+        )
+
+    def ResolveFile(self, request, context):
+        """
+        Resolve a name; the small fixed program is reported as the loaded one.
+
+        A name the real server refuses is INVALID_ARGUMENT here too.
+        """
+        self._abort_unless_name_is_valid(request.filename, context)
+        is_mock_program = request.filename == MOCK_PROGRAM_NAME
+        return linuxcnc_pb2.ResolveFileResponse(
+            path=f"{MOCK_NC_FILES_DIR}/{request.filename}",
+            exists=request.filename in MOCK_READABLE_FILES,
+            is_directory=False,
+            is_symlink=False,
+            is_loaded_program=is_mock_program,
+            loaded_program=f"{MOCK_NC_FILES_DIR}/{MOCK_PROGRAM_NAME}",
+            interp_state=linuxcnc_pb2.INTERP_IDLE,
+        )
 
     def _build_status(self):
         """Build a complete mock status response."""

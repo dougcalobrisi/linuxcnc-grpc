@@ -24,7 +24,7 @@ The suite has ~50 tests organized into these areas:
 - **Negative paths** — empty MDI, wrong mode, invalid axis, path traversal, duplicate upload
 - **Streaming** — StreamStatus, StreamErrors
 - **HAL** — GetSystemStatus, QueryPins/Signals/Components/Params, GetValue, StreamStatus, SendCommand, WatchValues
-- **File management** — upload/list/delete cycle
+- **File management** — upload/list/delete cycle, reading a file back whole and in chunks, resolving the loaded program
 
 These tests catch issues that mock-based tests cannot:
 

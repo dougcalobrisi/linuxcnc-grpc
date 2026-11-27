@@ -5,10 +5,13 @@ Provides real LinuxCNC machine control and status via gRPC.
 Requires the linuxcnc Python module and a running LinuxCNC instance.
 """
 
+import errno
 import os
+import stat as stat_module
 import time
 import logging
 import threading
+import secrets
 from collections import deque
 from pathlib import Path
 from typing import Iterator, NamedTuple
@@ -27,6 +30,14 @@ MAX_RECONNECT_INTERVAL = 30  # seconds
 # Input validation limits
 MAX_MDI_COMMAND_LENGTH = 10000  # characters
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+# Most file bytes one ReadFile response carries. Well under the 4 MB that gRPC
+# clients accept by default, so a client needs no special channel options.
+MAX_READ_CHUNK_BYTES = 1024 * 1024  # 1 MiB
+# An upload is written under a private name of this form, next to its
+# destination, and only then given the destination's name. A random token
+# follows the prefix. ListFiles leaves these names out.
+UPLOAD_TEMPORARY_PREFIX = ".linuxcnc-grpc-upload-"
+UPLOAD_TEMPORARY_SUFFIX = ".tmp"
 
 # WaitComplete polling
 DEFAULT_WAIT_COMPLETE_TIMEOUT = 5.0  # seconds, used when the request gives none
@@ -366,6 +377,35 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         if index < 0 or index >= max_index:
             raise ValueError(f"spindle index {index} out of range (0..{max_index - 1})")
 
+    def _resolved_nc_files_dir(self) -> Path:
+        """
+        The NC files directory with symlinks resolved.
+
+        Raises OSError (ELOOP) on every Python version if the directory path
+        goes through more symbolic links than the kernel follows (a loop, or
+        a very long chain).
+        """
+        configured_dir = Path(
+            self._nc_files_dir
+            or os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
+        )
+        try:
+            resolved_dir = configured_dir.resolve()
+        except RuntimeError:
+            # Older Pythons report a symlink loop from resolve() this way.
+            raise OSError(
+                errno.ELOOP, "Too many levels of symbolic links", str(configured_dir)
+            ) from None
+        # Newer Pythons resolve a symlink loop without complaint and return a
+        # path that still contains the link, so ask the kernel. Any other
+        # failure (a directory that does not exist yet) is left to the caller.
+        try:
+            os.stat(configured_dir)
+        except OSError as stat_error:
+            if stat_error.errno == errno.ELOOP:
+                raise
+        return resolved_dir
+
     def _validate_nc_path(self, filename: str) -> Path:
         """Validate and resolve a filename relative to the NC files directory.
 
@@ -376,16 +416,103 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             raise ValueError("Filename must not be empty")
         if "\x00" in filename:
             raise ValueError("Filename must not contain null bytes")
-        allowed_dir = Path(
-            self._nc_files_dir
-            or os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
-        ).resolve()
-        resolved = (allowed_dir / filename).resolve()
+        # Worded as the kernel words it: the cause may be a loop or just a
+        # chain of links longer than the kernel follows.
+        too_many_links_message = f"Too many levels of symbolic links: {filename}"
+        try:
+            allowed_dir = Path(
+                self._nc_files_dir
+                or os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
+            ).resolve()
+            # Newer Pythons resolve a symlink loop without complaint and
+            # return a path that still contains the link, so ask the kernel.
+            try:
+                os.stat(allowed_dir / filename)
+            except OSError as stat_error:
+                if stat_error.errno == errno.ELOOP:
+                    raise ValueError(too_many_links_message) from None
+            resolved = (allowed_dir / filename).resolve()
+        except RuntimeError:
+            # Older Pythons report a symlink loop from resolve() this way.
+            raise ValueError(too_many_links_message) from None
         if not resolved.is_relative_to(allowed_dir):
             raise ValueError(
                 f"Path must be within allowed directory: {allowed_dir}"
             )
         return resolved
+
+    @staticmethod
+    def _stat_if_exists(path: Path) -> os.stat_result | None:
+        """
+        One os.stat of path (following links), or None if nothing is there.
+
+        Callers take existence and file type from this one result, so the
+        two cannot disagree when the path changes meanwhile. A path that
+        runs into a symbolic link loop names nothing either.
+        """
+        try:
+            return os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except OSError as stat_error:
+            if stat_error.errno == errno.ELOOP:
+                return None
+            raise
+
+    @staticmethod
+    def _is_upload_temporary_name(name: str) -> bool:
+        """Whether name is one UploadFile gives the file it is still writing."""
+        return name.startswith(UPLOAD_TEMPORARY_PREFIX) and name.endswith(
+            UPLOAD_TEMPORARY_SUFFIX
+        )
+
+    @staticmethod
+    def _remove_upload_temporary_file(temporary_path: Path) -> None:
+        """Remove an upload's temporary file; a failure is logged, not raised."""
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        except OSError as unlink_error:
+            logger.error(
+                f"UploadFile: could not remove temporary file {temporary_path}: {unlink_error}"
+            )
+
+    def _write_upload_temporary_file(
+        self, directory: Path, content: str, permission_bits: int | None
+    ) -> Path:
+        """
+        Write content to a new temporary file in directory and return its path.
+
+        The name holds a random token, so it cannot collide with a user's
+        file or another upload, and the file is created exclusively without
+        following a link. It is created with the mode a plain open() gives
+        (0666 less the umask); permission_bits, when given, replaces that.
+        If anything fails the temporary file is removed.
+        """
+        temporary_path = directory / (
+            f"{UPLOAD_TEMPORARY_PREFIX}{secrets.token_hex(16)}{UPLOAD_TEMPORARY_SUFFIX}"
+        )
+        file_descriptor = os.open(
+            temporary_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o666,
+        )
+        try:
+            try:
+                # Text mode with the default encoding, as write_text() used.
+                temporary_file = os.fdopen(file_descriptor, "w")
+            except BaseException:
+                os.close(file_descriptor)
+                raise
+            with temporary_file:
+                temporary_file.write(content)
+                if permission_bits is not None:
+                    os.fchmod(file_descriptor, permission_bits)
+        except BaseException:
+            self._remove_upload_temporary_file(temporary_path)
+            raise
+        return temporary_path
 
     # =========================================================================
     # GetStatus RPC
@@ -1012,12 +1139,13 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             if len(request.content) > MAX_UPLOAD_SIZE:
                 context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
-                    f"File content too large ({len(request.content)} bytes, max {MAX_UPLOAD_SIZE})"
+                    f"File content too large ({len(request.content)} characters, max {MAX_UPLOAD_SIZE})"
                 )
                 return
 
             resolved = self._validate_nc_path(request.filename)
-            overwritten = resolved.exists()
+            existing_file_stat = self._stat_if_exists(resolved)
+            overwritten = existing_file_stat is not None
 
             if overwritten and request.fail_if_exists:
                 context.abort(
@@ -1025,10 +1153,60 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                     f"File already exists: {request.filename}"
                 )
                 return
+            if resolved == self._resolved_nc_files_dir() or (
+                overwritten and stat_module.S_ISDIR(existing_file_stat.st_mode)
+            ):
+                # Refused before anything is written: the temporary file
+                # goes next to the destination, and next to the NC files
+                # directory itself is outside it.
+                raise IsADirectoryError(errno.EISDIR, "Is a directory", str(resolved))
+            if overwritten and not os.access(resolved, os.W_OK):
+                # A rename only needs a writable directory. Writing in
+                # place needed a writable file, and a program made
+                # read-only must stay refused.
+                raise PermissionError(errno.EACCES, "Permission denied", str(resolved))
 
             resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(request.content)
-            logger.info(f"UploadFile: wrote {len(request.content)} bytes to {resolved}")
+            # The content never appears under the destination name until it
+            # is complete, and a failure only ever removes the temporary
+            # file, so it cannot remove a file another request put there.
+            # A replaced file keeps its permission bits.
+            temporary_path = self._write_upload_temporary_file(
+                resolved.parent,
+                request.content,
+                stat_module.S_IMODE(existing_file_stat.st_mode) if overwritten else None,
+            )
+            try:
+                if request.fail_if_exists:
+                    # A hard link fails if the destination exists, whatever
+                    # is there (a dangling link included): of two uploads of
+                    # one new name only one gets it.
+                    try:
+                        os.link(temporary_path, resolved)
+                    except FileExistsError:
+                        context.abort(
+                            grpc.StatusCode.ALREADY_EXISTS,
+                            f"File already exists: {request.filename}"
+                        )
+                        return
+                    except OSError as link_error:
+                        # No hard links here (some network and FAT mounts).
+                        # There is no other way to create a complete file
+                        # only if the name is free, so nothing is written.
+                        raise OSError(
+                            link_error.errno,
+                            "fail_if_exists needs a file system with hard links "
+                            f"({link_error.strerror}); upload without fail_if_exists",
+                            str(resolved),
+                        ) from link_error
+                else:
+                    # A rename replaces the destination in one step and does
+                    # not follow a link put there after validation.
+                    os.replace(temporary_path, resolved)
+            finally:
+                # After a rename the temporary name is already gone.
+                self._remove_upload_temporary_file(temporary_path)
+            logger.info(f"UploadFile: wrote {len(request.content)} characters to {resolved}")
 
             return linuxcnc_pb2.UploadFileResponse(
                 path=str(resolved),
@@ -1051,10 +1229,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         """List files in the nc_files directory."""
         logger.debug(f"ListFiles called: subdirectory={request.subdirectory!r}")
         try:
-            allowed_dir = Path(
-                self._nc_files_dir
-                or os.getenv("LINUXCNC_NC_FILES", DEFAULT_NC_FILES_DIR)
-            ).resolve()
+            allowed_dir = self._resolved_nc_files_dir()
 
             if request.subdirectory:
                 target_dir = self._validate_nc_path(request.subdirectory)
@@ -1070,6 +1245,9 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
             files = []
             for entry in sorted(target_dir.iterdir()):
+                # An upload in progress, or one a crash left unfinished.
+                if self._is_upload_temporary_name(entry.name):
+                    continue
                 stat = entry.stat()
                 files.append(linuxcnc_pb2.FileInfo(
                     name=entry.name,
@@ -1123,6 +1301,204 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
         except OSError as e:
             context.abort(grpc.StatusCode.INTERNAL, f"Failed to delete file: {e}")
+
+    # =========================================================================
+    # ReadFile RPC
+    # =========================================================================
+
+    def ReadFile(
+        self,
+        request: linuxcnc_pb2.ReadFileRequest,
+        context: grpc.ServicerContext
+    ) -> linuxcnc_pb2.ReadFileResponse:
+        """
+        Read a file, or one chunk of it, from the nc_files directory.
+
+        A response carries at most MAX_READ_CHUNK_BYTES. Larger files are read
+        with repeated calls, advancing request.offset.
+        """
+        logger.debug(
+            f"ReadFile called: filename={request.filename!r}, "
+            f"offset={request.offset}, max_bytes={request.max_bytes}"
+        )
+        try:
+            if request.offset < 0:
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "offset must not be negative")
+                return
+            if request.max_bytes < 0:
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "max_bytes must not be negative")
+                return
+
+            resolved = self._validate_nc_path(request.filename)
+
+            if not resolved.exists():
+                context.abort(
+                    grpc.StatusCode.NOT_FOUND,
+                    f"File not found: {request.filename}"
+                )
+                return
+            if not resolved.is_file():
+                context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    "Only regular files can be read"
+                )
+                return
+
+            chunk_size = request.max_bytes or MAX_READ_CHUNK_BYTES
+            chunk_size = min(chunk_size, MAX_READ_CHUNK_BYTES)
+
+            # The resolved path contains no symlinks. O_NOFOLLOW makes the
+            # open fail if the file itself was swapped for one after the
+            # check above, so the read cannot be redirected outside the
+            # directory that way. O_NONBLOCK keeps the open from hanging if
+            # it was swapped for a FIFO; the regular-file check below then
+            # rejects it.
+            file_descriptor = os.open(
+                resolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            )
+            try:
+                nc_file = os.fdopen(file_descriptor, "rb")
+            except BaseException:
+                # fdopen did not take the descriptor over, so close it here.
+                os.close(file_descriptor)
+                raise
+            with nc_file:
+                stat_before_read = os.fstat(nc_file.fileno())
+                if not stat_module.S_ISREG(stat_before_read.st_mode):
+                    context.abort(
+                        grpc.StatusCode.INVALID_ARGUMENT,
+                        "Only regular files can be read"
+                    )
+                    return
+                nc_file.seek(request.offset)
+                content = nc_file.read(chunk_size)
+                # Size and mtime are taken from the open file, after the
+                # read: they describe the file the content came from, and a
+                # file truncated just before the read reports its new size,
+                # so end_of_file is right for the bytes actually returned.
+                file_stat = os.fstat(nc_file.fileno())
+                # A file rewritten during the read would pair bytes from
+                # one version with the size and mtime of another.
+                if (
+                    file_stat.st_size != stat_before_read.st_size
+                    or file_stat.st_mtime_ns != stat_before_read.st_mtime_ns
+                ):
+                    context.abort(
+                        grpc.StatusCode.ABORTED,
+                        f"File changed while it was being read: {request.filename}; "
+                        "start reading it again from offset 0"
+                    )
+                    return
+
+            return linuxcnc_pb2.ReadFileResponse(
+                path=str(resolved),
+                content=content,
+                offset=request.offset,
+                total_size_bytes=file_stat.st_size,
+                end_of_file=request.offset + len(content) >= file_stat.st_size,
+                modified_timestamp=file_stat.st_mtime_ns,
+            )
+        except ValueError as e:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+        except OSError as e:
+            context.abort(grpc.StatusCode.INTERNAL, f"Failed to read file: {e}")
+
+    # =========================================================================
+    # ResolveFile RPC
+    # =========================================================================
+
+    @staticmethod
+    def _name_follows_symlink(allowed_dir: Path, filename: str) -> bool:
+        """
+        Whether resolving filename under allowed_dir goes through a symlink.
+
+        Walks the name one component at a time, the way the kernel resolves
+        it. Comparing the resolved path with the lexically normalised one is
+        not enough: "link/../part.ngc" follows the link and can still end up
+        at the path the lexical form names.
+        """
+        current_path = allowed_dir
+        for path_component in Path(filename).parts:
+            candidate_path = current_path / path_component
+            if candidate_path.is_symlink():
+                return True
+            current_path = Path(os.path.realpath(candidate_path))
+        return False
+
+    def ResolveFile(
+        self,
+        request: linuxcnc_pb2.ResolveFileRequest,
+        context: grpc.ServicerContext
+    ) -> linuxcnc_pb2.ResolveFileResponse:
+        """
+        Resolve a name in the nc_files directory and compare it with the
+        program LinuxCNC has loaded.
+
+        Lets a client decide whether replacing or deleting the name would
+        touch the loaded program, without resolving symlinks remotely.
+        """
+        logger.debug(f"ResolveFile called: filename={request.filename!r}")
+        try:
+            # The directory first: if it cannot be resolved, that is the
+            # server's problem (INTERNAL), not a bad file name.
+            allowed_dir = self._resolved_nc_files_dir()
+            resolved = self._validate_nc_path(request.filename)
+            follows_symlink = self._name_follows_symlink(allowed_dir, request.filename)
+
+            try:
+                with self._lock:
+                    self._stat.poll()
+                    loaded_program_as_reported = self._stat.file
+                    interpreter_state = LinuxCNCMapper(
+                        self._stat, version=self._version
+                    )._map_interp_state(self._stat.interp_state)
+            except linuxcnc.error as e:
+                logger.error(f"LinuxCNC error in ResolveFile: {e}")
+                context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
+                return
+
+            loaded_program = ""
+            is_loaded_program = False
+            loaded_program_path = None
+            if loaded_program_as_reported:
+                try:
+                    loaded_program_path = Path(loaded_program_as_reported).resolve()
+                except RuntimeError:
+                    # Older Pythons report a symlink loop from resolve() this
+                    # way. A path that cannot be resolved is not this file;
+                    # it is returned as LinuxCNC reported it.
+                    loaded_program = loaded_program_as_reported
+            # One stat answers exists, is_directory and the identity check
+            # below, so the three agree even if the file changes meanwhile.
+            resolved_file_stat = self._stat_if_exists(resolved)
+            if loaded_program_path is not None:
+                loaded_program = str(loaded_program_path)
+                is_loaded_program = loaded_program_path == resolved
+                if not is_loaded_program and resolved_file_stat is not None:
+                    # A hard link is the same file under another name. A
+                    # loaded program that is gone by now is not this file.
+                    loaded_program_stat = self._stat_if_exists(loaded_program_path)
+                    is_loaded_program = (
+                        loaded_program_stat is not None
+                        and os.path.samestat(resolved_file_stat, loaded_program_stat)
+                    )
+
+            return linuxcnc_pb2.ResolveFileResponse(
+                path=str(resolved),
+                exists=resolved_file_stat is not None,
+                is_directory=(
+                    resolved_file_stat is not None
+                    and stat_module.S_ISDIR(resolved_file_stat.st_mode)
+                ),
+                is_symlink=follows_symlink,
+                is_loaded_program=is_loaded_program,
+                loaded_program=loaded_program,
+                interp_state=interpreter_state,
+            )
+        except ValueError as e:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+        except OSError as e:
+            context.abort(grpc.StatusCode.INTERNAL, f"Failed to resolve file: {e}")
 
     # =========================================================================
     # StreamErrors RPC

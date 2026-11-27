@@ -27,6 +27,8 @@ const (
 	LinuxCNCService_UploadFile_FullMethodName   = "/linuxcnc.LinuxCNCService/UploadFile"
 	LinuxCNCService_ListFiles_FullMethodName    = "/linuxcnc.LinuxCNCService/ListFiles"
 	LinuxCNCService_DeleteFile_FullMethodName   = "/linuxcnc.LinuxCNCService/DeleteFile"
+	LinuxCNCService_ReadFile_FullMethodName     = "/linuxcnc.LinuxCNCService/ReadFile"
+	LinuxCNCService_ResolveFile_FullMethodName  = "/linuxcnc.LinuxCNCService/ResolveFile"
 )
 
 // LinuxCNCServiceClient is the client API for LinuxCNCService service.
@@ -49,6 +51,11 @@ type LinuxCNCServiceClient interface {
 	ListFiles(ctx context.Context, in *ListFilesRequest, opts ...grpc.CallOption) (*ListFilesResponse, error)
 	// Delete a file from the nc_files directory
 	DeleteFile(ctx context.Context, in *DeleteFileRequest, opts ...grpc.CallOption) (*DeleteFileResponse, error)
+	// Read a file (or one chunk of it) from the nc_files directory
+	ReadFile(ctx context.Context, in *ReadFileRequest, opts ...grpc.CallOption) (*ReadFileResponse, error)
+	// Resolve a name in the nc_files directory to its canonical path and say
+	// whether it is the program LinuxCNC currently has loaded
+	ResolveFile(ctx context.Context, in *ResolveFileRequest, opts ...grpc.CallOption) (*ResolveFileResponse, error)
 }
 
 type linuxCNCServiceClient struct {
@@ -157,6 +164,26 @@ func (c *linuxCNCServiceClient) DeleteFile(ctx context.Context, in *DeleteFileRe
 	return out, nil
 }
 
+func (c *linuxCNCServiceClient) ReadFile(ctx context.Context, in *ReadFileRequest, opts ...grpc.CallOption) (*ReadFileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadFileResponse)
+	err := c.cc.Invoke(ctx, LinuxCNCService_ReadFile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *linuxCNCServiceClient) ResolveFile(ctx context.Context, in *ResolveFileRequest, opts ...grpc.CallOption) (*ResolveFileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveFileResponse)
+	err := c.cc.Invoke(ctx, LinuxCNCService_ResolveFile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LinuxCNCServiceServer is the server API for LinuxCNCService service.
 // All implementations must embed UnimplementedLinuxCNCServiceServer
 // for forward compatibility.
@@ -177,6 +204,11 @@ type LinuxCNCServiceServer interface {
 	ListFiles(context.Context, *ListFilesRequest) (*ListFilesResponse, error)
 	// Delete a file from the nc_files directory
 	DeleteFile(context.Context, *DeleteFileRequest) (*DeleteFileResponse, error)
+	// Read a file (or one chunk of it) from the nc_files directory
+	ReadFile(context.Context, *ReadFileRequest) (*ReadFileResponse, error)
+	// Resolve a name in the nc_files directory to its canonical path and say
+	// whether it is the program LinuxCNC currently has loaded
+	ResolveFile(context.Context, *ResolveFileRequest) (*ResolveFileResponse, error)
 	mustEmbedUnimplementedLinuxCNCServiceServer()
 }
 
@@ -210,6 +242,12 @@ func (UnimplementedLinuxCNCServiceServer) ListFiles(context.Context, *ListFilesR
 }
 func (UnimplementedLinuxCNCServiceServer) DeleteFile(context.Context, *DeleteFileRequest) (*DeleteFileResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteFile not implemented")
+}
+func (UnimplementedLinuxCNCServiceServer) ReadFile(context.Context, *ReadFileRequest) (*ReadFileResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReadFile not implemented")
+}
+func (UnimplementedLinuxCNCServiceServer) ResolveFile(context.Context, *ResolveFileRequest) (*ResolveFileResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResolveFile not implemented")
 }
 func (UnimplementedLinuxCNCServiceServer) mustEmbedUnimplementedLinuxCNCServiceServer() {}
 func (UnimplementedLinuxCNCServiceServer) testEmbeddedByValue()                         {}
@@ -362,6 +400,42 @@ func _LinuxCNCService_DeleteFile_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LinuxCNCService_ReadFile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadFileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LinuxCNCServiceServer).ReadFile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LinuxCNCService_ReadFile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LinuxCNCServiceServer).ReadFile(ctx, req.(*ReadFileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LinuxCNCService_ResolveFile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveFileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LinuxCNCServiceServer).ResolveFile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LinuxCNCService_ResolveFile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LinuxCNCServiceServer).ResolveFile(ctx, req.(*ResolveFileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LinuxCNCService_ServiceDesc is the grpc.ServiceDesc for LinuxCNCService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -392,6 +466,14 @@ var LinuxCNCService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteFile",
 			Handler:    _LinuxCNCService_DeleteFile_Handler,
+		},
+		{
+			MethodName: "ReadFile",
+			Handler:    _LinuxCNCService_ReadFile_Handler,
+		},
+		{
+			MethodName: "ResolveFile",
+			Handler:    _LinuxCNCService_ResolveFile_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

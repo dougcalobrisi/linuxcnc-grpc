@@ -5515,6 +5515,291 @@ func (x *DeleteFileResponse) GetPath() string {
 	return ""
 }
 
+// Read a file from the nc_files directory, whole or in chunks.
+// One response carries at most 1 MiB of content, so every response fits in a
+// client's default 4 MB receive limit. To read a larger file, call again with
+// offset advanced by len(content) until end_of_file is true.
+type ReadFileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Filename      string                 `protobuf:"bytes,1,opt,name=filename,proto3" json:"filename,omitempty"`                  // Relative path within nc_files dir
+	Offset        int64                  `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`                     // Byte offset to start reading from (default 0)
+	MaxBytes      int32                  `protobuf:"varint,3,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"` // Most bytes to return (0 or more than 1 MiB means 1 MiB)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadFileRequest) Reset() {
+	*x = ReadFileRequest{}
+	mi := &file_linuxcnc_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadFileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadFileRequest) ProtoMessage() {}
+
+func (x *ReadFileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadFileRequest.ProtoReflect.Descriptor instead.
+func (*ReadFileRequest) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *ReadFileRequest) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+func (x *ReadFileRequest) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *ReadFileRequest) GetMaxBytes() int32 {
+	if x != nil {
+		return x.MaxBytes
+	}
+	return 0
+}
+
+type ReadFileResponse struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Path              string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`                                                     // Absolute, canonical path of the file read
+	Content           []byte                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`                                               // File bytes from offset (a chunk may end inside a UTF-8 character)
+	Offset            int64                  `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`                                                // Offset this content starts at
+	TotalSizeBytes    int64                  `protobuf:"varint,4,opt,name=total_size_bytes,json=totalSizeBytes,proto3" json:"total_size_bytes,omitempty"`        // Size of the whole file when it was read
+	EndOfFile         bool                   `protobuf:"varint,5,opt,name=end_of_file,json=endOfFile,proto3" json:"end_of_file,omitempty"`                       // True if this content reaches the end of the file
+	ModifiedTimestamp int64                  `protobuf:"varint,6,opt,name=modified_timestamp,json=modifiedTimestamp,proto3" json:"modified_timestamp,omitempty"` // Last modified time (unix timestamp in nanoseconds). A change in it or in total_size_bytes between chunks means the file was modified
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ReadFileResponse) Reset() {
+	*x = ReadFileResponse{}
+	mi := &file_linuxcnc_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadFileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadFileResponse) ProtoMessage() {}
+
+func (x *ReadFileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadFileResponse.ProtoReflect.Descriptor instead.
+func (*ReadFileResponse) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *ReadFileResponse) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ReadFileResponse) GetContent() []byte {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
+func (x *ReadFileResponse) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *ReadFileResponse) GetTotalSizeBytes() int64 {
+	if x != nil {
+		return x.TotalSizeBytes
+	}
+	return 0
+}
+
+func (x *ReadFileResponse) GetEndOfFile() bool {
+	if x != nil {
+		return x.EndOfFile
+	}
+	return false
+}
+
+func (x *ReadFileResponse) GetModifiedTimestamp() int64 {
+	if x != nil {
+		return x.ModifiedTimestamp
+	}
+	return 0
+}
+
+// Resolve a name in the nc_files directory
+type ResolveFileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Filename      string                 `protobuf:"bytes,1,opt,name=filename,proto3" json:"filename,omitempty"` // Relative path within nc_files dir
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveFileRequest) Reset() {
+	*x = ResolveFileRequest{}
+	mi := &file_linuxcnc_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveFileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveFileRequest) ProtoMessage() {}
+
+func (x *ResolveFileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveFileRequest.ProtoReflect.Descriptor instead.
+func (*ResolveFileRequest) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *ResolveFileRequest) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+type ResolveFileResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Path            string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`                                                             // Absolute, canonical path (symlinks resolved): the file UploadFile, DeleteFile and ReadFile act on for this name
+	Exists          bool                   `protobuf:"varint,2,opt,name=exists,proto3" json:"exists,omitempty"`                                                        // True if something exists at that path
+	IsDirectory     bool                   `protobuf:"varint,3,opt,name=is_directory,json=isDirectory,proto3" json:"is_directory,omitempty"`                           // True if it is a directory
+	IsSymlink       bool                   `protobuf:"varint,4,opt,name=is_symlink,json=isSymlink,proto3" json:"is_symlink,omitempty"`                                 // True if resolving the name goes through a symbolic link at any component
+	IsLoadedProgram bool                   `protobuf:"varint,5,opt,name=is_loaded_program,json=isLoadedProgram,proto3" json:"is_loaded_program,omitempty"`             // True if this is the file LinuxCNC has loaded (TaskStatus.file), by canonical path or by being the same file on disk
+	LoadedProgram   string                 `protobuf:"bytes,6,opt,name=loaded_program,json=loadedProgram,proto3" json:"loaded_program,omitempty"`                      // Canonical path of the loaded program, empty if none
+	InterpState     InterpState            `protobuf:"varint,7,opt,name=interp_state,json=interpState,proto3,enum=linuxcnc.InterpState" json:"interp_state,omitempty"` // Interpreter state when checked; anything but INTERP_IDLE means the loaded program is in use
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ResolveFileResponse) Reset() {
+	*x = ResolveFileResponse{}
+	mi := &file_linuxcnc_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveFileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveFileResponse) ProtoMessage() {}
+
+func (x *ResolveFileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveFileResponse.ProtoReflect.Descriptor instead.
+func (*ResolveFileResponse) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *ResolveFileResponse) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ResolveFileResponse) GetExists() bool {
+	if x != nil {
+		return x.Exists
+	}
+	return false
+}
+
+func (x *ResolveFileResponse) GetIsDirectory() bool {
+	if x != nil {
+		return x.IsDirectory
+	}
+	return false
+}
+
+func (x *ResolveFileResponse) GetIsSymlink() bool {
+	if x != nil {
+		return x.IsSymlink
+	}
+	return false
+}
+
+func (x *ResolveFileResponse) GetIsLoadedProgram() bool {
+	if x != nil {
+		return x.IsLoadedProgram
+	}
+	return false
+}
+
+func (x *ResolveFileResponse) GetLoadedProgram() string {
+	if x != nil {
+		return x.LoadedProgram
+	}
+	return ""
+}
+
+func (x *ResolveFileResponse) GetInterpState() InterpState {
+	if x != nil {
+		return x.InterpState
+	}
+	return InterpState_INTERP_STATE_UNSPECIFIED
+}
+
 var File_linuxcnc_proto protoreflect.FileDescriptor
 
 const file_linuxcnc_proto_rawDesc = "" +
@@ -5905,7 +6190,29 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\x11DeleteFileRequest\x12\x1a\n" +
 	"\bfilename\x18\x01 \x01(\tR\bfilename\"(\n" +
 	"\x12DeleteFileResponse\x12\x12\n" +
-	"\x04path\x18\x01 \x01(\tR\x04path*w\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\"b\n" +
+	"\x0fReadFileRequest\x12\x1a\n" +
+	"\bfilename\x18\x01 \x01(\tR\bfilename\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x03R\x06offset\x12\x1b\n" +
+	"\tmax_bytes\x18\x03 \x01(\x05R\bmaxBytes\"\xd1\x01\n" +
+	"\x10ReadFileResponse\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\fR\acontent\x12\x16\n" +
+	"\x06offset\x18\x03 \x01(\x03R\x06offset\x12(\n" +
+	"\x10total_size_bytes\x18\x04 \x01(\x03R\x0etotalSizeBytes\x12\x1e\n" +
+	"\vend_of_file\x18\x05 \x01(\bR\tendOfFile\x12-\n" +
+	"\x12modified_timestamp\x18\x06 \x01(\x03R\x11modifiedTimestamp\"0\n" +
+	"\x12ResolveFileRequest\x12\x1a\n" +
+	"\bfilename\x18\x01 \x01(\tR\bfilename\"\x90\x02\n" +
+	"\x13ResolveFileResponse\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x16\n" +
+	"\x06exists\x18\x02 \x01(\bR\x06exists\x12!\n" +
+	"\fis_directory\x18\x03 \x01(\bR\visDirectory\x12\x1d\n" +
+	"\n" +
+	"is_symlink\x18\x04 \x01(\bR\tisSymlink\x12*\n" +
+	"\x11is_loaded_program\x18\x05 \x01(\bR\x0fisLoadedProgram\x12%\n" +
+	"\x0eloaded_program\x18\x06 \x01(\tR\rloadedProgram\x128\n" +
+	"\finterp_state\x18\a \x01(\x0e2\x15.linuxcnc.InterpStateR\vinterpState*w\n" +
 	"\vInterpState\x12\x1c\n" +
 	"\x18INTERP_STATE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vINTERP_IDLE\x10\x01\x12\x12\n" +
@@ -5994,7 +6301,7 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\vAUTO_RESUME\x10\x02\x12\r\n" +
 	"\tAUTO_STEP\x10\x03\x12\x10\n" +
 	"\fAUTO_REVERSE\x10\x04\x12\x10\n" +
-	"\fAUTO_FORWARD\x10\x05\x1a\x02\x18\x012\xcf\x04\n" +
+	"\fAUTO_FORWARD\x10\x05\x1a\x02\x18\x012\xde\x05\n" +
 	"\x0fLinuxCNCService\x12A\n" +
 	"\tGetStatus\x12\x1a.linuxcnc.GetStatusRequest\x1a\x18.linuxcnc.LinuxCNCStatus\x12C\n" +
 	"\vSendCommand\x12\x19.linuxcnc.LinuxCNCCommand\x1a\x19.linuxcnc.CommandResponse\x12H\n" +
@@ -6005,7 +6312,9 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"UploadFile\x12\x1b.linuxcnc.UploadFileRequest\x1a\x1c.linuxcnc.UploadFileResponse\x12D\n" +
 	"\tListFiles\x12\x1a.linuxcnc.ListFilesRequest\x1a\x1b.linuxcnc.ListFilesResponse\x12G\n" +
 	"\n" +
-	"DeleteFile\x12\x1b.linuxcnc.DeleteFileRequest\x1a\x1c.linuxcnc.DeleteFileResponseB7Z5github.com/dougcalobrisi/linuxcnc-grpc/packages/go;pbb\x06proto3"
+	"DeleteFile\x12\x1b.linuxcnc.DeleteFileRequest\x1a\x1c.linuxcnc.DeleteFileResponse\x12A\n" +
+	"\bReadFile\x12\x19.linuxcnc.ReadFileRequest\x1a\x1a.linuxcnc.ReadFileResponse\x12J\n" +
+	"\vResolveFile\x12\x1c.linuxcnc.ResolveFileRequest\x1a\x1d.linuxcnc.ResolveFileResponseB7Z5github.com/dougcalobrisi/linuxcnc-grpc/packages/go;pbb\x06proto3"
 
 var (
 	file_linuxcnc_proto_rawDescOnce sync.Once
@@ -6020,7 +6329,7 @@ func file_linuxcnc_proto_rawDescGZIP() []byte {
 }
 
 var file_linuxcnc_proto_enumTypes = make([]protoimpl.EnumInfo, 17)
-var file_linuxcnc_proto_msgTypes = make([]protoimpl.MessageInfo, 56)
+var file_linuxcnc_proto_msgTypes = make([]protoimpl.MessageInfo, 60)
 var file_linuxcnc_proto_goTypes = []any{
 	(InterpState)(0),                        // 0: linuxcnc.InterpState
 	(TaskMode)(0),                           // 1: linuxcnc.TaskMode
@@ -6095,6 +6404,10 @@ var file_linuxcnc_proto_goTypes = []any{
 	(*ListFilesResponse)(nil),               // 70: linuxcnc.ListFilesResponse
 	(*DeleteFileRequest)(nil),               // 71: linuxcnc.DeleteFileRequest
 	(*DeleteFileResponse)(nil),              // 72: linuxcnc.DeleteFileResponse
+	(*ReadFileRequest)(nil),                 // 73: linuxcnc.ReadFileRequest
+	(*ReadFileResponse)(nil),                // 74: linuxcnc.ReadFileResponse
+	(*ResolveFileRequest)(nil),              // 75: linuxcnc.ResolveFileRequest
+	(*ResolveFileResponse)(nil),             // 76: linuxcnc.ResolveFileResponse
 }
 var file_linuxcnc_proto_depIdxs = []int32{
 	4,  // 0: linuxcnc.TaskStatus.state:type_name -> linuxcnc.RcsStatus
@@ -6166,27 +6479,32 @@ var file_linuxcnc_proto_depIdxs = []int32{
 	59, // 66: linuxcnc.LinuxCNCCommand.operator_message:type_name -> linuxcnc.OperatorMessageCommand
 	4,  // 67: linuxcnc.CommandResponse.status:type_name -> linuxcnc.RcsStatus
 	69, // 68: linuxcnc.ListFilesResponse.files:type_name -> linuxcnc.FileInfo
-	62, // 69: linuxcnc.LinuxCNCService.GetStatus:input_type -> linuxcnc.GetStatusRequest
-	60, // 70: linuxcnc.LinuxCNCService.SendCommand:input_type -> linuxcnc.LinuxCNCCommand
-	63, // 71: linuxcnc.LinuxCNCService.WaitComplete:input_type -> linuxcnc.WaitCompleteRequest
-	64, // 72: linuxcnc.LinuxCNCService.StreamStatus:input_type -> linuxcnc.StreamStatusRequest
-	65, // 73: linuxcnc.LinuxCNCService.StreamErrors:input_type -> linuxcnc.StreamErrorsRequest
-	66, // 74: linuxcnc.LinuxCNCService.UploadFile:input_type -> linuxcnc.UploadFileRequest
-	68, // 75: linuxcnc.LinuxCNCService.ListFiles:input_type -> linuxcnc.ListFilesRequest
-	71, // 76: linuxcnc.LinuxCNCService.DeleteFile:input_type -> linuxcnc.DeleteFileRequest
-	30, // 77: linuxcnc.LinuxCNCService.GetStatus:output_type -> linuxcnc.LinuxCNCStatus
-	61, // 78: linuxcnc.LinuxCNCService.SendCommand:output_type -> linuxcnc.CommandResponse
-	61, // 79: linuxcnc.LinuxCNCService.WaitComplete:output_type -> linuxcnc.CommandResponse
-	30, // 80: linuxcnc.LinuxCNCService.StreamStatus:output_type -> linuxcnc.LinuxCNCStatus
-	29, // 81: linuxcnc.LinuxCNCService.StreamErrors:output_type -> linuxcnc.ErrorMessage
-	67, // 82: linuxcnc.LinuxCNCService.UploadFile:output_type -> linuxcnc.UploadFileResponse
-	70, // 83: linuxcnc.LinuxCNCService.ListFiles:output_type -> linuxcnc.ListFilesResponse
-	72, // 84: linuxcnc.LinuxCNCService.DeleteFile:output_type -> linuxcnc.DeleteFileResponse
-	77, // [77:85] is the sub-list for method output_type
-	69, // [69:77] is the sub-list for method input_type
-	69, // [69:69] is the sub-list for extension type_name
-	69, // [69:69] is the sub-list for extension extendee
-	0,  // [0:69] is the sub-list for field type_name
+	0,  // 69: linuxcnc.ResolveFileResponse.interp_state:type_name -> linuxcnc.InterpState
+	62, // 70: linuxcnc.LinuxCNCService.GetStatus:input_type -> linuxcnc.GetStatusRequest
+	60, // 71: linuxcnc.LinuxCNCService.SendCommand:input_type -> linuxcnc.LinuxCNCCommand
+	63, // 72: linuxcnc.LinuxCNCService.WaitComplete:input_type -> linuxcnc.WaitCompleteRequest
+	64, // 73: linuxcnc.LinuxCNCService.StreamStatus:input_type -> linuxcnc.StreamStatusRequest
+	65, // 74: linuxcnc.LinuxCNCService.StreamErrors:input_type -> linuxcnc.StreamErrorsRequest
+	66, // 75: linuxcnc.LinuxCNCService.UploadFile:input_type -> linuxcnc.UploadFileRequest
+	68, // 76: linuxcnc.LinuxCNCService.ListFiles:input_type -> linuxcnc.ListFilesRequest
+	71, // 77: linuxcnc.LinuxCNCService.DeleteFile:input_type -> linuxcnc.DeleteFileRequest
+	73, // 78: linuxcnc.LinuxCNCService.ReadFile:input_type -> linuxcnc.ReadFileRequest
+	75, // 79: linuxcnc.LinuxCNCService.ResolveFile:input_type -> linuxcnc.ResolveFileRequest
+	30, // 80: linuxcnc.LinuxCNCService.GetStatus:output_type -> linuxcnc.LinuxCNCStatus
+	61, // 81: linuxcnc.LinuxCNCService.SendCommand:output_type -> linuxcnc.CommandResponse
+	61, // 82: linuxcnc.LinuxCNCService.WaitComplete:output_type -> linuxcnc.CommandResponse
+	30, // 83: linuxcnc.LinuxCNCService.StreamStatus:output_type -> linuxcnc.LinuxCNCStatus
+	29, // 84: linuxcnc.LinuxCNCService.StreamErrors:output_type -> linuxcnc.ErrorMessage
+	67, // 85: linuxcnc.LinuxCNCService.UploadFile:output_type -> linuxcnc.UploadFileResponse
+	70, // 86: linuxcnc.LinuxCNCService.ListFiles:output_type -> linuxcnc.ListFilesResponse
+	72, // 87: linuxcnc.LinuxCNCService.DeleteFile:output_type -> linuxcnc.DeleteFileResponse
+	74, // 88: linuxcnc.LinuxCNCService.ReadFile:output_type -> linuxcnc.ReadFileResponse
+	76, // 89: linuxcnc.LinuxCNCService.ResolveFile:output_type -> linuxcnc.ResolveFileResponse
+	80, // [80:90] is the sub-list for method output_type
+	70, // [70:80] is the sub-list for method input_type
+	70, // [70:70] is the sub-list for extension type_name
+	70, // [70:70] is the sub-list for extension extendee
+	0,  // [0:70] is the sub-list for field type_name
 }
 
 func init() { file_linuxcnc_proto_init() }
@@ -6240,7 +6558,7 @@ func file_linuxcnc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_linuxcnc_proto_rawDesc), len(file_linuxcnc_proto_rawDesc)),
 			NumEnums:      17,
-			NumMessages:   56,
+			NumMessages:   60,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

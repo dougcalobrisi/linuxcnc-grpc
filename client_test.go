@@ -4,6 +4,7 @@ package linuxcnc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -14,7 +15,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 // TestFixtures holds expected values loaded from JSON fixtures.
@@ -594,5 +597,163 @@ func TestHalStreamStatus(t *testing.T) {
 
 	if count != 3 {
 		t.Errorf("expected 3 updates, got %d", count)
+	}
+}
+
+func TestClientReadFile(t *testing.T) {
+	client, err := NewClient(serverAddr)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	content, err := client.ReadFile(ctx, "mock_program.ngc")
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(content) != "G21\nG0 X1 Y1\nM2\n" {
+		t.Errorf("unexpected content: %q", content)
+	}
+
+	// Reading in small chunks must give the same bytes.
+	var chunked []byte
+	for {
+		chunk, err := client.LinuxCNC.ReadFile(ctx, &ReadFileRequest{
+			Filename: "mock_program.ngc",
+			Offset:   int64(len(chunked)),
+			MaxBytes: 5,
+		})
+		if err != nil {
+			t.Fatalf("chunked ReadFile failed: %v", err)
+		}
+		chunked = append(chunked, chunk.Content...)
+		if chunk.EndOfFile {
+			break
+		}
+	}
+	if string(chunked) != string(content) {
+		t.Errorf("chunked read %q differs from whole read %q", chunked, content)
+	}
+
+	if _, err := client.ReadFile(ctx, "missing.ngc"); err == nil {
+		t.Errorf("expected an error for a missing file")
+	}
+}
+
+// The mock's large file: byte N is N modulo the period, a little over two
+// chunks long, so the helper needs three responses to read it.
+const (
+	readChunkCapBytes         = 1024 * 1024
+	largeProgramPatternPeriod = 251
+	largeProgramSizeBytes     = 2*readChunkCapBytes + 4321
+)
+
+func TestClientReadFileLargerThanOneChunk(t *testing.T) {
+	client, err := NewClient(serverAddr)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// One response must not carry the whole file, or the helper's paging
+	// would not be exercised at all.
+	firstChunk, err := client.LinuxCNC.ReadFile(ctx, &ReadFileRequest{Filename: "mock_large_program.ngc"})
+	if err != nil {
+		t.Fatalf("first chunk ReadFile failed: %v", err)
+	}
+	if len(firstChunk.Content) != readChunkCapBytes || firstChunk.EndOfFile {
+		t.Fatalf("expected a first chunk of %d bytes that is not the end, got %d bytes, end_of_file=%v",
+			readChunkCapBytes, len(firstChunk.Content), firstChunk.EndOfFile)
+	}
+
+	expectedContent := make([]byte, largeProgramSizeBytes)
+	for byteIndex := range expectedContent {
+		expectedContent[byteIndex] = byte(byteIndex % largeProgramPatternPeriod)
+	}
+
+	content, err := client.ReadFile(ctx, "mock_large_program.ngc")
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if len(content) != largeProgramSizeBytes {
+		t.Fatalf("expected %d bytes, got %d", largeProgramSizeBytes, len(content))
+	}
+	if !bytes.Equal(content, expectedContent) {
+		firstDifference := 0
+		for content[firstDifference] == expectedContent[firstDifference] {
+			firstDifference++
+		}
+		t.Errorf("content differs from the expected pattern, first at byte %d", firstDifference)
+	}
+}
+
+func TestClientReadFileChangedBetweenPages(t *testing.T) {
+	client, err := NewClient(serverAddr)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	content, err := client.ReadFile(ctx, "mock_changing_program.ngc")
+	if err == nil {
+		t.Fatalf("expected an error for a file that changes between pages, got %d bytes", len(content))
+	}
+	if !strings.Contains(err.Error(), "changed while it was being read") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if content != nil {
+		t.Errorf("expected no content with the error, got %d bytes", len(content))
+	}
+}
+
+func TestClientReadFileRejectsNegativeOffsetAndLength(t *testing.T) {
+	client, err := NewClient(serverAddr)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	invalidRequests := map[string]*ReadFileRequest{
+		"negative offset":    {Filename: "mock_program.ngc", Offset: -1},
+		"negative max_bytes": {Filename: "mock_program.ngc", MaxBytes: -1},
+	}
+	for caseName, invalidRequest := range invalidRequests {
+		if _, err := client.LinuxCNC.ReadFile(ctx, invalidRequest); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: expected InvalidArgument, got %v", caseName, err)
+		}
+	}
+}
+
+func TestClientResolveFile(t *testing.T) {
+	client, err := NewClient(serverAddr)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resolved, err := client.ResolveFile(ctx, "mock_program.ngc")
+	if err != nil {
+		t.Fatalf("ResolveFile failed: %v", err)
+	}
+	if !resolved.IsLoadedProgram {
+		t.Errorf("expected mock_program.ngc to be the loaded program")
+	}
+	if resolved.Path != resolved.LoadedProgram {
+		t.Errorf("path %q should equal loaded program %q", resolved.Path, resolved.LoadedProgram)
 	}
 }

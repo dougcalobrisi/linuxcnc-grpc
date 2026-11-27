@@ -28,6 +28,12 @@ from linuxcnc_pb import (
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 MOCK_SERVER_PATH = Path(__file__).parent / "mock_server.py"
 
+# The mock's large file: byte N is N modulo the period. Stated here rather
+# than imported so the test checks the mock against an independent copy.
+READ_CHUNK_CAP_BYTES = 1024 * 1024
+LARGE_PROGRAM_PATTERN_PERIOD = 251
+LARGE_PROGRAM_SIZE_BYTES = 2 * READ_CHUNK_CAP_BYTES + 4321
+
 
 def load_fixture(name: str) -> dict:
     """Load a JSON fixture file."""
@@ -199,6 +205,144 @@ class TestLinuxCNCServiceIntegration:
             )
         )
         assert wait_response.status == linuxcnc_pb2.RCS_DONE
+
+    def test_read_file(self, linuxcnc_client):
+        """ReadFile returns the mock program, and pages through it by offset."""
+        whole = linuxcnc_client.ReadFile(
+            linuxcnc_pb2.ReadFileRequest(filename="mock_program.ngc")
+        )
+        assert whole.content == b"G21\nG0 X1 Y1\nM2\n"
+        assert whole.end_of_file
+        assert whole.total_size_bytes == len(whole.content)
+
+        first_chunk = linuxcnc_client.ReadFile(
+            linuxcnc_pb2.ReadFileRequest(filename="mock_program.ngc", max_bytes=4)
+        )
+        assert first_chunk.content == b"G21\n"
+        assert not first_chunk.end_of_file
+
+    def test_read_file_rejects_negative_offset_and_length(self, linuxcnc_client):
+        """ReadFile refuses a negative offset or max_bytes, like the real server."""
+        for invalid_request in (
+            linuxcnc_pb2.ReadFileRequest(filename="mock_program.ngc", offset=-1),
+            linuxcnc_pb2.ReadFileRequest(filename="mock_program.ngc", max_bytes=-1),
+        ):
+            with pytest.raises(grpc.RpcError) as error_info:
+                linuxcnc_client.ReadFile(invalid_request)
+            assert error_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    def test_read_file_pages_through_a_large_file(self, linuxcnc_client):
+        """A file larger than one response is read in capped chunks by offset."""
+        expected_content = bytes(
+            byte_index % LARGE_PROGRAM_PATTERN_PERIOD
+            for byte_index in range(LARGE_PROGRAM_SIZE_BYTES)
+        )
+        received_content = bytearray()
+        chunk_sizes = []
+        modified_timestamps = set()
+        while True:
+            chunk = linuxcnc_client.ReadFile(
+                linuxcnc_pb2.ReadFileRequest(
+                    filename="mock_large_program.ngc",
+                    offset=len(received_content),
+                    # Above the cap on purpose: the server must still cap it.
+                    max_bytes=LARGE_PROGRAM_SIZE_BYTES,
+                )
+            )
+            assert chunk.offset == len(received_content)
+            assert chunk.total_size_bytes == LARGE_PROGRAM_SIZE_BYTES
+            assert len(chunk.content) <= READ_CHUNK_CAP_BYTES
+            received_content.extend(chunk.content)
+            chunk_sizes.append(len(chunk.content))
+            modified_timestamps.add(chunk.modified_timestamp)
+            if chunk.end_of_file:
+                break
+            assert chunk.content, "no data before the end of the file"
+
+        assert chunk_sizes == [
+            READ_CHUNK_CAP_BYTES,
+            READ_CHUNK_CAP_BYTES,
+            LARGE_PROGRAM_SIZE_BYTES - 2 * READ_CHUNK_CAP_BYTES,
+        ]
+        assert bytes(received_content) == expected_content
+        assert len(modified_timestamps) == 1
+
+    def test_read_file_past_the_end_is_empty(self, linuxcnc_client):
+        """An offset at or past the end returns no content and end_of_file."""
+        chunk = linuxcnc_client.ReadFile(
+            linuxcnc_pb2.ReadFileRequest(
+                filename="mock_large_program.ngc", offset=LARGE_PROGRAM_SIZE_BYTES + 10
+            )
+        )
+        assert chunk.content == b""
+        assert chunk.end_of_file
+
+    def test_read_file_reports_a_change_between_pages(self, linuxcnc_client):
+        """The changing file has a different modified_timestamp on later pages."""
+        first_page = linuxcnc_client.ReadFile(
+            linuxcnc_pb2.ReadFileRequest(filename="mock_changing_program.ngc")
+        )
+        second_page = linuxcnc_client.ReadFile(
+            linuxcnc_pb2.ReadFileRequest(
+                filename="mock_changing_program.ngc", offset=len(first_page.content)
+            )
+        )
+        assert not first_page.end_of_file
+        assert second_page.modified_timestamp != first_page.modified_timestamp
+
+    def test_read_file_not_found(self, linuxcnc_client):
+        """ReadFile reports a missing file as NOT_FOUND."""
+        with pytest.raises(grpc.RpcError) as error_info:
+            linuxcnc_client.ReadFile(linuxcnc_pb2.ReadFileRequest(filename="missing.ngc"))
+        assert error_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+    def test_resolve_file(self, linuxcnc_client):
+        """ResolveFile says which name is the loaded program."""
+        loaded = linuxcnc_client.ResolveFile(
+            linuxcnc_pb2.ResolveFileRequest(filename="mock_program.ngc")
+        )
+        assert loaded.is_loaded_program
+        assert loaded.path == loaded.loaded_program
+
+        other = linuxcnc_client.ResolveFile(
+            linuxcnc_pb2.ResolveFileRequest(filename="other.ngc")
+        )
+        assert not other.is_loaded_program
+        assert not other.exists
+
+    @pytest.mark.parametrize(
+        "invalid_filename, expected_message",
+        [
+            ("", "Filename must not be empty"),
+            ("   ", "Filename must not be empty"),
+            ("part\x00.ngc", "Filename must not contain null bytes"),
+            ("../outside.ngc", "Path must be within allowed directory: /mock/nc_files"),
+            ("jobs/../../outside.ngc", "Path must be within allowed directory: /mock/nc_files"),
+            ("/etc/passwd", "Path must be within allowed directory: /mock/nc_files"),
+        ],
+    )
+    @pytest.mark.parametrize("rpc_name", ["ReadFile", "ResolveFile"])
+    def test_file_rpcs_refuse_invalid_names(
+        self, linuxcnc_client, rpc_name, invalid_filename, expected_message
+    ):
+        """ReadFile and ResolveFile refuse the names the real server refuses."""
+        request_types = {
+            "ReadFile": linuxcnc_pb2.ReadFileRequest,
+            "ResolveFile": linuxcnc_pb2.ResolveFileRequest,
+        }
+        with pytest.raises(grpc.RpcError) as error_info:
+            getattr(linuxcnc_client, rpc_name)(
+                request_types[rpc_name](filename=invalid_filename)
+            )
+        assert error_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert error_info.value.details() == expected_message
+
+    def test_file_rpcs_accept_a_name_with_dots_that_stays_inside(self, linuxcnc_client):
+        """A ".." that does not leave the directory is not a traversal."""
+        resolved = linuxcnc_client.ResolveFile(
+            linuxcnc_pb2.ResolveFileRequest(filename="jobs/../other.ngc")
+        )
+        assert not resolved.exists
 
     def test_wait_complete(self, linuxcnc_client):
         """Test WaitComplete returns immediately in mock."""

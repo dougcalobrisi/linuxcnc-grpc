@@ -26,6 +26,7 @@ package linuxcnc
 
 import (
 	"context"
+	"fmt"
 
 	pb "github.com/dougcalobrisi/linuxcnc-grpc/packages/go"
 	"google.golang.org/grpc"
@@ -38,15 +39,15 @@ import (
 
 type (
 	// LinuxCNC enums
-	InterpState    = pb.InterpState
-	TaskMode       = pb.TaskMode
-	TaskState      = pb.TaskState
-	ExecState      = pb.ExecState
-	RcsStatus      = pb.RcsStatus
-	TrajMode       = pb.TrajMode
-	MotionType     = pb.MotionType
-	KinematicsType = pb.KinematicsType
-	JointType      = pb.JointType
+	InterpState      = pb.InterpState
+	TaskMode         = pb.TaskMode
+	TaskState        = pb.TaskState
+	ExecState        = pb.ExecState
+	RcsStatus        = pb.RcsStatus
+	TrajMode         = pb.TrajMode
+	MotionType       = pb.MotionType
+	KinematicsType   = pb.KinematicsType
+	JointType        = pb.JointType
 	SpindleDirection = pb.SpindleDirection
 	SpindleCommand   = pb.SpindleCommand
 	CoolantState     = pb.CoolantState
@@ -55,7 +56,7 @@ type (
 	AutoCommandType  = pb.AutoCommandType
 
 	// Nested enum types
-	ErrorMessageErrorType            = pb.ErrorMessage_ErrorType
+	ErrorMessageErrorType             = pb.ErrorMessage_ErrorType
 	OperatorMessageCommandMessageType = pb.OperatorMessageCommand_MessageType
 
 	// HAL enums
@@ -276,7 +277,7 @@ type (
 	JogCommand              = pb.JogCommand
 	HomeCommand             = pb.HomeCommand
 	UnhomeCommand           = pb.UnhomeCommand
-	SpindleControlCommand              = pb.SpindleControlCommand
+	SpindleControlCommand   = pb.SpindleControlCommand
 	SpindleOverrideCommand  = pb.SpindleOverrideCommand
 	BrakeCommand            = pb.BrakeCommand
 	FeedrateCommand         = pb.FeedrateCommand
@@ -301,30 +302,30 @@ type (
 	OperatorMessageCommand  = pb.OperatorMessageCommand
 
 	// HAL command types
-	HalCommand              = pb.HalCommand
-	HalCommandResponse      = pb.HalCommandResponse
-	CreateComponentCommand  = pb.CreateComponentCommand
-	CreatePinCommand        = pb.CreatePinCommand
-	CreateParamCommand      = pb.CreateParamCommand
-	SetPinValueCommand      = pb.SetPinValueCommand
-	SetParamValueCommand    = pb.SetParamValueCommand
-	CreateSignalCommand     = pb.CreateSignalCommand
-	SetSignalValueCommand   = pb.SetSignalValueCommand
-	ConnectCommand          = pb.ConnectCommand
-	DisconnectCommand       = pb.DisconnectCommand
-	ReadyCommand            = pb.ReadyCommand
-	UnreadyCommand          = pb.UnreadyCommand
-	ExitComponentCommand    = pb.ExitComponentCommand
-	DeleteSignalCommand     = pb.DeleteSignalCommand
-	SetMessageLevelCommand  = pb.SetMessageLevelCommand
-	GetValueCommand         = pb.GetValueCommand
-	QueryPinsCommand        = pb.QueryPinsCommand
-	QuerySignalsCommand     = pb.QuerySignalsCommand
-	QueryParamsCommand      = pb.QueryParamsCommand
-	QueryComponentsCommand  = pb.QueryComponentsCommand
-	ComponentExistsCommand  = pb.ComponentExistsCommand
-	ComponentReadyCommand   = pb.ComponentReadyCommand
-	PinHasWriterCommand     = pb.PinHasWriterCommand
+	HalCommand             = pb.HalCommand
+	HalCommandResponse     = pb.HalCommandResponse
+	CreateComponentCommand = pb.CreateComponentCommand
+	CreatePinCommand       = pb.CreatePinCommand
+	CreateParamCommand     = pb.CreateParamCommand
+	SetPinValueCommand     = pb.SetPinValueCommand
+	SetParamValueCommand   = pb.SetParamValueCommand
+	CreateSignalCommand    = pb.CreateSignalCommand
+	SetSignalValueCommand  = pb.SetSignalValueCommand
+	ConnectCommand         = pb.ConnectCommand
+	DisconnectCommand      = pb.DisconnectCommand
+	ReadyCommand           = pb.ReadyCommand
+	UnreadyCommand         = pb.UnreadyCommand
+	ExitComponentCommand   = pb.ExitComponentCommand
+	DeleteSignalCommand    = pb.DeleteSignalCommand
+	SetMessageLevelCommand = pb.SetMessageLevelCommand
+	GetValueCommand        = pb.GetValueCommand
+	QueryPinsCommand       = pb.QueryPinsCommand
+	QuerySignalsCommand    = pb.QuerySignalsCommand
+	QueryParamsCommand     = pb.QueryParamsCommand
+	QueryComponentsCommand = pb.QueryComponentsCommand
+	ComponentExistsCommand = pb.ComponentExistsCommand
+	ComponentReadyCommand  = pb.ComponentReadyCommand
+	PinHasWriterCommand    = pb.PinHasWriterCommand
 )
 
 // =============================================================================
@@ -413,13 +414,17 @@ type (
 	StreamErrorsRequest = pb.StreamErrorsRequest
 
 	// File management types
-	UploadFileRequest  = pb.UploadFileRequest
-	UploadFileResponse = pb.UploadFileResponse
-	ListFilesRequest   = pb.ListFilesRequest
-	ListFilesResponse  = pb.ListFilesResponse
-	FileInfo           = pb.FileInfo
-	DeleteFileRequest  = pb.DeleteFileRequest
-	DeleteFileResponse = pb.DeleteFileResponse
+	UploadFileRequest   = pb.UploadFileRequest
+	UploadFileResponse  = pb.UploadFileResponse
+	ListFilesRequest    = pb.ListFilesRequest
+	ListFilesResponse   = pb.ListFilesResponse
+	FileInfo            = pb.FileInfo
+	DeleteFileRequest   = pb.DeleteFileRequest
+	DeleteFileResponse  = pb.DeleteFileResponse
+	ReadFileRequest     = pb.ReadFileRequest
+	ReadFileResponse    = pb.ReadFileResponse
+	ResolveFileRequest  = pb.ResolveFileRequest
+	ResolveFileResponse = pb.ResolveFileResponse
 
 	// HAL request/response types
 	GetSystemStatusRequest  = pb.GetSystemStatusRequest
@@ -545,4 +550,46 @@ func (c *Client) ListFiles(ctx context.Context, subdirectory string) (*ListFiles
 // DeleteFile deletes a file from the nc_files directory.
 func (c *Client) DeleteFile(ctx context.Context, filename string) (*DeleteFileResponse, error) {
 	return c.LinuxCNC.DeleteFile(ctx, &DeleteFileRequest{Filename: filename})
+}
+
+// ReadFile reads a whole file from the nc_files directory.
+// The server returns at most 1 MiB per call, so larger files are fetched in
+// several calls. It returns an error if the file's size or modification time
+// changes between calls, or if the bytes received don't add up to the size
+// the server reported. A file rewritten with the same size and modification
+// time between calls cannot be detected.
+func (c *Client) ReadFile(ctx context.Context, filename string) ([]byte, error) {
+	var content []byte
+	var modifiedTimestamp, totalSizeBytes int64
+	for {
+		chunk, err := c.LinuxCNC.ReadFile(ctx, &ReadFileRequest{
+			Filename: filename,
+			Offset:   int64(len(content)),
+		})
+		if err != nil {
+			return nil, err
+		}
+		isFirstChunk := len(content) == 0
+		if !isFirstChunk && (chunk.ModifiedTimestamp != modifiedTimestamp || chunk.TotalSizeBytes != totalSizeBytes) {
+			return nil, fmt.Errorf("file %q changed while it was being read", filename)
+		}
+		modifiedTimestamp = chunk.ModifiedTimestamp
+		totalSizeBytes = chunk.TotalSizeBytes
+		content = append(content, chunk.Content...)
+		if chunk.EndOfFile {
+			if int64(len(content)) != totalSizeBytes {
+				return nil, fmt.Errorf("file %q changed while it was being read: got %d bytes, expected %d", filename, len(content), totalSizeBytes)
+			}
+			return content, nil
+		}
+		if len(chunk.Content) == 0 {
+			return nil, fmt.Errorf("file %q: server returned no data before the end of the file", filename)
+		}
+	}
+}
+
+// ResolveFile resolves a name in the nc_files directory to its canonical path
+// and reports whether it is the program LinuxCNC currently has loaded.
+func (c *Client) ResolveFile(ctx context.Context, filename string) (*ResolveFileResponse, error) {
+	return c.LinuxCNC.ResolveFile(ctx, &ResolveFileRequest{Filename: filename})
 }

@@ -290,6 +290,13 @@ for pin in response.pins:
     print(f"{pin.name}: {pin.value}")
 ```
 
+## Files
+
+`UploadFile`, `ListFiles`, `ReadFile` and `DeleteFile` manage G-code files in
+the server's NC files directory, and `ResolveFile` tells you whether a name is
+the program LinuxCNC has loaded. See
+[File Management](api-reference.md#file-management).
+
 ## Error Handling
 
 All gRPC calls can raise `grpc.RpcError`. Common status codes:

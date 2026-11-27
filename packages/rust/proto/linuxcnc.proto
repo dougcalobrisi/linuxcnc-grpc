@@ -669,6 +669,13 @@ service LinuxCNCService {
 
   // Delete a file from the nc_files directory
   rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+
+  // Read a file (or one chunk of it) from the nc_files directory
+  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
+
+  // Resolve a name in the nc_files directory to its canonical path and say
+  // whether it is the program LinuxCNC currently has loaded
+  rpc ResolveFile(ResolveFileRequest) returns (ResolveFileResponse);
 }
 
 message GetStatusRequest {
@@ -742,4 +749,38 @@ message DeleteFileRequest {
 
 message DeleteFileResponse {
   string path = 1;                      // Absolute path of deleted file
+}
+
+// Read a file from the nc_files directory, whole or in chunks.
+// One response carries at most 1 MiB of content, so every response fits in a
+// client's default 4 MB receive limit. To read a larger file, call again with
+// offset advanced by len(content) until end_of_file is true.
+message ReadFileRequest {
+  string filename = 1;                  // Relative path within nc_files dir
+  int64 offset = 2;                     // Byte offset to start reading from (default 0)
+  int32 max_bytes = 3;                  // Most bytes to return (0 or more than 1 MiB means 1 MiB)
+}
+
+message ReadFileResponse {
+  string path = 1;                      // Absolute, canonical path of the file read
+  bytes content = 2;                    // File bytes from offset (a chunk may end inside a UTF-8 character)
+  int64 offset = 3;                     // Offset this content starts at
+  int64 total_size_bytes = 4;           // Size of the whole file when it was read
+  bool end_of_file = 5;                 // True if this content reaches the end of the file
+  int64 modified_timestamp = 6;         // Last modified time (unix timestamp in nanoseconds). A change in it or in total_size_bytes between chunks means the file was modified
+}
+
+// Resolve a name in the nc_files directory
+message ResolveFileRequest {
+  string filename = 1;                  // Relative path within nc_files dir
+}
+
+message ResolveFileResponse {
+  string path = 1;                      // Absolute, canonical path (symlinks resolved): the file UploadFile, DeleteFile and ReadFile act on for this name
+  bool exists = 2;                      // True if something exists at that path
+  bool is_directory = 3;                // True if it is a directory
+  bool is_symlink = 4;                  // True if resolving the name goes through a symbolic link at any component
+  bool is_loaded_program = 5;           // True if this is the file LinuxCNC has loaded (TaskStatus.file), by canonical path or by being the same file on disk
+  string loaded_program = 6;            // Canonical path of the loaded program, empty if none
+  InterpState interp_state = 7;         // Interpreter state when checked; anything but INTERP_IDLE means the loaded program is in use
 }
