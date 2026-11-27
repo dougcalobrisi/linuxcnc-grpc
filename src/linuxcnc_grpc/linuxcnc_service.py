@@ -20,6 +20,7 @@ import grpc
 import linuxcnc
 from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 from .linuxcnc_mapper import LinuxCNCMapper
+from .machine_config import build_machine_config
 
 logger = logging.getLogger(__name__)
 
@@ -1499,6 +1500,54 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
         except OSError as e:
             context.abort(grpc.StatusCode.INTERNAL, f"Failed to resolve file: {e}")
+
+    # =========================================================================
+    # GetMachineConfig RPC
+    # =========================================================================
+
+    def GetMachineConfig(
+        self,
+        request: linuxcnc_pb2.GetMachineConfigRequest,
+        context: grpc.ServicerContext
+    ) -> linuxcnc_pb2.MachineConfig:
+        """
+        Get the machine's configuration: kinematics, joint-to-axis mapping,
+        limits, velocities and units.
+
+        Limits, units, the axis mask and counts come from live status. The
+        rest is read from the INI file LinuxCNC was started with, on every
+        call. If that file can't be read, the status-based fields are still
+        returned and ini_readable is False.
+        """
+        logger.debug("GetMachineConfig called")
+        try:
+            with self._lock:
+                self._stat.poll()
+                ini_filename = self._stat.ini_filename
+                try:
+                    ini_file = linuxcnc.ini(ini_filename)
+                    ini_lookup = ini_file.find
+                except Exception as e:
+                    # linuxcnc.error when the file can't be opened. The server
+                    # may run as a user that cannot read the config directory.
+                    logger.warning(f"Could not read INI file {ini_filename!r}: {e}")
+                    ini_lookup = None
+                allowed_dir = self._resolved_nc_files_dir()
+                return build_machine_config(
+                    self._stat,
+                    ini_lookup,
+                    nc_files_directory=str(allowed_dir),
+                    kinematics_type=LinuxCNCMapper(
+                        self._stat, version=self._version
+                    )._map_kinematics_type(self._stat.kinematics_type),
+                )
+        except linuxcnc.error as e:
+            logger.error(f"LinuxCNC error in GetMachineConfig: {e}")
+            context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
+        except OSError as e:
+            context.abort(
+                grpc.StatusCode.INTERNAL, f"Failed to resolve the NC files directory: {e}"
+            )
 
     # =========================================================================
     # StreamErrors RPC

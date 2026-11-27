@@ -5800,6 +5800,517 @@ func (x *ResolveFileResponse) GetInterpState() InterpState {
 	return InterpState_INTERP_STATE_UNSPECIFIED
 }
 
+type GetMachineConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMachineConfigRequest) Reset() {
+	*x = GetMachineConfigRequest{}
+	mi := &file_linuxcnc_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMachineConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMachineConfigRequest) ProtoMessage() {}
+
+func (x *GetMachineConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMachineConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetMachineConfigRequest) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{60}
+}
+
+// Configuration of one joint.
+// Limits come from live status; velocity, acceleration and home sequence come
+// from the [JOINT_n] section of the INI file.
+type JointConfig struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	JointNumber int32                  `protobuf:"varint,1,opt,name=joint_number,json=jointNumber,proto3" json:"joint_number,omitempty"`
+	JointType   JointType              `protobuf:"varint,2,opt,name=joint_type,json=jointType,proto3,enum=linuxcnc.JointType" json:"joint_type,omitempty"` // Linear or angular
+	// Axis this joint drives ("X", "Y", ...). Empty if the mapping is not known
+	// (joint_axis_mapping_known is false), and empty with the mapping known if
+	// the joint drives no axis, which is the case for an extra joint.
+	AxisLetter      string  `protobuf:"bytes,3,opt,name=axis_letter,json=axisLetter,proto3" json:"axis_letter,omitempty"`
+	MinLimit        float64 `protobuf:"fixed64,4,opt,name=min_limit,json=minLimit,proto3" json:"min_limit,omitempty"`                      // Soft limit, machine units
+	MaxLimit        float64 `protobuf:"fixed64,5,opt,name=max_limit,json=maxLimit,proto3" json:"max_limit,omitempty"`                      // Soft limit, machine units
+	MaxVelocity     float64 `protobuf:"fixed64,6,opt,name=max_velocity,json=maxVelocity,proto3" json:"max_velocity,omitempty"`             // [JOINT_n]MAX_VELOCITY, machine units per second; 0 if not set or the INI is unreadable
+	MaxAcceleration float64 `protobuf:"fixed64,7,opt,name=max_acceleration,json=maxAcceleration,proto3" json:"max_acceleration,omitempty"` // [JOINT_n]MAX_ACCELERATION, machine units per second squared; 0 if not set
+	HomeSequence    *int32  `protobuf:"varint,8,opt,name=home_sequence,json=homeSequence,proto3,oneof" json:"home_sequence,omitempty"`     // [JOINT_n]HOME_SEQUENCE; unset if the INI has none
+	Units           float64 `protobuf:"fixed64,9,opt,name=units,proto3" json:"units,omitempty"`                                            // Joint units per mm (linear) or per degree (angular)
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *JointConfig) Reset() {
+	*x = JointConfig{}
+	mi := &file_linuxcnc_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JointConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JointConfig) ProtoMessage() {}
+
+func (x *JointConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JointConfig.ProtoReflect.Descriptor instead.
+func (*JointConfig) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *JointConfig) GetJointNumber() int32 {
+	if x != nil {
+		return x.JointNumber
+	}
+	return 0
+}
+
+func (x *JointConfig) GetJointType() JointType {
+	if x != nil {
+		return x.JointType
+	}
+	return JointType_JOINT_TYPE_UNSPECIFIED
+}
+
+func (x *JointConfig) GetAxisLetter() string {
+	if x != nil {
+		return x.AxisLetter
+	}
+	return ""
+}
+
+func (x *JointConfig) GetMinLimit() float64 {
+	if x != nil {
+		return x.MinLimit
+	}
+	return 0
+}
+
+func (x *JointConfig) GetMaxLimit() float64 {
+	if x != nil {
+		return x.MaxLimit
+	}
+	return 0
+}
+
+func (x *JointConfig) GetMaxVelocity() float64 {
+	if x != nil {
+		return x.MaxVelocity
+	}
+	return 0
+}
+
+func (x *JointConfig) GetMaxAcceleration() float64 {
+	if x != nil {
+		return x.MaxAcceleration
+	}
+	return 0
+}
+
+func (x *JointConfig) GetHomeSequence() int32 {
+	if x != nil && x.HomeSequence != nil {
+		return *x.HomeSequence
+	}
+	return 0
+}
+
+func (x *JointConfig) GetUnits() float64 {
+	if x != nil {
+		return x.Units
+	}
+	return 0
+}
+
+// Configuration of one axis in the machine's axis mask.
+// Limits come from live status; velocity and acceleration come from the
+// [AXIS_<letter>] section of the INI file.
+type AxisConfig struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	AxisNumber      int32                  `protobuf:"varint,1,opt,name=axis_number,json=axisNumber,proto3" json:"axis_number,omitempty"`                 // 0=X, 1=Y, 2=Z, 3=A, 4=B, 5=C, 6=U, 7=V, 8=W
+	Letter          string                 `protobuf:"bytes,2,opt,name=letter,proto3" json:"letter,omitempty"`                                            // "X", "Y", ...
+	MinLimit        float64                `protobuf:"fixed64,3,opt,name=min_limit,json=minLimit,proto3" json:"min_limit,omitempty"`                      // Soft limit, machine units
+	MaxLimit        float64                `protobuf:"fixed64,4,opt,name=max_limit,json=maxLimit,proto3" json:"max_limit,omitempty"`                      // Soft limit, machine units
+	MaxVelocity     float64                `protobuf:"fixed64,5,opt,name=max_velocity,json=maxVelocity,proto3" json:"max_velocity,omitempty"`             // [AXIS_<letter>]MAX_VELOCITY; 0 if not set or the INI is unreadable
+	MaxAcceleration float64                `protobuf:"fixed64,6,opt,name=max_acceleration,json=maxAcceleration,proto3" json:"max_acceleration,omitempty"` // [AXIS_<letter>]MAX_ACCELERATION; 0 if not set
+	Joints          []int32                `protobuf:"varint,7,rep,packed,name=joints,proto3" json:"joints,omitempty"`                                    // Joints that drive this axis (two for a gantry); empty if the mapping is not known or no joint drives it
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *AxisConfig) Reset() {
+	*x = AxisConfig{}
+	mi := &file_linuxcnc_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AxisConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AxisConfig) ProtoMessage() {}
+
+func (x *AxisConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AxisConfig.ProtoReflect.Descriptor instead.
+func (*AxisConfig) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *AxisConfig) GetAxisNumber() int32 {
+	if x != nil {
+		return x.AxisNumber
+	}
+	return 0
+}
+
+func (x *AxisConfig) GetLetter() string {
+	if x != nil {
+		return x.Letter
+	}
+	return ""
+}
+
+func (x *AxisConfig) GetMinLimit() float64 {
+	if x != nil {
+		return x.MinLimit
+	}
+	return 0
+}
+
+func (x *AxisConfig) GetMaxLimit() float64 {
+	if x != nil {
+		return x.MaxLimit
+	}
+	return 0
+}
+
+func (x *AxisConfig) GetMaxVelocity() float64 {
+	if x != nil {
+		return x.MaxVelocity
+	}
+	return 0
+}
+
+func (x *AxisConfig) GetMaxAcceleration() float64 {
+	if x != nil {
+		return x.MaxAcceleration
+	}
+	return 0
+}
+
+func (x *AxisConfig) GetJoints() []int32 {
+	if x != nil {
+		return x.Joints
+	}
+	return nil
+}
+
+type MachineConfig struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	IniFilename string                 `protobuf:"bytes,1,opt,name=ini_filename,json=iniFilename,proto3" json:"ini_filename,omitempty"`  // INI file LinuxCNC was started with
+	IniReadable bool                   `protobuf:"varint,2,opt,name=ini_readable,json=iniReadable,proto3" json:"ini_readable,omitempty"` // False if the server could not read that file; INI-based fields are then empty or 0
+	MachineName string                 `protobuf:"bytes,3,opt,name=machine_name,json=machineName,proto3" json:"machine_name,omitempty"`  // [EMC]MACHINE
+	// Kinematics
+	Kinematics       string         `protobuf:"bytes,4,opt,name=kinematics,proto3" json:"kinematics,omitempty"`                                                             // [KINS]KINEMATICS in full, e.g. "trivkins coordinates=XYYZ kinstype=BOTH"
+	KinematicsModule string         `protobuf:"bytes,5,opt,name=kinematics_module,json=kinematicsModule,proto3" json:"kinematics_module,omitempty"`                         // Its first word, e.g. "trivkins"
+	KinematicsType   KinematicsType `protobuf:"varint,6,opt,name=kinematics_type,json=kinematicsType,proto3,enum=linuxcnc.KinematicsType" json:"kinematics_type,omitempty"` // From status
+	Coordinates      string         `protobuf:"bytes,7,opt,name=coordinates,proto3" json:"coordinates,omitempty"`                                                           // [TRAJ]COORDINATES without spaces, upper case, e.g. "XYZ" or "XYYZ"
+	AxisMask         int32          `protobuf:"varint,8,opt,name=axis_mask,json=axisMask,proto3" json:"axis_mask,omitempty"`                                                // Bit 0=X ... bit 8=W, from status
+	JointCount       int32          `protobuf:"varint,9,opt,name=joint_count,json=jointCount,proto3" json:"joint_count,omitempty"`
+	SpindleCount     int32          `protobuf:"varint,10,opt,name=spindle_count,json=spindleCount,proto3" json:"spindle_count,omitempty"`
+	// True when the server could work out which axis each joint drives. That
+	// is the case for trivkins, where joints follow the coordinates= letters in
+	// order. For other kinematics modules there is no fixed joint-to-axis
+	// relation, so JointConfig.axis_letter and AxisConfig.joints stay empty.
+	//
+	// Extra joints (motmod's num_extrajoints, the machine's last joints) are
+	// not part of the kinematics. They are listed in joints like any other
+	// joint, but with an empty axis_letter even when this is true, and they are
+	// in no AxisConfig.joints. TrajectoryStatus.num_extrajoints says how many
+	// of the last joints they are.
+	JointAxisMappingKnown bool `protobuf:"varint,11,opt,name=joint_axis_mapping_known,json=jointAxisMappingKnown,proto3" json:"joint_axis_mapping_known,omitempty"`
+	// Units
+	LinearUnits      float64 `protobuf:"fixed64,12,opt,name=linear_units,json=linearUnits,proto3" json:"linear_units,omitempty"`                // Machine units per mm (1.0 for mm, about 0.03937 for inch), from status
+	AngularUnits     float64 `protobuf:"fixed64,13,opt,name=angular_units,json=angularUnits,proto3" json:"angular_units,omitempty"`             // Machine units per degree, from status
+	LinearUnitsName  string  `protobuf:"bytes,14,opt,name=linear_units_name,json=linearUnitsName,proto3" json:"linear_units_name,omitempty"`    // "mm", "inch" or "cm", derived from linear_units; empty if it is none of these
+	AngularUnitsName string  `protobuf:"bytes,15,opt,name=angular_units_name,json=angularUnitsName,proto3" json:"angular_units_name,omitempty"` // "degree", "radian" or "grad", derived from angular_units; empty if none of these
+	// Velocities, in machine units per second; 0 if not set in the INI
+	MaxLinearVelocity      float64 `protobuf:"fixed64,16,opt,name=max_linear_velocity,json=maxLinearVelocity,proto3" json:"max_linear_velocity,omitempty"`                // [TRAJ]MAX_LINEAR_VELOCITY
+	DefaultLinearVelocity  float64 `protobuf:"fixed64,17,opt,name=default_linear_velocity,json=defaultLinearVelocity,proto3" json:"default_linear_velocity,omitempty"`    // [TRAJ]DEFAULT_LINEAR_VELOCITY
+	MaxAngularVelocity     float64 `protobuf:"fixed64,18,opt,name=max_angular_velocity,json=maxAngularVelocity,proto3" json:"max_angular_velocity,omitempty"`             // [TRAJ]MAX_ANGULAR_VELOCITY
+	DefaultAngularVelocity float64 `protobuf:"fixed64,19,opt,name=default_angular_velocity,json=defaultAngularVelocity,proto3" json:"default_angular_velocity,omitempty"` // [TRAJ]DEFAULT_ANGULAR_VELOCITY
+	// Display hints from the [DISPLAY] section
+	Lathe              bool           `protobuf:"varint,20,opt,name=lathe,proto3" json:"lathe,omitempty"`                                                        // [DISPLAY]LATHE = 1
+	BackToolLathe      bool           `protobuf:"varint,21,opt,name=back_tool_lathe,json=backToolLathe,proto3" json:"back_tool_lathe,omitempty"`                 // [DISPLAY]BACK_TOOL_LATHE = 1
+	MaxFeedOverride    float64        `protobuf:"fixed64,22,opt,name=max_feed_override,json=maxFeedOverride,proto3" json:"max_feed_override,omitempty"`          // [DISPLAY]MAX_FEED_OVERRIDE (1.2 = 120%); 0 if not set
+	MinSpindleOverride float64        `protobuf:"fixed64,23,opt,name=min_spindle_override,json=minSpindleOverride,proto3" json:"min_spindle_override,omitempty"` // [DISPLAY]MIN_SPINDLE_OVERRIDE; 0 if not set
+	MaxSpindleOverride float64        `protobuf:"fixed64,24,opt,name=max_spindle_override,json=maxSpindleOverride,proto3" json:"max_spindle_override,omitempty"` // [DISPLAY]MAX_SPINDLE_OVERRIDE; 0 if not set
+	NcFilesDirectory   string         `protobuf:"bytes,25,opt,name=nc_files_directory,json=ncFilesDirectory,proto3" json:"nc_files_directory,omitempty"`         // Directory the server's file RPCs and program open work in
+	Joints             []*JointConfig `protobuf:"bytes,30,rep,name=joints,proto3" json:"joints,omitempty"`                                                       // One per joint
+	Axes               []*AxisConfig  `protobuf:"bytes,31,rep,name=axes,proto3" json:"axes,omitempty"`                                                           // One per axis in axis_mask
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *MachineConfig) Reset() {
+	*x = MachineConfig{}
+	mi := &file_linuxcnc_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MachineConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MachineConfig) ProtoMessage() {}
+
+func (x *MachineConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_linuxcnc_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MachineConfig.ProtoReflect.Descriptor instead.
+func (*MachineConfig) Descriptor() ([]byte, []int) {
+	return file_linuxcnc_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *MachineConfig) GetIniFilename() string {
+	if x != nil {
+		return x.IniFilename
+	}
+	return ""
+}
+
+func (x *MachineConfig) GetIniReadable() bool {
+	if x != nil {
+		return x.IniReadable
+	}
+	return false
+}
+
+func (x *MachineConfig) GetMachineName() string {
+	if x != nil {
+		return x.MachineName
+	}
+	return ""
+}
+
+func (x *MachineConfig) GetKinematics() string {
+	if x != nil {
+		return x.Kinematics
+	}
+	return ""
+}
+
+func (x *MachineConfig) GetKinematicsModule() string {
+	if x != nil {
+		return x.KinematicsModule
+	}
+	return ""
+}
+
+func (x *MachineConfig) GetKinematicsType() KinematicsType {
+	if x != nil {
+		return x.KinematicsType
+	}
+	return KinematicsType_KINEMATICS_UNSPECIFIED
+}
+
+func (x *MachineConfig) GetCoordinates() string {
+	if x != nil {
+		return x.Coordinates
+	}
+	return ""
+}
+
+func (x *MachineConfig) GetAxisMask() int32 {
+	if x != nil {
+		return x.AxisMask
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetJointCount() int32 {
+	if x != nil {
+		return x.JointCount
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetSpindleCount() int32 {
+	if x != nil {
+		return x.SpindleCount
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetJointAxisMappingKnown() bool {
+	if x != nil {
+		return x.JointAxisMappingKnown
+	}
+	return false
+}
+
+func (x *MachineConfig) GetLinearUnits() float64 {
+	if x != nil {
+		return x.LinearUnits
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetAngularUnits() float64 {
+	if x != nil {
+		return x.AngularUnits
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetLinearUnitsName() string {
+	if x != nil {
+		return x.LinearUnitsName
+	}
+	return ""
+}
+
+func (x *MachineConfig) GetAngularUnitsName() string {
+	if x != nil {
+		return x.AngularUnitsName
+	}
+	return ""
+}
+
+func (x *MachineConfig) GetMaxLinearVelocity() float64 {
+	if x != nil {
+		return x.MaxLinearVelocity
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetDefaultLinearVelocity() float64 {
+	if x != nil {
+		return x.DefaultLinearVelocity
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetMaxAngularVelocity() float64 {
+	if x != nil {
+		return x.MaxAngularVelocity
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetDefaultAngularVelocity() float64 {
+	if x != nil {
+		return x.DefaultAngularVelocity
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetLathe() bool {
+	if x != nil {
+		return x.Lathe
+	}
+	return false
+}
+
+func (x *MachineConfig) GetBackToolLathe() bool {
+	if x != nil {
+		return x.BackToolLathe
+	}
+	return false
+}
+
+func (x *MachineConfig) GetMaxFeedOverride() float64 {
+	if x != nil {
+		return x.MaxFeedOverride
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetMinSpindleOverride() float64 {
+	if x != nil {
+		return x.MinSpindleOverride
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetMaxSpindleOverride() float64 {
+	if x != nil {
+		return x.MaxSpindleOverride
+	}
+	return 0
+}
+
+func (x *MachineConfig) GetNcFilesDirectory() string {
+	if x != nil {
+		return x.NcFilesDirectory
+	}
+	return ""
+}
+
+func (x *MachineConfig) GetJoints() []*JointConfig {
+	if x != nil {
+		return x.Joints
+	}
+	return nil
+}
+
+func (x *MachineConfig) GetAxes() []*AxisConfig {
+	if x != nil {
+		return x.Axes
+	}
+	return nil
+}
+
 var File_linuxcnc_proto protoreflect.FileDescriptor
 
 const file_linuxcnc_proto_rawDesc = "" +
@@ -6212,7 +6723,63 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"is_symlink\x18\x04 \x01(\bR\tisSymlink\x12*\n" +
 	"\x11is_loaded_program\x18\x05 \x01(\bR\x0fisLoadedProgram\x12%\n" +
 	"\x0eloaded_program\x18\x06 \x01(\tR\rloadedProgram\x128\n" +
-	"\finterp_state\x18\a \x01(\x0e2\x15.linuxcnc.InterpStateR\vinterpState*w\n" +
+	"\finterp_state\x18\a \x01(\x0e2\x15.linuxcnc.InterpStateR\vinterpState\"\x19\n" +
+	"\x17GetMachineConfigRequest\"\xdf\x02\n" +
+	"\vJointConfig\x12!\n" +
+	"\fjoint_number\x18\x01 \x01(\x05R\vjointNumber\x122\n" +
+	"\n" +
+	"joint_type\x18\x02 \x01(\x0e2\x13.linuxcnc.JointTypeR\tjointType\x12\x1f\n" +
+	"\vaxis_letter\x18\x03 \x01(\tR\n" +
+	"axisLetter\x12\x1b\n" +
+	"\tmin_limit\x18\x04 \x01(\x01R\bminLimit\x12\x1b\n" +
+	"\tmax_limit\x18\x05 \x01(\x01R\bmaxLimit\x12!\n" +
+	"\fmax_velocity\x18\x06 \x01(\x01R\vmaxVelocity\x12)\n" +
+	"\x10max_acceleration\x18\a \x01(\x01R\x0fmaxAcceleration\x12(\n" +
+	"\rhome_sequence\x18\b \x01(\x05H\x00R\fhomeSequence\x88\x01\x01\x12\x14\n" +
+	"\x05units\x18\t \x01(\x01R\x05unitsB\x10\n" +
+	"\x0e_home_sequence\"\xe5\x01\n" +
+	"\n" +
+	"AxisConfig\x12\x1f\n" +
+	"\vaxis_number\x18\x01 \x01(\x05R\n" +
+	"axisNumber\x12\x16\n" +
+	"\x06letter\x18\x02 \x01(\tR\x06letter\x12\x1b\n" +
+	"\tmin_limit\x18\x03 \x01(\x01R\bminLimit\x12\x1b\n" +
+	"\tmax_limit\x18\x04 \x01(\x01R\bmaxLimit\x12!\n" +
+	"\fmax_velocity\x18\x05 \x01(\x01R\vmaxVelocity\x12)\n" +
+	"\x10max_acceleration\x18\x06 \x01(\x01R\x0fmaxAcceleration\x12\x16\n" +
+	"\x06joints\x18\a \x03(\x05R\x06joints\"\x91\t\n" +
+	"\rMachineConfig\x12!\n" +
+	"\fini_filename\x18\x01 \x01(\tR\viniFilename\x12!\n" +
+	"\fini_readable\x18\x02 \x01(\bR\viniReadable\x12!\n" +
+	"\fmachine_name\x18\x03 \x01(\tR\vmachineName\x12\x1e\n" +
+	"\n" +
+	"kinematics\x18\x04 \x01(\tR\n" +
+	"kinematics\x12+\n" +
+	"\x11kinematics_module\x18\x05 \x01(\tR\x10kinematicsModule\x12A\n" +
+	"\x0fkinematics_type\x18\x06 \x01(\x0e2\x18.linuxcnc.KinematicsTypeR\x0ekinematicsType\x12 \n" +
+	"\vcoordinates\x18\a \x01(\tR\vcoordinates\x12\x1b\n" +
+	"\taxis_mask\x18\b \x01(\x05R\baxisMask\x12\x1f\n" +
+	"\vjoint_count\x18\t \x01(\x05R\n" +
+	"jointCount\x12#\n" +
+	"\rspindle_count\x18\n" +
+	" \x01(\x05R\fspindleCount\x127\n" +
+	"\x18joint_axis_mapping_known\x18\v \x01(\bR\x15jointAxisMappingKnown\x12!\n" +
+	"\flinear_units\x18\f \x01(\x01R\vlinearUnits\x12#\n" +
+	"\rangular_units\x18\r \x01(\x01R\fangularUnits\x12*\n" +
+	"\x11linear_units_name\x18\x0e \x01(\tR\x0flinearUnitsName\x12,\n" +
+	"\x12angular_units_name\x18\x0f \x01(\tR\x10angularUnitsName\x12.\n" +
+	"\x13max_linear_velocity\x18\x10 \x01(\x01R\x11maxLinearVelocity\x126\n" +
+	"\x17default_linear_velocity\x18\x11 \x01(\x01R\x15defaultLinearVelocity\x120\n" +
+	"\x14max_angular_velocity\x18\x12 \x01(\x01R\x12maxAngularVelocity\x128\n" +
+	"\x18default_angular_velocity\x18\x13 \x01(\x01R\x16defaultAngularVelocity\x12\x14\n" +
+	"\x05lathe\x18\x14 \x01(\bR\x05lathe\x12&\n" +
+	"\x0fback_tool_lathe\x18\x15 \x01(\bR\rbackToolLathe\x12*\n" +
+	"\x11max_feed_override\x18\x16 \x01(\x01R\x0fmaxFeedOverride\x120\n" +
+	"\x14min_spindle_override\x18\x17 \x01(\x01R\x12minSpindleOverride\x120\n" +
+	"\x14max_spindle_override\x18\x18 \x01(\x01R\x12maxSpindleOverride\x12,\n" +
+	"\x12nc_files_directory\x18\x19 \x01(\tR\x10ncFilesDirectory\x12-\n" +
+	"\x06joints\x18\x1e \x03(\v2\x15.linuxcnc.JointConfigR\x06joints\x12(\n" +
+	"\x04axes\x18\x1f \x03(\v2\x14.linuxcnc.AxisConfigR\x04axes*w\n" +
 	"\vInterpState\x12\x1c\n" +
 	"\x18INTERP_STATE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vINTERP_IDLE\x10\x01\x12\x12\n" +
@@ -6301,7 +6868,7 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\vAUTO_RESUME\x10\x02\x12\r\n" +
 	"\tAUTO_STEP\x10\x03\x12\x10\n" +
 	"\fAUTO_REVERSE\x10\x04\x12\x10\n" +
-	"\fAUTO_FORWARD\x10\x05\x1a\x02\x18\x012\xde\x05\n" +
+	"\fAUTO_FORWARD\x10\x05\x1a\x02\x18\x012\xae\x06\n" +
 	"\x0fLinuxCNCService\x12A\n" +
 	"\tGetStatus\x12\x1a.linuxcnc.GetStatusRequest\x1a\x18.linuxcnc.LinuxCNCStatus\x12C\n" +
 	"\vSendCommand\x12\x19.linuxcnc.LinuxCNCCommand\x1a\x19.linuxcnc.CommandResponse\x12H\n" +
@@ -6314,7 +6881,8 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\n" +
 	"DeleteFile\x12\x1b.linuxcnc.DeleteFileRequest\x1a\x1c.linuxcnc.DeleteFileResponse\x12A\n" +
 	"\bReadFile\x12\x19.linuxcnc.ReadFileRequest\x1a\x1a.linuxcnc.ReadFileResponse\x12J\n" +
-	"\vResolveFile\x12\x1c.linuxcnc.ResolveFileRequest\x1a\x1d.linuxcnc.ResolveFileResponseB7Z5github.com/dougcalobrisi/linuxcnc-grpc/packages/go;pbb\x06proto3"
+	"\vResolveFile\x12\x1c.linuxcnc.ResolveFileRequest\x1a\x1d.linuxcnc.ResolveFileResponse\x12N\n" +
+	"\x10GetMachineConfig\x12!.linuxcnc.GetMachineConfigRequest\x1a\x17.linuxcnc.MachineConfigB7Z5github.com/dougcalobrisi/linuxcnc-grpc/packages/go;pbb\x06proto3"
 
 var (
 	file_linuxcnc_proto_rawDescOnce sync.Once
@@ -6329,7 +6897,7 @@ func file_linuxcnc_proto_rawDescGZIP() []byte {
 }
 
 var file_linuxcnc_proto_enumTypes = make([]protoimpl.EnumInfo, 17)
-var file_linuxcnc_proto_msgTypes = make([]protoimpl.MessageInfo, 60)
+var file_linuxcnc_proto_msgTypes = make([]protoimpl.MessageInfo, 64)
 var file_linuxcnc_proto_goTypes = []any{
 	(InterpState)(0),                        // 0: linuxcnc.InterpState
 	(TaskMode)(0),                           // 1: linuxcnc.TaskMode
@@ -6408,6 +6976,10 @@ var file_linuxcnc_proto_goTypes = []any{
 	(*ReadFileResponse)(nil),                // 74: linuxcnc.ReadFileResponse
 	(*ResolveFileRequest)(nil),              // 75: linuxcnc.ResolveFileRequest
 	(*ResolveFileResponse)(nil),             // 76: linuxcnc.ResolveFileResponse
+	(*GetMachineConfigRequest)(nil),         // 77: linuxcnc.GetMachineConfigRequest
+	(*JointConfig)(nil),                     // 78: linuxcnc.JointConfig
+	(*AxisConfig)(nil),                      // 79: linuxcnc.AxisConfig
+	(*MachineConfig)(nil),                   // 80: linuxcnc.MachineConfig
 }
 var file_linuxcnc_proto_depIdxs = []int32{
 	4,  // 0: linuxcnc.TaskStatus.state:type_name -> linuxcnc.RcsStatus
@@ -6480,31 +7052,37 @@ var file_linuxcnc_proto_depIdxs = []int32{
 	4,  // 67: linuxcnc.CommandResponse.status:type_name -> linuxcnc.RcsStatus
 	69, // 68: linuxcnc.ListFilesResponse.files:type_name -> linuxcnc.FileInfo
 	0,  // 69: linuxcnc.ResolveFileResponse.interp_state:type_name -> linuxcnc.InterpState
-	62, // 70: linuxcnc.LinuxCNCService.GetStatus:input_type -> linuxcnc.GetStatusRequest
-	60, // 71: linuxcnc.LinuxCNCService.SendCommand:input_type -> linuxcnc.LinuxCNCCommand
-	63, // 72: linuxcnc.LinuxCNCService.WaitComplete:input_type -> linuxcnc.WaitCompleteRequest
-	64, // 73: linuxcnc.LinuxCNCService.StreamStatus:input_type -> linuxcnc.StreamStatusRequest
-	65, // 74: linuxcnc.LinuxCNCService.StreamErrors:input_type -> linuxcnc.StreamErrorsRequest
-	66, // 75: linuxcnc.LinuxCNCService.UploadFile:input_type -> linuxcnc.UploadFileRequest
-	68, // 76: linuxcnc.LinuxCNCService.ListFiles:input_type -> linuxcnc.ListFilesRequest
-	71, // 77: linuxcnc.LinuxCNCService.DeleteFile:input_type -> linuxcnc.DeleteFileRequest
-	73, // 78: linuxcnc.LinuxCNCService.ReadFile:input_type -> linuxcnc.ReadFileRequest
-	75, // 79: linuxcnc.LinuxCNCService.ResolveFile:input_type -> linuxcnc.ResolveFileRequest
-	30, // 80: linuxcnc.LinuxCNCService.GetStatus:output_type -> linuxcnc.LinuxCNCStatus
-	61, // 81: linuxcnc.LinuxCNCService.SendCommand:output_type -> linuxcnc.CommandResponse
-	61, // 82: linuxcnc.LinuxCNCService.WaitComplete:output_type -> linuxcnc.CommandResponse
-	30, // 83: linuxcnc.LinuxCNCService.StreamStatus:output_type -> linuxcnc.LinuxCNCStatus
-	29, // 84: linuxcnc.LinuxCNCService.StreamErrors:output_type -> linuxcnc.ErrorMessage
-	67, // 85: linuxcnc.LinuxCNCService.UploadFile:output_type -> linuxcnc.UploadFileResponse
-	70, // 86: linuxcnc.LinuxCNCService.ListFiles:output_type -> linuxcnc.ListFilesResponse
-	72, // 87: linuxcnc.LinuxCNCService.DeleteFile:output_type -> linuxcnc.DeleteFileResponse
-	74, // 88: linuxcnc.LinuxCNCService.ReadFile:output_type -> linuxcnc.ReadFileResponse
-	76, // 89: linuxcnc.LinuxCNCService.ResolveFile:output_type -> linuxcnc.ResolveFileResponse
-	80, // [80:90] is the sub-list for method output_type
-	70, // [70:80] is the sub-list for method input_type
-	70, // [70:70] is the sub-list for extension type_name
-	70, // [70:70] is the sub-list for extension extendee
-	0,  // [0:70] is the sub-list for field type_name
+	8,  // 70: linuxcnc.JointConfig.joint_type:type_name -> linuxcnc.JointType
+	7,  // 71: linuxcnc.MachineConfig.kinematics_type:type_name -> linuxcnc.KinematicsType
+	78, // 72: linuxcnc.MachineConfig.joints:type_name -> linuxcnc.JointConfig
+	79, // 73: linuxcnc.MachineConfig.axes:type_name -> linuxcnc.AxisConfig
+	62, // 74: linuxcnc.LinuxCNCService.GetStatus:input_type -> linuxcnc.GetStatusRequest
+	60, // 75: linuxcnc.LinuxCNCService.SendCommand:input_type -> linuxcnc.LinuxCNCCommand
+	63, // 76: linuxcnc.LinuxCNCService.WaitComplete:input_type -> linuxcnc.WaitCompleteRequest
+	64, // 77: linuxcnc.LinuxCNCService.StreamStatus:input_type -> linuxcnc.StreamStatusRequest
+	65, // 78: linuxcnc.LinuxCNCService.StreamErrors:input_type -> linuxcnc.StreamErrorsRequest
+	66, // 79: linuxcnc.LinuxCNCService.UploadFile:input_type -> linuxcnc.UploadFileRequest
+	68, // 80: linuxcnc.LinuxCNCService.ListFiles:input_type -> linuxcnc.ListFilesRequest
+	71, // 81: linuxcnc.LinuxCNCService.DeleteFile:input_type -> linuxcnc.DeleteFileRequest
+	73, // 82: linuxcnc.LinuxCNCService.ReadFile:input_type -> linuxcnc.ReadFileRequest
+	75, // 83: linuxcnc.LinuxCNCService.ResolveFile:input_type -> linuxcnc.ResolveFileRequest
+	77, // 84: linuxcnc.LinuxCNCService.GetMachineConfig:input_type -> linuxcnc.GetMachineConfigRequest
+	30, // 85: linuxcnc.LinuxCNCService.GetStatus:output_type -> linuxcnc.LinuxCNCStatus
+	61, // 86: linuxcnc.LinuxCNCService.SendCommand:output_type -> linuxcnc.CommandResponse
+	61, // 87: linuxcnc.LinuxCNCService.WaitComplete:output_type -> linuxcnc.CommandResponse
+	30, // 88: linuxcnc.LinuxCNCService.StreamStatus:output_type -> linuxcnc.LinuxCNCStatus
+	29, // 89: linuxcnc.LinuxCNCService.StreamErrors:output_type -> linuxcnc.ErrorMessage
+	67, // 90: linuxcnc.LinuxCNCService.UploadFile:output_type -> linuxcnc.UploadFileResponse
+	70, // 91: linuxcnc.LinuxCNCService.ListFiles:output_type -> linuxcnc.ListFilesResponse
+	72, // 92: linuxcnc.LinuxCNCService.DeleteFile:output_type -> linuxcnc.DeleteFileResponse
+	74, // 93: linuxcnc.LinuxCNCService.ReadFile:output_type -> linuxcnc.ReadFileResponse
+	76, // 94: linuxcnc.LinuxCNCService.ResolveFile:output_type -> linuxcnc.ResolveFileResponse
+	80, // 95: linuxcnc.LinuxCNCService.GetMachineConfig:output_type -> linuxcnc.MachineConfig
+	85, // [85:96] is the sub-list for method output_type
+	74, // [74:85] is the sub-list for method input_type
+	74, // [74:74] is the sub-list for extension type_name
+	74, // [74:74] is the sub-list for extension extendee
+	0,  // [0:74] is the sub-list for field type_name
 }
 
 func init() { file_linuxcnc_proto_init() }
@@ -6552,13 +7130,14 @@ func file_linuxcnc_proto_init() {
 	}
 	file_linuxcnc_proto_msgTypes[44].OneofWrappers = []any{}
 	file_linuxcnc_proto_msgTypes[46].OneofWrappers = []any{}
+	file_linuxcnc_proto_msgTypes[61].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_linuxcnc_proto_rawDesc), len(file_linuxcnc_proto_rawDesc)),
 			NumEnums:      17,
-			NumMessages:   60,
+			NumMessages:   64,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

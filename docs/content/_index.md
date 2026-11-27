@@ -55,6 +55,7 @@ Main service for machine control:
 - **WaitComplete** - Wait for command completion
 - **StreamStatus** - Subscribe to real-time status updates
 - **StreamErrors** - Subscribe to error messages
+- **GetMachineConfig** - Kinematics, joint-to-axis mapping, limits, velocities and units
 - **UploadFile / ListFiles / ReadFile / DeleteFile** - Manage G-code files
 - **ResolveFile** - Check whether a file is the loaded program before changing it
 

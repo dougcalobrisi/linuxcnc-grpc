@@ -1564,6 +1564,129 @@ export interface ResolveFileResponse {
   interpState: InterpState;
 }
 
+/** Empty - returns the full configuration */
+export interface GetMachineConfigRequest {
+}
+
+/**
+ * Configuration of one joint.
+ * Limits come from live status; velocity, acceleration and home sequence come
+ * from the [JOINT_n] section of the INI file.
+ */
+export interface JointConfig {
+  jointNumber: number;
+  /** Linear or angular */
+  jointType: JointType;
+  /**
+   * Axis this joint drives ("X", "Y", ...). Empty if the mapping is not known
+   * (joint_axis_mapping_known is false), and empty with the mapping known if
+   * the joint drives no axis, which is the case for an extra joint.
+   */
+  axisLetter: string;
+  /** Soft limit, machine units */
+  minLimit: number;
+  /** Soft limit, machine units */
+  maxLimit: number;
+  /** [JOINT_n]MAX_VELOCITY, machine units per second; 0 if not set or the INI is unreadable */
+  maxVelocity: number;
+  /** [JOINT_n]MAX_ACCELERATION, machine units per second squared; 0 if not set */
+  maxAcceleration: number;
+  /** [JOINT_n]HOME_SEQUENCE; unset if the INI has none */
+  homeSequence?:
+    | number
+    | undefined;
+  /** Joint units per mm (linear) or per degree (angular) */
+  units: number;
+}
+
+/**
+ * Configuration of one axis in the machine's axis mask.
+ * Limits come from live status; velocity and acceleration come from the
+ * [AXIS_<letter>] section of the INI file.
+ */
+export interface AxisConfig {
+  /** 0=X, 1=Y, 2=Z, 3=A, 4=B, 5=C, 6=U, 7=V, 8=W */
+  axisNumber: number;
+  /** "X", "Y", ... */
+  letter: string;
+  /** Soft limit, machine units */
+  minLimit: number;
+  /** Soft limit, machine units */
+  maxLimit: number;
+  /** [AXIS_<letter>]MAX_VELOCITY; 0 if not set or the INI is unreadable */
+  maxVelocity: number;
+  /** [AXIS_<letter>]MAX_ACCELERATION; 0 if not set */
+  maxAcceleration: number;
+  /** Joints that drive this axis (two for a gantry); empty if the mapping is not known or no joint drives it */
+  joints: number[];
+}
+
+export interface MachineConfig {
+  /** INI file LinuxCNC was started with */
+  iniFilename: string;
+  /** False if the server could not read that file; INI-based fields are then empty or 0 */
+  iniReadable: boolean;
+  /** [EMC]MACHINE */
+  machineName: string;
+  /** Kinematics */
+  kinematics: string;
+  /** Its first word, e.g. "trivkins" */
+  kinematicsModule: string;
+  /** From status */
+  kinematicsType: KinematicsType;
+  /** [TRAJ]COORDINATES without spaces, upper case, e.g. "XYZ" or "XYYZ" */
+  coordinates: string;
+  /** Bit 0=X ... bit 8=W, from status */
+  axisMask: number;
+  jointCount: number;
+  spindleCount: number;
+  /**
+   * True when the server could work out which axis each joint drives. That
+   * is the case for trivkins, where joints follow the coordinates= letters in
+   * order. For other kinematics modules there is no fixed joint-to-axis
+   * relation, so JointConfig.axis_letter and AxisConfig.joints stay empty.
+   *
+   * Extra joints (motmod's num_extrajoints, the machine's last joints) are
+   * not part of the kinematics. They are listed in joints like any other
+   * joint, but with an empty axis_letter even when this is true, and they are
+   * in no AxisConfig.joints. TrajectoryStatus.num_extrajoints says how many
+   * of the last joints they are.
+   */
+  jointAxisMappingKnown: boolean;
+  /** Units */
+  linearUnits: number;
+  /** Machine units per degree, from status */
+  angularUnits: number;
+  /** "mm", "inch" or "cm", derived from linear_units; empty if it is none of these */
+  linearUnitsName: string;
+  /** "degree", "radian" or "grad", derived from angular_units; empty if none of these */
+  angularUnitsName: string;
+  /** Velocities, in machine units per second; 0 if not set in the INI */
+  maxLinearVelocity: number;
+  /** [TRAJ]DEFAULT_LINEAR_VELOCITY */
+  defaultLinearVelocity: number;
+  /** [TRAJ]MAX_ANGULAR_VELOCITY */
+  maxAngularVelocity: number;
+  /** [TRAJ]DEFAULT_ANGULAR_VELOCITY */
+  defaultAngularVelocity: number;
+  /** Display hints from the [DISPLAY] section */
+  lathe: boolean;
+  /** [DISPLAY]BACK_TOOL_LATHE = 1 */
+  backToolLathe: boolean;
+  /** [DISPLAY]MAX_FEED_OVERRIDE (1.2 = 120%); 0 if not set */
+  maxFeedOverride: number;
+  /** [DISPLAY]MIN_SPINDLE_OVERRIDE; 0 if not set */
+  minSpindleOverride: number;
+  /** [DISPLAY]MAX_SPINDLE_OVERRIDE; 0 if not set */
+  maxSpindleOverride: number;
+  /** Directory the server's file RPCs and program open work in */
+  ncFilesDirectory: string;
+  /** One per joint */
+  joints: JointConfig[];
+  /** One per axis in axis_mask */
+  axes: AxisConfig[];
+}
+
 function createBasePosition(): Position {
   return { x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, u: 0, v: 0, w: 0 };
 }
@@ -9168,6 +9291,923 @@ export const ResolveFileResponse: MessageFns<ResolveFileResponse> = {
   },
 };
 
+function createBaseGetMachineConfigRequest(): GetMachineConfigRequest {
+  return {};
+}
+
+export const GetMachineConfigRequest: MessageFns<GetMachineConfigRequest> = {
+  encode(_: GetMachineConfigRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetMachineConfigRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetMachineConfigRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): GetMachineConfigRequest {
+    return {};
+  },
+
+  toJSON(_: GetMachineConfigRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetMachineConfigRequest>, I>>(base?: I): GetMachineConfigRequest {
+    return GetMachineConfigRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetMachineConfigRequest>, I>>(_: I): GetMachineConfigRequest {
+    const message = createBaseGetMachineConfigRequest();
+    return message;
+  },
+};
+
+function createBaseJointConfig(): JointConfig {
+  return {
+    jointNumber: 0,
+    jointType: 0,
+    axisLetter: "",
+    minLimit: 0,
+    maxLimit: 0,
+    maxVelocity: 0,
+    maxAcceleration: 0,
+    homeSequence: undefined,
+    units: 0,
+  };
+}
+
+export const JointConfig: MessageFns<JointConfig> = {
+  encode(message: JointConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.jointNumber !== 0) {
+      writer.uint32(8).int32(message.jointNumber);
+    }
+    if (message.jointType !== 0) {
+      writer.uint32(16).int32(message.jointType);
+    }
+    if (message.axisLetter !== "") {
+      writer.uint32(26).string(message.axisLetter);
+    }
+    if (message.minLimit !== 0) {
+      writer.uint32(33).double(message.minLimit);
+    }
+    if (message.maxLimit !== 0) {
+      writer.uint32(41).double(message.maxLimit);
+    }
+    if (message.maxVelocity !== 0) {
+      writer.uint32(49).double(message.maxVelocity);
+    }
+    if (message.maxAcceleration !== 0) {
+      writer.uint32(57).double(message.maxAcceleration);
+    }
+    if (message.homeSequence !== undefined) {
+      writer.uint32(64).int32(message.homeSequence);
+    }
+    if (message.units !== 0) {
+      writer.uint32(73).double(message.units);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): JointConfig {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseJointConfig();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.jointNumber = reader.int32();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.jointType = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.axisLetter = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 33) {
+            break;
+          }
+
+          message.minLimit = reader.double();
+          continue;
+        }
+        case 5: {
+          if (tag !== 41) {
+            break;
+          }
+
+          message.maxLimit = reader.double();
+          continue;
+        }
+        case 6: {
+          if (tag !== 49) {
+            break;
+          }
+
+          message.maxVelocity = reader.double();
+          continue;
+        }
+        case 7: {
+          if (tag !== 57) {
+            break;
+          }
+
+          message.maxAcceleration = reader.double();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.homeSequence = reader.int32();
+          continue;
+        }
+        case 9: {
+          if (tag !== 73) {
+            break;
+          }
+
+          message.units = reader.double();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): JointConfig {
+    return {
+      jointNumber: isSet(object.jointNumber) ? globalThis.Number(object.jointNumber) : 0,
+      jointType: isSet(object.jointType) ? jointTypeFromJSON(object.jointType) : 0,
+      axisLetter: isSet(object.axisLetter) ? globalThis.String(object.axisLetter) : "",
+      minLimit: isSet(object.minLimit) ? globalThis.Number(object.minLimit) : 0,
+      maxLimit: isSet(object.maxLimit) ? globalThis.Number(object.maxLimit) : 0,
+      maxVelocity: isSet(object.maxVelocity) ? globalThis.Number(object.maxVelocity) : 0,
+      maxAcceleration: isSet(object.maxAcceleration) ? globalThis.Number(object.maxAcceleration) : 0,
+      homeSequence: isSet(object.homeSequence) ? globalThis.Number(object.homeSequence) : undefined,
+      units: isSet(object.units) ? globalThis.Number(object.units) : 0,
+    };
+  },
+
+  toJSON(message: JointConfig): unknown {
+    const obj: any = {};
+    if (message.jointNumber !== 0) {
+      obj.jointNumber = Math.round(message.jointNumber);
+    }
+    if (message.jointType !== 0) {
+      obj.jointType = jointTypeToJSON(message.jointType);
+    }
+    if (message.axisLetter !== "") {
+      obj.axisLetter = message.axisLetter;
+    }
+    if (message.minLimit !== 0) {
+      obj.minLimit = message.minLimit;
+    }
+    if (message.maxLimit !== 0) {
+      obj.maxLimit = message.maxLimit;
+    }
+    if (message.maxVelocity !== 0) {
+      obj.maxVelocity = message.maxVelocity;
+    }
+    if (message.maxAcceleration !== 0) {
+      obj.maxAcceleration = message.maxAcceleration;
+    }
+    if (message.homeSequence !== undefined) {
+      obj.homeSequence = Math.round(message.homeSequence);
+    }
+    if (message.units !== 0) {
+      obj.units = message.units;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<JointConfig>, I>>(base?: I): JointConfig {
+    return JointConfig.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<JointConfig>, I>>(object: I): JointConfig {
+    const message = createBaseJointConfig();
+    message.jointNumber = object.jointNumber ?? 0;
+    message.jointType = object.jointType ?? 0;
+    message.axisLetter = object.axisLetter ?? "";
+    message.minLimit = object.minLimit ?? 0;
+    message.maxLimit = object.maxLimit ?? 0;
+    message.maxVelocity = object.maxVelocity ?? 0;
+    message.maxAcceleration = object.maxAcceleration ?? 0;
+    message.homeSequence = object.homeSequence ?? undefined;
+    message.units = object.units ?? 0;
+    return message;
+  },
+};
+
+function createBaseAxisConfig(): AxisConfig {
+  return { axisNumber: 0, letter: "", minLimit: 0, maxLimit: 0, maxVelocity: 0, maxAcceleration: 0, joints: [] };
+}
+
+export const AxisConfig: MessageFns<AxisConfig> = {
+  encode(message: AxisConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.axisNumber !== 0) {
+      writer.uint32(8).int32(message.axisNumber);
+    }
+    if (message.letter !== "") {
+      writer.uint32(18).string(message.letter);
+    }
+    if (message.minLimit !== 0) {
+      writer.uint32(25).double(message.minLimit);
+    }
+    if (message.maxLimit !== 0) {
+      writer.uint32(33).double(message.maxLimit);
+    }
+    if (message.maxVelocity !== 0) {
+      writer.uint32(41).double(message.maxVelocity);
+    }
+    if (message.maxAcceleration !== 0) {
+      writer.uint32(49).double(message.maxAcceleration);
+    }
+    writer.uint32(58).fork();
+    for (const v of message.joints) {
+      writer.int32(v);
+    }
+    writer.join();
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AxisConfig {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAxisConfig();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.axisNumber = reader.int32();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.letter = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 25) {
+            break;
+          }
+
+          message.minLimit = reader.double();
+          continue;
+        }
+        case 4: {
+          if (tag !== 33) {
+            break;
+          }
+
+          message.maxLimit = reader.double();
+          continue;
+        }
+        case 5: {
+          if (tag !== 41) {
+            break;
+          }
+
+          message.maxVelocity = reader.double();
+          continue;
+        }
+        case 6: {
+          if (tag !== 49) {
+            break;
+          }
+
+          message.maxAcceleration = reader.double();
+          continue;
+        }
+        case 7: {
+          if (tag === 56) {
+            message.joints.push(reader.int32());
+
+            continue;
+          }
+
+          if (tag === 58) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.joints.push(reader.int32());
+            }
+
+            continue;
+          }
+
+          break;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AxisConfig {
+    return {
+      axisNumber: isSet(object.axisNumber) ? globalThis.Number(object.axisNumber) : 0,
+      letter: isSet(object.letter) ? globalThis.String(object.letter) : "",
+      minLimit: isSet(object.minLimit) ? globalThis.Number(object.minLimit) : 0,
+      maxLimit: isSet(object.maxLimit) ? globalThis.Number(object.maxLimit) : 0,
+      maxVelocity: isSet(object.maxVelocity) ? globalThis.Number(object.maxVelocity) : 0,
+      maxAcceleration: isSet(object.maxAcceleration) ? globalThis.Number(object.maxAcceleration) : 0,
+      joints: globalThis.Array.isArray(object?.joints) ? object.joints.map((e: any) => globalThis.Number(e)) : [],
+    };
+  },
+
+  toJSON(message: AxisConfig): unknown {
+    const obj: any = {};
+    if (message.axisNumber !== 0) {
+      obj.axisNumber = Math.round(message.axisNumber);
+    }
+    if (message.letter !== "") {
+      obj.letter = message.letter;
+    }
+    if (message.minLimit !== 0) {
+      obj.minLimit = message.minLimit;
+    }
+    if (message.maxLimit !== 0) {
+      obj.maxLimit = message.maxLimit;
+    }
+    if (message.maxVelocity !== 0) {
+      obj.maxVelocity = message.maxVelocity;
+    }
+    if (message.maxAcceleration !== 0) {
+      obj.maxAcceleration = message.maxAcceleration;
+    }
+    if (message.joints?.length) {
+      obj.joints = message.joints.map((e) => Math.round(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AxisConfig>, I>>(base?: I): AxisConfig {
+    return AxisConfig.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AxisConfig>, I>>(object: I): AxisConfig {
+    const message = createBaseAxisConfig();
+    message.axisNumber = object.axisNumber ?? 0;
+    message.letter = object.letter ?? "";
+    message.minLimit = object.minLimit ?? 0;
+    message.maxLimit = object.maxLimit ?? 0;
+    message.maxVelocity = object.maxVelocity ?? 0;
+    message.maxAcceleration = object.maxAcceleration ?? 0;
+    message.joints = object.joints?.map((e) => e) || [];
+    return message;
+  },
+};
+
+function createBaseMachineConfig(): MachineConfig {
+  return {
+    iniFilename: "",
+    iniReadable: false,
+    machineName: "",
+    kinematics: "",
+    kinematicsModule: "",
+    kinematicsType: 0,
+    coordinates: "",
+    axisMask: 0,
+    jointCount: 0,
+    spindleCount: 0,
+    jointAxisMappingKnown: false,
+    linearUnits: 0,
+    angularUnits: 0,
+    linearUnitsName: "",
+    angularUnitsName: "",
+    maxLinearVelocity: 0,
+    defaultLinearVelocity: 0,
+    maxAngularVelocity: 0,
+    defaultAngularVelocity: 0,
+    lathe: false,
+    backToolLathe: false,
+    maxFeedOverride: 0,
+    minSpindleOverride: 0,
+    maxSpindleOverride: 0,
+    ncFilesDirectory: "",
+    joints: [],
+    axes: [],
+  };
+}
+
+export const MachineConfig: MessageFns<MachineConfig> = {
+  encode(message: MachineConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.iniFilename !== "") {
+      writer.uint32(10).string(message.iniFilename);
+    }
+    if (message.iniReadable !== false) {
+      writer.uint32(16).bool(message.iniReadable);
+    }
+    if (message.machineName !== "") {
+      writer.uint32(26).string(message.machineName);
+    }
+    if (message.kinematics !== "") {
+      writer.uint32(34).string(message.kinematics);
+    }
+    if (message.kinematicsModule !== "") {
+      writer.uint32(42).string(message.kinematicsModule);
+    }
+    if (message.kinematicsType !== 0) {
+      writer.uint32(48).int32(message.kinematicsType);
+    }
+    if (message.coordinates !== "") {
+      writer.uint32(58).string(message.coordinates);
+    }
+    if (message.axisMask !== 0) {
+      writer.uint32(64).int32(message.axisMask);
+    }
+    if (message.jointCount !== 0) {
+      writer.uint32(72).int32(message.jointCount);
+    }
+    if (message.spindleCount !== 0) {
+      writer.uint32(80).int32(message.spindleCount);
+    }
+    if (message.jointAxisMappingKnown !== false) {
+      writer.uint32(88).bool(message.jointAxisMappingKnown);
+    }
+    if (message.linearUnits !== 0) {
+      writer.uint32(97).double(message.linearUnits);
+    }
+    if (message.angularUnits !== 0) {
+      writer.uint32(105).double(message.angularUnits);
+    }
+    if (message.linearUnitsName !== "") {
+      writer.uint32(114).string(message.linearUnitsName);
+    }
+    if (message.angularUnitsName !== "") {
+      writer.uint32(122).string(message.angularUnitsName);
+    }
+    if (message.maxLinearVelocity !== 0) {
+      writer.uint32(129).double(message.maxLinearVelocity);
+    }
+    if (message.defaultLinearVelocity !== 0) {
+      writer.uint32(137).double(message.defaultLinearVelocity);
+    }
+    if (message.maxAngularVelocity !== 0) {
+      writer.uint32(145).double(message.maxAngularVelocity);
+    }
+    if (message.defaultAngularVelocity !== 0) {
+      writer.uint32(153).double(message.defaultAngularVelocity);
+    }
+    if (message.lathe !== false) {
+      writer.uint32(160).bool(message.lathe);
+    }
+    if (message.backToolLathe !== false) {
+      writer.uint32(168).bool(message.backToolLathe);
+    }
+    if (message.maxFeedOverride !== 0) {
+      writer.uint32(177).double(message.maxFeedOverride);
+    }
+    if (message.minSpindleOverride !== 0) {
+      writer.uint32(185).double(message.minSpindleOverride);
+    }
+    if (message.maxSpindleOverride !== 0) {
+      writer.uint32(193).double(message.maxSpindleOverride);
+    }
+    if (message.ncFilesDirectory !== "") {
+      writer.uint32(202).string(message.ncFilesDirectory);
+    }
+    for (const v of message.joints) {
+      JointConfig.encode(v!, writer.uint32(242).fork()).join();
+    }
+    for (const v of message.axes) {
+      AxisConfig.encode(v!, writer.uint32(250).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): MachineConfig {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseMachineConfig();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.iniFilename = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.iniReadable = reader.bool();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.machineName = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.kinematics = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.kinematicsModule = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.kinematicsType = reader.int32() as any;
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.coordinates = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.axisMask = reader.int32();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.jointCount = reader.int32();
+          continue;
+        }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.spindleCount = reader.int32();
+          continue;
+        }
+        case 11: {
+          if (tag !== 88) {
+            break;
+          }
+
+          message.jointAxisMappingKnown = reader.bool();
+          continue;
+        }
+        case 12: {
+          if (tag !== 97) {
+            break;
+          }
+
+          message.linearUnits = reader.double();
+          continue;
+        }
+        case 13: {
+          if (tag !== 105) {
+            break;
+          }
+
+          message.angularUnits = reader.double();
+          continue;
+        }
+        case 14: {
+          if (tag !== 114) {
+            break;
+          }
+
+          message.linearUnitsName = reader.string();
+          continue;
+        }
+        case 15: {
+          if (tag !== 122) {
+            break;
+          }
+
+          message.angularUnitsName = reader.string();
+          continue;
+        }
+        case 16: {
+          if (tag !== 129) {
+            break;
+          }
+
+          message.maxLinearVelocity = reader.double();
+          continue;
+        }
+        case 17: {
+          if (tag !== 137) {
+            break;
+          }
+
+          message.defaultLinearVelocity = reader.double();
+          continue;
+        }
+        case 18: {
+          if (tag !== 145) {
+            break;
+          }
+
+          message.maxAngularVelocity = reader.double();
+          continue;
+        }
+        case 19: {
+          if (tag !== 153) {
+            break;
+          }
+
+          message.defaultAngularVelocity = reader.double();
+          continue;
+        }
+        case 20: {
+          if (tag !== 160) {
+            break;
+          }
+
+          message.lathe = reader.bool();
+          continue;
+        }
+        case 21: {
+          if (tag !== 168) {
+            break;
+          }
+
+          message.backToolLathe = reader.bool();
+          continue;
+        }
+        case 22: {
+          if (tag !== 177) {
+            break;
+          }
+
+          message.maxFeedOverride = reader.double();
+          continue;
+        }
+        case 23: {
+          if (tag !== 185) {
+            break;
+          }
+
+          message.minSpindleOverride = reader.double();
+          continue;
+        }
+        case 24: {
+          if (tag !== 193) {
+            break;
+          }
+
+          message.maxSpindleOverride = reader.double();
+          continue;
+        }
+        case 25: {
+          if (tag !== 202) {
+            break;
+          }
+
+          message.ncFilesDirectory = reader.string();
+          continue;
+        }
+        case 30: {
+          if (tag !== 242) {
+            break;
+          }
+
+          message.joints.push(JointConfig.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 31: {
+          if (tag !== 250) {
+            break;
+          }
+
+          message.axes.push(AxisConfig.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): MachineConfig {
+    return {
+      iniFilename: isSet(object.iniFilename) ? globalThis.String(object.iniFilename) : "",
+      iniReadable: isSet(object.iniReadable) ? globalThis.Boolean(object.iniReadable) : false,
+      machineName: isSet(object.machineName) ? globalThis.String(object.machineName) : "",
+      kinematics: isSet(object.kinematics) ? globalThis.String(object.kinematics) : "",
+      kinematicsModule: isSet(object.kinematicsModule) ? globalThis.String(object.kinematicsModule) : "",
+      kinematicsType: isSet(object.kinematicsType) ? kinematicsTypeFromJSON(object.kinematicsType) : 0,
+      coordinates: isSet(object.coordinates) ? globalThis.String(object.coordinates) : "",
+      axisMask: isSet(object.axisMask) ? globalThis.Number(object.axisMask) : 0,
+      jointCount: isSet(object.jointCount) ? globalThis.Number(object.jointCount) : 0,
+      spindleCount: isSet(object.spindleCount) ? globalThis.Number(object.spindleCount) : 0,
+      jointAxisMappingKnown: isSet(object.jointAxisMappingKnown)
+        ? globalThis.Boolean(object.jointAxisMappingKnown)
+        : false,
+      linearUnits: isSet(object.linearUnits) ? globalThis.Number(object.linearUnits) : 0,
+      angularUnits: isSet(object.angularUnits) ? globalThis.Number(object.angularUnits) : 0,
+      linearUnitsName: isSet(object.linearUnitsName) ? globalThis.String(object.linearUnitsName) : "",
+      angularUnitsName: isSet(object.angularUnitsName) ? globalThis.String(object.angularUnitsName) : "",
+      maxLinearVelocity: isSet(object.maxLinearVelocity) ? globalThis.Number(object.maxLinearVelocity) : 0,
+      defaultLinearVelocity: isSet(object.defaultLinearVelocity) ? globalThis.Number(object.defaultLinearVelocity) : 0,
+      maxAngularVelocity: isSet(object.maxAngularVelocity) ? globalThis.Number(object.maxAngularVelocity) : 0,
+      defaultAngularVelocity: isSet(object.defaultAngularVelocity)
+        ? globalThis.Number(object.defaultAngularVelocity)
+        : 0,
+      lathe: isSet(object.lathe) ? globalThis.Boolean(object.lathe) : false,
+      backToolLathe: isSet(object.backToolLathe) ? globalThis.Boolean(object.backToolLathe) : false,
+      maxFeedOverride: isSet(object.maxFeedOverride) ? globalThis.Number(object.maxFeedOverride) : 0,
+      minSpindleOverride: isSet(object.minSpindleOverride) ? globalThis.Number(object.minSpindleOverride) : 0,
+      maxSpindleOverride: isSet(object.maxSpindleOverride) ? globalThis.Number(object.maxSpindleOverride) : 0,
+      ncFilesDirectory: isSet(object.ncFilesDirectory) ? globalThis.String(object.ncFilesDirectory) : "",
+      joints: globalThis.Array.isArray(object?.joints) ? object.joints.map((e: any) => JointConfig.fromJSON(e)) : [],
+      axes: globalThis.Array.isArray(object?.axes) ? object.axes.map((e: any) => AxisConfig.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: MachineConfig): unknown {
+    const obj: any = {};
+    if (message.iniFilename !== "") {
+      obj.iniFilename = message.iniFilename;
+    }
+    if (message.iniReadable !== false) {
+      obj.iniReadable = message.iniReadable;
+    }
+    if (message.machineName !== "") {
+      obj.machineName = message.machineName;
+    }
+    if (message.kinematics !== "") {
+      obj.kinematics = message.kinematics;
+    }
+    if (message.kinematicsModule !== "") {
+      obj.kinematicsModule = message.kinematicsModule;
+    }
+    if (message.kinematicsType !== 0) {
+      obj.kinematicsType = kinematicsTypeToJSON(message.kinematicsType);
+    }
+    if (message.coordinates !== "") {
+      obj.coordinates = message.coordinates;
+    }
+    if (message.axisMask !== 0) {
+      obj.axisMask = Math.round(message.axisMask);
+    }
+    if (message.jointCount !== 0) {
+      obj.jointCount = Math.round(message.jointCount);
+    }
+    if (message.spindleCount !== 0) {
+      obj.spindleCount = Math.round(message.spindleCount);
+    }
+    if (message.jointAxisMappingKnown !== false) {
+      obj.jointAxisMappingKnown = message.jointAxisMappingKnown;
+    }
+    if (message.linearUnits !== 0) {
+      obj.linearUnits = message.linearUnits;
+    }
+    if (message.angularUnits !== 0) {
+      obj.angularUnits = message.angularUnits;
+    }
+    if (message.linearUnitsName !== "") {
+      obj.linearUnitsName = message.linearUnitsName;
+    }
+    if (message.angularUnitsName !== "") {
+      obj.angularUnitsName = message.angularUnitsName;
+    }
+    if (message.maxLinearVelocity !== 0) {
+      obj.maxLinearVelocity = message.maxLinearVelocity;
+    }
+    if (message.defaultLinearVelocity !== 0) {
+      obj.defaultLinearVelocity = message.defaultLinearVelocity;
+    }
+    if (message.maxAngularVelocity !== 0) {
+      obj.maxAngularVelocity = message.maxAngularVelocity;
+    }
+    if (message.defaultAngularVelocity !== 0) {
+      obj.defaultAngularVelocity = message.defaultAngularVelocity;
+    }
+    if (message.lathe !== false) {
+      obj.lathe = message.lathe;
+    }
+    if (message.backToolLathe !== false) {
+      obj.backToolLathe = message.backToolLathe;
+    }
+    if (message.maxFeedOverride !== 0) {
+      obj.maxFeedOverride = message.maxFeedOverride;
+    }
+    if (message.minSpindleOverride !== 0) {
+      obj.minSpindleOverride = message.minSpindleOverride;
+    }
+    if (message.maxSpindleOverride !== 0) {
+      obj.maxSpindleOverride = message.maxSpindleOverride;
+    }
+    if (message.ncFilesDirectory !== "") {
+      obj.ncFilesDirectory = message.ncFilesDirectory;
+    }
+    if (message.joints?.length) {
+      obj.joints = message.joints.map((e) => JointConfig.toJSON(e));
+    }
+    if (message.axes?.length) {
+      obj.axes = message.axes.map((e) => AxisConfig.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<MachineConfig>, I>>(base?: I): MachineConfig {
+    return MachineConfig.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<MachineConfig>, I>>(object: I): MachineConfig {
+    const message = createBaseMachineConfig();
+    message.iniFilename = object.iniFilename ?? "";
+    message.iniReadable = object.iniReadable ?? false;
+    message.machineName = object.machineName ?? "";
+    message.kinematics = object.kinematics ?? "";
+    message.kinematicsModule = object.kinematicsModule ?? "";
+    message.kinematicsType = object.kinematicsType ?? 0;
+    message.coordinates = object.coordinates ?? "";
+    message.axisMask = object.axisMask ?? 0;
+    message.jointCount = object.jointCount ?? 0;
+    message.spindleCount = object.spindleCount ?? 0;
+    message.jointAxisMappingKnown = object.jointAxisMappingKnown ?? false;
+    message.linearUnits = object.linearUnits ?? 0;
+    message.angularUnits = object.angularUnits ?? 0;
+    message.linearUnitsName = object.linearUnitsName ?? "";
+    message.angularUnitsName = object.angularUnitsName ?? "";
+    message.maxLinearVelocity = object.maxLinearVelocity ?? 0;
+    message.defaultLinearVelocity = object.defaultLinearVelocity ?? 0;
+    message.maxAngularVelocity = object.maxAngularVelocity ?? 0;
+    message.defaultAngularVelocity = object.defaultAngularVelocity ?? 0;
+    message.lathe = object.lathe ?? false;
+    message.backToolLathe = object.backToolLathe ?? false;
+    message.maxFeedOverride = object.maxFeedOverride ?? 0;
+    message.minSpindleOverride = object.minSpindleOverride ?? 0;
+    message.maxSpindleOverride = object.maxSpindleOverride ?? 0;
+    message.ncFilesDirectory = object.ncFilesDirectory ?? "";
+    message.joints = object.joints?.map((e) => JointConfig.fromPartial(e)) || [];
+    message.axes = object.axes?.map((e) => AxisConfig.fromPartial(e)) || [];
+    return message;
+  },
+};
+
 export type LinuxCNCServiceService = typeof LinuxCNCServiceService;
 export const LinuxCNCServiceService = {
   /** Get current status (poll equivalent) */
@@ -9273,6 +10313,20 @@ export const LinuxCNCServiceService = {
     responseSerialize: (value: ResolveFileResponse): Buffer => Buffer.from(ResolveFileResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): ResolveFileResponse => ResolveFileResponse.decode(value),
   },
+  /**
+   * Get the machine's static configuration: kinematics, joint-to-axis
+   * mapping, limits, velocities and units
+   */
+  getMachineConfig: {
+    path: "/linuxcnc.LinuxCNCService/GetMachineConfig",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: GetMachineConfigRequest): Buffer =>
+      Buffer.from(GetMachineConfigRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GetMachineConfigRequest => GetMachineConfigRequest.decode(value),
+    responseSerialize: (value: MachineConfig): Buffer => Buffer.from(MachineConfig.encode(value).finish()),
+    responseDeserialize: (value: Buffer): MachineConfig => MachineConfig.decode(value),
+  },
 } as const;
 
 export interface LinuxCNCServiceServer extends UntypedServiceImplementation {
@@ -9299,6 +10353,11 @@ export interface LinuxCNCServiceServer extends UntypedServiceImplementation {
    * whether it is the program LinuxCNC currently has loaded
    */
   resolveFile: handleUnaryCall<ResolveFileRequest, ResolveFileResponse>;
+  /**
+   * Get the machine's static configuration: kinematics, joint-to-axis
+   * mapping, limits, velocities and units
+   */
+  getMachineConfig: handleUnaryCall<GetMachineConfigRequest, MachineConfig>;
 }
 
 export interface LinuxCNCServiceClient extends Client {
@@ -9446,6 +10505,25 @@ export interface LinuxCNCServiceClient extends Client {
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: ResolveFileResponse) => void,
+  ): ClientUnaryCall;
+  /**
+   * Get the machine's static configuration: kinematics, joint-to-axis
+   * mapping, limits, velocities and units
+   */
+  getMachineConfig(
+    request: GetMachineConfigRequest,
+    callback: (error: ServiceError | null, response: MachineConfig) => void,
+  ): ClientUnaryCall;
+  getMachineConfig(
+    request: GetMachineConfigRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: MachineConfig) => void,
+  ): ClientUnaryCall;
+  getMachineConfig(
+    request: GetMachineConfigRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: MachineConfig) => void,
   ): ClientUnaryCall;
 }
 
