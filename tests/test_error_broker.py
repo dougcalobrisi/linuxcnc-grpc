@@ -764,3 +764,138 @@ class TestServerErrorChannelOption:
                     patch.object(sys, "argv", ["linuxcnc-grpc", "--error-channel", "always"]):
                 server_module.main()
             assert serve.call_args.kwargs["error_channel_mode"] == ERROR_CHANNEL_ALWAYS
+
+
+SERVER_MODULE_NAMES = (
+    "linuxcnc_grpc.server",
+    "linuxcnc_grpc.linuxcnc_service",
+    "linuxcnc_grpc.hal_service",
+)
+
+
+def live_error_reader_threads():
+    return {
+        thread for thread in threading.enumerate()
+        if thread.name == "linuxcnc-error-reader" and thread.is_alive()
+    }
+
+
+class TestServerStopsTheErrorReader:
+    """A server made by create_server takes its error reader with it when it goes."""
+
+    @pytest.fixture
+    def error_channel(self):
+        return FakeErrorChannel()
+
+    @pytest.fixture
+    def server_module(self, mock_linuxcnc_module, mock_linuxcnc_stat, error_channel):
+        """The server module on a mocked linuxcnc and HAL, with a real gRPC server."""
+        mock_linuxcnc_module.OPERATOR_ERROR = OPERATOR_ERROR_KIND
+        mock_linuxcnc_module.OPERATOR_TEXT = OPERATOR_TEXT_KIND
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
+        mock_linuxcnc_module.error_channel.return_value = error_channel
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module, "hal": MagicMock()}):
+            for module_name in SERVER_MODULE_NAMES:
+                sys.modules.pop(module_name, None)
+            server_module = importlib.import_module("linuxcnc_grpc.server")
+
+            with patch.object(server_module, "HalServiceServicer"), \
+                    patch.object(server_module.hal_pb2_grpc, "add_HalServiceServicer_to_server"):
+                yield server_module
+        for module_name in SERVER_MODULE_NAMES:
+            sys.modules.pop(module_name, None)
+
+    @staticmethod
+    def _create_always_reading_server(server_module):
+        """Returns the server and the reader thread that creating it started."""
+        readers_before = live_error_reader_threads()
+        server = server_module.create_server(
+            host="127.0.0.1", port=0, error_channel_mode=ERROR_CHANNEL_ALWAYS
+        )
+        new_readers = live_error_reader_threads() - readers_before
+        assert len(new_readers) == 1
+        return server, new_readers.pop()
+
+    def test_stopping_the_server_stops_the_error_reader(self, server_module, error_channel):
+        """A stopped server must not keep taking LinuxCNC's error messages."""
+        server, reader_thread = self._create_always_reading_server(server_module)
+        server.start()
+        error_channel.post(OPERATOR_ERROR_KIND, "while the server runs")
+        wait_until(lambda: error_channel.queued_count == 0)
+
+        server.stop(grace=0)
+
+        reader_thread.join(timeout=5.0)
+        assert not reader_thread.is_alive()
+        poll_count_when_stopped = error_channel.poll_count
+        error_channel.post(OPERATOR_ERROR_KIND, "after the server stopped")
+        time.sleep(0.1)
+        assert error_channel.poll_count == poll_count_when_stopped
+        assert error_channel.queued_count == 1
+
+    def test_stopping_a_server_that_was_never_started_stops_the_error_reader(
+        self, server_module
+    ):
+        server, reader_thread = self._create_always_reading_server(server_module)
+
+        server.stop(grace=None)
+
+        reader_thread.join(timeout=5.0)
+        assert not reader_thread.is_alive()
+
+    def test_stopping_twice_is_harmless(self, server_module):
+        server, reader_thread = self._create_always_reading_server(server_module)
+        server.start()
+
+        first_stop_finished = server.stop(grace=0)
+        second_stop_finished = server.stop(grace=0)
+
+        assert first_stop_finished.wait(timeout=5.0)
+        assert second_stop_finished.wait(timeout=5.0)
+        reader_thread.join(timeout=5.0)
+        assert not reader_thread.is_alive()
+
+    def test_failed_hal_startup_leaves_no_error_reader(self, server_module):
+        """If create_server fails part-way, no server exists to stop the reader later."""
+        readers_before = live_error_reader_threads()
+        readers_when_hal_failed = []
+
+        def fail_to_access_hal():
+            readers_when_hal_failed.extend(live_error_reader_threads() - readers_before)
+            raise RuntimeError("Failed to access HAL")
+
+        with patch.object(server_module, "HalServiceServicer", side_effect=fail_to_access_hal):
+            with pytest.raises(RuntimeError, match="Failed to access HAL"):
+                server_module.create_server(
+                    host="127.0.0.1", port=0, error_channel_mode=ERROR_CHANNEL_ALWAYS
+                )
+
+        # The reader was running by then, so the check below is not vacuous.
+        assert len(readers_when_hal_failed) == 1
+        readers_when_hal_failed[0].join(timeout=5.0)
+        assert live_error_reader_threads() - readers_before == set()
+
+    def test_failed_port_bind_leaves_no_error_reader(self, server_module):
+        readers_before = live_error_reader_threads()
+
+        with pytest.raises(Exception):
+            server_module.create_server(
+                host="256.256.256.256", port=50051, error_channel_mode=ERROR_CHANNEL_ALWAYS
+            )
+
+        wait_until(lambda: live_error_reader_threads() - readers_before == set())
+
+
+class TestServicerClose:
+    """close() is called by whoever stops the server, possibly more than once."""
+
+    def test_close_twice_is_safe(self, make_service):
+        service = make_service(FakeErrorChannel(), error_channel_mode=ERROR_CHANNEL_ALWAYS)
+        reader_thread = service._error_broker._reader_thread
+        assert reader_thread.is_alive()
+
+        service.close()
+        service.close()
+
+        assert not reader_thread.is_alive()

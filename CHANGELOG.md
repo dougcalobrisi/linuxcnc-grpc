@@ -20,6 +20,9 @@ All notable changes to linuxcnc-grpc (the server and the Python, Go, Node.js and
   - `off` never reads and refuses `StreamErrors`.
 - **`StreamErrors` sends its response headers once the subscription is in place**, so a client can tell from when it will receive messages.
 
+### Changed
+- **Stopping the gRPC server stops the server's background thread**, so a stopped server no longer reads LinuxCNC's error channel. This matters to a program that embeds the server with `create_server`: in `always` mode the reader used to go on taking LinuxCNC's messages after `server.stop()`. A `create_server` that fails also leaves no reader behind.
+
 ### Upgrade notes
 - **Rust:** the new fields are added to the generated structs (`WaitCompleteRequest`, `CommandResponse`, `ErrorMessage`, `StreamErrorsRequest`), so code that builds one of these messages with a struct literal needs `..Default::default()`, for example `WaitCompleteRequest { serial, timeout, ..Default::default() }`.
 - **TypeScript:** two generated message types gained a required property: `ErrorMessage.sequence` and `StreamErrorsRequest.replayBuffered`. An object literal typed as one of them needs the new property, or build it with `ErrorMessage.fromPartial({...})` / `StreamErrorsRequest.fromPartial({...})`. `linuxcncSerial` on `CommandResponse` and `WaitCompleteRequest` is optional. The generated `LinuxCNCServiceServer` and `LinuxCNCServiceClient` interfaces gained `readFile`, `resolveFile` and `getMachineConfig`, so a hand-written implementation of either has to add them.

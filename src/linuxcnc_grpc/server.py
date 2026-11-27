@@ -82,28 +82,43 @@ def create_server(
     )
 
     # Register services
-    linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(
-        LinuxCNCServiceServicer(
-            nc_files_dir=nc_files_dir,
-            error_channel_mode=error_channel_mode,
-        ),
-        server
-    )
-    hal_pb2_grpc.add_HalServiceServicer_to_server(
-        HalServiceServicer(),
-        server
+    linuxcnc_servicer = LinuxCNCServiceServicer(
+        nc_files_dir=nc_files_dir,
+        error_channel_mode=error_channel_mode,
     )
 
-    # Register health check service
-    health_servicer = health.HealthServicer()
-    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
-    health_servicer.set("linuxcnc.LinuxCNCService", health_pb2.HealthCheckResponse.SERVING)
-    health_servicer.set("hal.HalService", health_pb2.HealthCheckResponse.SERVING)
-    health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+    try:
+        linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(linuxcnc_servicer, server)
+        hal_servicer = HalServiceServicer()
+        hal_pb2_grpc.add_HalServiceServicer_to_server(hal_servicer, server)
 
-    # Add insecure port (for development/testing)
-    address = f"{host}:{port}"
-    server.add_insecure_port(address)
+        # Register health check service
+        health_servicer = health.HealthServicer()
+        health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+        health_servicer.set("linuxcnc.LinuxCNCService", health_pb2.HealthCheckResponse.SERVING)
+        health_servicer.set("hal.HalService", health_pb2.HealthCheckResponse.SERVING)
+        health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+
+        # Add insecure port (for development/testing)
+        address = f"{host}:{port}"
+        server.add_insecure_port(address)
+    except Exception:
+        # No server will be returned, so nothing else would ever stop the
+        # LinuxCNC servicer's background thread (in "always" mode the error
+        # reader would go on taking LinuxCNC's messages).
+        linuxcnc_servicer.close()
+        raise
+
+    # The servicer runs a background thread (the error channel reader). Stop
+    # it with the server, whoever stops it, so a stopped server does not keep
+    # reading LinuxCNC's error channel.
+    stop_grpc_server = server.stop
+
+    def stop_server_and_servicer(grace):
+        linuxcnc_servicer.close()
+        return stop_grpc_server(grace)
+
+    server.stop = stop_server_and_servicer
 
     logger.info(f"Server configured on {address}")
     return server

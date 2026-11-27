@@ -291,7 +291,9 @@ the server cannot hide its reading from the GUI; never claim it can.
   has been read (`off`, or `on-demand` with no stream so far).
 - `read_available()` drains synchronously and is what unit tests drive; the thread loop only
   adds the mode gate, the 50 ms idle sleep and a 1 s backoff after a failed poll.
-- `LinuxCNCServiceServicer.close()` stops the reader thread.
+- `LinuxCNCServiceServicer.close()` stops the reader thread, and may be called more than once.
+  `create_server` wraps `server.stop` so that stopping the server calls it first, and calls it
+  itself if anything fails after the servicer was constructed (HAL, the port bind).
 
 **Security**: the server has no authentication or TLS. Docs tell users to bind to
 `127.0.0.1` and use an SSH tunnel, or to run only on a trusted LAN (`docs/content/server.md`).
