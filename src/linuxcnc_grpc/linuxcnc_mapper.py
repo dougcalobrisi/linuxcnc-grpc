@@ -24,8 +24,17 @@ class LinuxCNCMapper:
         self._stat = stat
         self._version = version
 
-    def map_to_proto(self) -> linuxcnc_pb2.LinuxCNCStatus:
-        """Map the stat object to a LinuxCNCStatus protobuf message."""
+    def map_to_proto(
+        self, errors: "list[linuxcnc_pb2.ErrorMessage] | None" = None
+    ) -> linuxcnc_pb2.LinuxCNCStatus:
+        """
+        Map the stat object to a LinuxCNCStatus protobuf message.
+
+        Args:
+            errors: Recent messages from the error channel to include.
+                linuxcnc.stat() carries none itself, so the caller supplies
+                what the server has read. Defaults to none.
+        """
         s = self._stat
         return linuxcnc_pb2.LinuxCNCStatus(
             timestamp=int(time.time() * 1e9),
@@ -41,7 +50,7 @@ class LinuxCNCMapper:
             io=self._map_io_status(),
             gcode=self._map_gcode_status(),
             limits=self._map_limit_status(),
-            errors=[]
+            errors=errors or []
         )
 
     # =========================================================================

@@ -63,7 +63,7 @@ rpc GetStatus(GetStatusRequest) returns (LinuxCNCStatus)
 | `io` | IOStatus | Digital/analog I/O state |
 | `gcode` | GCodeStatus | Active G-codes and M-codes |
 | `limits` | LimitStatus | Limit switch states |
-| `errors` | ErrorMessage[] | Always empty. Error messages are delivered only by [StreamErrors](#streamerrors) |
+| `errors` | ErrorMessage[] | The most recent messages the server has read from LinuxCNC's error channel (at most 20, oldest first). Empty unless the server reads the channel: see [StreamErrors](#streamerrors) |
 
 **Example (Python):**
 
@@ -241,13 +241,18 @@ for status in stub.StreamStatus(request):
 
 ### StreamErrors
 
-Subscribe to error messages.
+Subscribe to messages from LinuxCNC's error channel: operator errors, texts
+and displays, and NML errors.
 
 ```protobuf
 rpc StreamErrors(StreamErrorsRequest) returns (stream ErrorMessage)
 ```
 
-**Request:** `StreamErrorsRequest` (empty message)
+**Request:** `StreamErrorsRequest`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `replay_buffered` | bool | If true, the stream starts with the messages the server already holds (the most recent 256), oldest first, then continues with new ones. If false (the default), only messages read from now on are sent |
 
 **Response:** Stream of `ErrorMessage`
 
@@ -255,12 +260,48 @@ rpc StreamErrors(StreamErrorsRequest) returns (stream ErrorMessage)
 |-------|------|-------------|
 | `type` | ErrorType | OPERATOR_ERROR, NML_ERROR, etc. |
 | `message` | string | Error message text |
-| `timestamp` | int64 | Unix timestamp in nanoseconds |
+| `timestamp` | int64 | When the server read the message, unix timestamp in nanoseconds |
+| `sequence` | int64 | Position in the order the server read messages, starting at 1. The same message has the same `sequence` here and in `LinuxCNCStatus.errors` |
 
-> **`StreamErrors` consumes messages.** LinuxCNC's error channel is a single
-> queue, so each message this stream delivers is removed and will not appear
-> in the machine's GUI (AXIS, gmoccapy and so on). This is the only way to
-> receive error messages: `LinuxCNCStatus.errors` is always empty.
+- **Every subscriber receives every message the server reads, as long as it
+  keeps up.** The server reads the channel in one place and fans the messages
+  out, so several clients can stream at once. (Up to 1.0.0, concurrent streams
+  split the messages between them.) The server keeps the newest 256 messages;
+  a subscriber that falls further behind than that loses the older ones. The
+  stream does not report an error when that happens.
+- **The response headers are sent as soon as the subscription is in place.** A
+  client that waits for them knows that any message read after that point
+  will reach it.
+- **Use `sequence` to drop duplicates and spot gaps.** A message can reach you
+  through the stream, through `status.errors` and through a replay. On a
+  stream, a jump in `sequence` means your client fell more than 256 messages
+  behind and lost the ones in between; that jump is the only sign (a 1.0
+  client, which does not know the field, cannot tell). In `status.errors`,
+  which only ever holds the newest 20, gaps between two polls are normal
+  whenever more than 20 messages arrived in between. Sequences restart at 1
+  when the server restarts.
+
+> **Reading the error channel takes messages away from the machine's GUI.**
+> LinuxCNC's error channel is a single queue with no way to look without
+> taking: a message the server reads does not appear in AXIS, gmoccapy or any
+> other reader, and the reverse. By default the server reads the channel only
+> while at least one `StreamErrors` client is connected. The server's
+> `--error-channel` option changes that; see
+> [Error messages and the GUI](server.md#error-messages-and-the-gui).
+
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `FAILED_PRECONDITION` | The server runs with `--error-channel off` |
+
+**Example (Python):**
+
+```python
+request = linuxcnc_pb2.StreamErrorsRequest(replay_buffered=True)
+for error in stub.StreamErrors(request):
+    print(f"#{error.sequence} {error.message}")
+```
 
 ---
 

@@ -2546,10 +2546,15 @@ func (x *LimitStatus) GetMiscError() []int32 {
 
 // Error/message from error channel
 type ErrorMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          ErrorMessage_ErrorType `protobuf:"varint,1,opt,name=type,proto3,enum=linuxcnc.ErrorMessage_ErrorType" json:"type,omitempty"`
-	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
-	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // Unix timestamp in nanoseconds
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Type      ErrorMessage_ErrorType `protobuf:"varint,1,opt,name=type,proto3,enum=linuxcnc.ErrorMessage_ErrorType" json:"type,omitempty"`
+	Message   string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Timestamp int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // When the server read the message, unix timestamp in nanoseconds
+	// Position in the order the server read messages: starts at 1 and grows by
+	// one per message while the server runs. The same message has the same
+	// sequence in StreamErrors and in LinuxCNCStatus.errors, so clients can
+	// drop duplicates and notice gaps. It restarts when the server restarts.
+	Sequence      int64 `protobuf:"varint,4,opt,name=sequence,proto3" json:"sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2605,6 +2610,13 @@ func (x *ErrorMessage) GetTimestamp() int64 {
 	return 0
 }
 
+func (x *ErrorMessage) GetSequence() int64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
 type LinuxCNCStatus struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Metadata
@@ -2622,7 +2634,11 @@ type LinuxCNCStatus struct {
 	Io         *IOStatus         `protobuf:"bytes,17,opt,name=io,proto3" json:"io,omitempty"`
 	Gcode      *GCodeStatus      `protobuf:"bytes,18,opt,name=gcode,proto3" json:"gcode,omitempty"`
 	Limits     *LimitStatus      `protobuf:"bytes,19,opt,name=limits,proto3" json:"limits,omitempty"`
-	// Errors (if any)
+	// The most recent messages the server has read from LinuxCNC's error
+	// channel (at most 20, oldest first). They stay here until newer ones push
+	// them out, so use ErrorMessage.sequence to tell new from already seen.
+	// Empty unless the server reads the error channel: see the server's
+	// --error-channel option.
 	Errors        []*ErrorMessage `protobuf:"bytes,20,rep,name=errors,proto3" json:"errors,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -5105,9 +5121,13 @@ func (x *StreamStatusRequest) GetIntervalMs() int32 {
 }
 
 type StreamErrorsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// If true, the stream starts with the messages the server already holds in
+	// its buffer (the most recent 256), oldest first, and then continues with
+	// new ones. If false, only messages read from now on are sent.
+	ReplayBuffered bool `protobuf:"varint,1,opt,name=replay_buffered,json=replayBuffered,proto3" json:"replay_buffered,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *StreamErrorsRequest) Reset() {
@@ -5138,6 +5158,13 @@ func (x *StreamErrorsRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use StreamErrorsRequest.ProtoReflect.Descriptor instead.
 func (*StreamErrorsRequest) Descriptor() ([]byte, []int) {
 	return file_linuxcnc_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *StreamErrorsRequest) GetReplayBuffered() bool {
+	if x != nil {
+		return x.ReplayBuffered
+	}
+	return false
 }
 
 // Upload a G-code file
@@ -6502,11 +6529,12 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"limitFlags\x12\x14\n" +
 	"\x05homed\x18\x02 \x03(\bR\x05homed\x12\x1d\n" +
 	"\n" +
-	"misc_error\x18\x03 \x03(\x05R\tmiscError\"\x91\x02\n" +
+	"misc_error\x18\x03 \x03(\x05R\tmiscError\"\xad\x02\n" +
 	"\fErrorMessage\x124\n" +
 	"\x04type\x18\x01 \x01(\x0e2 .linuxcnc.ErrorMessage.ErrorTypeR\x04type\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1c\n" +
-	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"\x92\x01\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\x12\x1a\n" +
+	"\bsequence\x18\x04 \x01(\x03R\bsequence\"\x92\x01\n" +
 	"\tErrorType\x12\x1a\n" +
 	"\x16ERROR_TYPE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eOPERATOR_ERROR\x10\x01\x12\x11\n" +
@@ -6677,8 +6705,9 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\x10_linuxcnc_serial\"6\n" +
 	"\x13StreamStatusRequest\x12\x1f\n" +
 	"\vinterval_ms\x18\x01 \x01(\x05R\n" +
-	"intervalMs\"\x15\n" +
-	"\x13StreamErrorsRequest\"o\n" +
+	"intervalMs\">\n" +
+	"\x13StreamErrorsRequest\x12'\n" +
+	"\x0freplay_buffered\x18\x01 \x01(\bR\x0ereplayBuffered\"o\n" +
 	"\x11UploadFileRequest\x12\x1a\n" +
 	"\bfilename\x18\x01 \x01(\tR\bfilename\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\tR\acontent\x12$\n" +

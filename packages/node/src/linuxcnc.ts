@@ -1009,8 +1009,15 @@ export interface LimitStatus {
 export interface ErrorMessage {
   type: ErrorMessage_ErrorType;
   message: string;
-  /** Unix timestamp in nanoseconds */
+  /** When the server read the message, unix timestamp in nanoseconds */
   timestamp: number;
+  /**
+   * Position in the order the server read messages: starts at 1 and grows by
+   * one per message while the server runs. The same message has the same
+   * sequence in StreamErrors and in LinuxCNCStatus.errors, so clients can
+   * drop duplicates and notice gaps. It restarts when the server restarts.
+   */
+  sequence: number;
 }
 
 export enum ErrorMessage_ErrorType {
@@ -1101,7 +1108,13 @@ export interface LinuxCNCStatus {
   limits:
     | LimitStatus
     | undefined;
-  /** Errors (if any) */
+  /**
+   * The most recent messages the server has read from LinuxCNC's error
+   * channel (at most 20, oldest first). They stay here until newer ones push
+   * them out, so use ErrorMessage.sequence to tell new from already seen.
+   * Empty unless the server reads the error channel: see the server's
+   * --error-channel option.
+   */
   errors: ErrorMessage[];
 }
 
@@ -1453,8 +1466,13 @@ export interface StreamStatusRequest {
   intervalMs: number;
 }
 
-/** Empty - streams all errors */
 export interface StreamErrorsRequest {
+  /**
+   * If true, the stream starts with the messages the server already holds in
+   * its buffer (the most recent 256), oldest first, and then continues with
+   * new ones. If false, only messages read from now on are sent.
+   */
+  replayBuffered: boolean;
 }
 
 /** Upload a G-code file */
@@ -4773,7 +4791,7 @@ export const LimitStatus: MessageFns<LimitStatus> = {
 };
 
 function createBaseErrorMessage(): ErrorMessage {
-  return { type: 0, message: "", timestamp: 0 };
+  return { type: 0, message: "", timestamp: 0, sequence: 0 };
 }
 
 export const ErrorMessage: MessageFns<ErrorMessage> = {
@@ -4786,6 +4804,9 @@ export const ErrorMessage: MessageFns<ErrorMessage> = {
     }
     if (message.timestamp !== 0) {
       writer.uint32(24).int64(message.timestamp);
+    }
+    if (message.sequence !== 0) {
+      writer.uint32(32).int64(message.sequence);
     }
     return writer;
   },
@@ -4821,6 +4842,14 @@ export const ErrorMessage: MessageFns<ErrorMessage> = {
           message.timestamp = longToNumber(reader.int64());
           continue;
         }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.sequence = longToNumber(reader.int64());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4835,6 +4864,7 @@ export const ErrorMessage: MessageFns<ErrorMessage> = {
       type: isSet(object.type) ? errorMessage_ErrorTypeFromJSON(object.type) : 0,
       message: isSet(object.message) ? globalThis.String(object.message) : "",
       timestamp: isSet(object.timestamp) ? globalThis.Number(object.timestamp) : 0,
+      sequence: isSet(object.sequence) ? globalThis.Number(object.sequence) : 0,
     };
   },
 
@@ -4849,6 +4879,9 @@ export const ErrorMessage: MessageFns<ErrorMessage> = {
     if (message.timestamp !== 0) {
       obj.timestamp = Math.round(message.timestamp);
     }
+    if (message.sequence !== 0) {
+      obj.sequence = Math.round(message.sequence);
+    }
     return obj;
   },
 
@@ -4860,6 +4893,7 @@ export const ErrorMessage: MessageFns<ErrorMessage> = {
     message.type = object.type ?? 0;
     message.message = object.message ?? "";
     message.timestamp = object.timestamp ?? 0;
+    message.sequence = object.sequence ?? 0;
     return message;
   },
 };
@@ -8253,11 +8287,14 @@ export const StreamStatusRequest: MessageFns<StreamStatusRequest> = {
 };
 
 function createBaseStreamErrorsRequest(): StreamErrorsRequest {
-  return {};
+  return { replayBuffered: false };
 }
 
 export const StreamErrorsRequest: MessageFns<StreamErrorsRequest> = {
-  encode(_: StreamErrorsRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+  encode(message: StreamErrorsRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.replayBuffered !== false) {
+      writer.uint32(8).bool(message.replayBuffered);
+    }
     return writer;
   },
 
@@ -8268,6 +8305,14 @@ export const StreamErrorsRequest: MessageFns<StreamErrorsRequest> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.replayBuffered = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -8277,20 +8322,24 @@ export const StreamErrorsRequest: MessageFns<StreamErrorsRequest> = {
     return message;
   },
 
-  fromJSON(_: any): StreamErrorsRequest {
-    return {};
+  fromJSON(object: any): StreamErrorsRequest {
+    return { replayBuffered: isSet(object.replayBuffered) ? globalThis.Boolean(object.replayBuffered) : false };
   },
 
-  toJSON(_: StreamErrorsRequest): unknown {
+  toJSON(message: StreamErrorsRequest): unknown {
     const obj: any = {};
+    if (message.replayBuffered !== false) {
+      obj.replayBuffered = message.replayBuffered;
+    }
     return obj;
   },
 
   create<I extends Exact<DeepPartial<StreamErrorsRequest>, I>>(base?: I): StreamErrorsRequest {
     return StreamErrorsRequest.fromPartial(base ?? ({} as any));
   },
-  fromPartial<I extends Exact<DeepPartial<StreamErrorsRequest>, I>>(_: I): StreamErrorsRequest {
+  fromPartial<I extends Exact<DeepPartial<StreamErrorsRequest>, I>>(object: I): StreamErrorsRequest {
     const message = createBaseStreamErrorsRequest();
+    message.replayBuffered = object.replayBuffered ?? false;
     return message;
   },
 };
@@ -10250,7 +10299,13 @@ export const LinuxCNCServiceService = {
     responseSerialize: (value: LinuxCNCStatus): Buffer => Buffer.from(LinuxCNCStatus.encode(value).finish()),
     responseDeserialize: (value: Buffer): LinuxCNCStatus => LinuxCNCStatus.decode(value),
   },
-  /** Stream errors */
+  /**
+   * Stream messages from LinuxCNC's error channel. Each message the server
+   * reads goes to every subscriber. The server keeps the newest 256 messages;
+   * a subscriber that falls further behind loses the overflow, visible only
+   * as a jump in ErrorMessage.sequence. Reading the channel takes messages
+   * away from the machine's GUI; see the server's --error-channel option.
+   */
   streamErrors: {
     path: "/linuxcnc.LinuxCNCService/StreamErrors",
     requestStream: false,
@@ -10338,7 +10393,13 @@ export interface LinuxCNCServiceServer extends UntypedServiceImplementation {
   waitComplete: handleUnaryCall<WaitCompleteRequest, CommandResponse>;
   /** Stream status updates */
   streamStatus: handleServerStreamingCall<StreamStatusRequest, LinuxCNCStatus>;
-  /** Stream errors */
+  /**
+   * Stream messages from LinuxCNC's error channel. Each message the server
+   * reads goes to every subscriber. The server keeps the newest 256 messages;
+   * a subscriber that falls further behind loses the overflow, visible only
+   * as a jump in ErrorMessage.sequence. Reading the channel takes messages
+   * away from the machine's GUI; see the server's --error-channel option.
+   */
   streamErrors: handleServerStreamingCall<StreamErrorsRequest, ErrorMessage>;
   /** Upload a G-code file to the nc_files directory */
   uploadFile: handleUnaryCall<UploadFileRequest, UploadFileResponse>;
@@ -10416,7 +10477,13 @@ export interface LinuxCNCServiceClient extends Client {
     metadata?: Metadata,
     options?: Partial<CallOptions>,
   ): ClientReadableStream<LinuxCNCStatus>;
-  /** Stream errors */
+  /**
+   * Stream messages from LinuxCNC's error channel. Each message the server
+   * reads goes to every subscriber. The server keeps the newest 256 messages;
+   * a subscriber that falls further behind loses the overflow, visible only
+   * as a jump in ErrorMessage.sequence. Reading the channel takes messages
+   * away from the machine's GUI; see the server's --error-channel option.
+   */
   streamErrors(request: StreamErrorsRequest, options?: Partial<CallOptions>): ClientReadableStream<ErrorMessage>;
   streamErrors(
     request: StreamErrorsRequest,
