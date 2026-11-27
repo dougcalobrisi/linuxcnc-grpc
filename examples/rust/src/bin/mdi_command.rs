@@ -101,7 +101,11 @@ impl LinuxCncClient {
         serial: i32,
         timeout: f64,
     ) -> Result<RcsStatus, Box<dyn std::error::Error>> {
-        let request = tonic::Request::new(WaitCompleteRequest { serial, timeout });
+        let request = tonic::Request::new(WaitCompleteRequest {
+            serial,
+            timeout,
+            ..Default::default()
+        });
         let response = self.client.wait_complete(request).await?;
         let resp = response.into_inner();
         if resp.status == RcsStatus::RcsError as i32 {

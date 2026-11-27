@@ -16,6 +16,7 @@ import argparse
 import logging
 import signal
 import sys
+import threading
 import time
 from concurrent import futures
 from pathlib import Path
@@ -123,11 +124,20 @@ MOCK_HAL_COMPONENTS = [
 # Mock LinuxCNC Service
 # =============================================================================
 
+# The mock's stand-in for LinuxCNC's own command serial: deliberately far from
+# the server-side serial so tests can tell the two apart.
+MOCK_LINUXCNC_SERIAL_BASE = 1000
+
+
 class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     """Mock LinuxCNC gRPC service returning deterministic responses."""
 
     def __init__(self):
         self._command_serial = 0
+        # The linuxcnc_serial values SendCommand has returned. RPCs run on a
+        # thread pool, so the counter and this set are changed under a lock.
+        self._issued_linuxcnc_serials = set()
+        self._serial_lock = threading.Lock()
 
     def GetStatus(self, request, context):
         """Return mock LinuxCNC status."""
@@ -135,17 +145,40 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
     def SendCommand(self, request, context):
         """Accept any command and return success."""
-        self._command_serial += 1
-        serial = request.serial if request.serial else self._command_serial
+        with self._serial_lock:
+            self._command_serial += 1
+            command_serial = self._command_serial
+            linuxcnc_serial = MOCK_LINUXCNC_SERIAL_BASE + command_serial
+            self._issued_linuxcnc_serials.add(linuxcnc_serial)
+        serial = request.serial if request.serial else command_serial
         logger.info(f"Received command serial={serial}: {request.WhichOneof('command')}")
         return linuxcnc_pb2.CommandResponse(
             serial=serial,
             status=linuxcnc_pb2.RCS_DONE,
             error_message="",
+            linuxcnc_serial=linuxcnc_serial,
         )
 
     def WaitComplete(self, request, context):
-        """Return immediate completion."""
+        """
+        Return immediate completion.
+
+        As on the real server, a request that sets linuxcnc_serial (0
+        included) to a value SendCommand did not return gets RCS_ERROR.
+        """
+        if request.HasField("linuxcnc_serial"):
+            with self._serial_lock:
+                serial_was_issued = request.linuxcnc_serial in self._issued_linuxcnc_serials
+            if not serial_was_issued:
+                return linuxcnc_pb2.CommandResponse(
+                    serial=request.serial,
+                    status=linuxcnc_pb2.RCS_ERROR,
+                    error_message=(
+                        f"linuxcnc_serial {request.linuxcnc_serial} was not issued by "
+                        "this server on its current connection to LinuxCNC; the "
+                        "outcome of that command is unknown"
+                    ),
+                )
         return linuxcnc_pb2.CommandResponse(
             serial=request.serial,
             status=linuxcnc_pb2.RCS_DONE,

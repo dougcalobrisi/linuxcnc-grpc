@@ -258,8 +258,8 @@ when it has finished, call `WaitComplete` or watch the status
 
 ### `RCS_ERROR` from `SendCommand`
 
-`SendCommand` answers `RCS_ERROR`, with the reason in `error_message`, in two
-cases:
+`SendCommand` answers `RCS_ERROR`, with the reason in `error_message`, in
+three cases:
 
 - **The server rejected the command.** It checks some values itself: a joint
   or spindle index, an MDI command that is empty or too long, the file name of
@@ -267,6 +267,12 @@ cases:
   check is not sent, and `error_message` is the server's own text, for example
   `MDI command must not be empty`.
 - **A LinuxCNC call failed.** `error_message` is the text of that error.
+- **LinuxCNC did not take the command.** If the write to LinuxCNC's command
+  channel fails, LinuxCNC's Python bindings report no error. The server
+  notices because LinuxCNC's command serial did not change, and answers
+  `RCS_ERROR` with a message that the command was not accepted by LinuxCNC.
+  Nothing was sent. This check needs LinuxCNC bindings that expose
+  `command.serial`; those of 2.8, 2.9 and master do.
 
 Most commands are one LinuxCNC message. Four are sent as several messages, one
 after the other:
@@ -282,7 +288,13 @@ If one of these messages fails, the ones before it have been sent and stay in
 effect, and the ones after it are not sent. The answer is `RCS_ERROR` all the
 same, and the response does not say how many messages went out. The server
 makes no checks of its own on these four commands, so `RCS_ERROR` for one of
-them always comes from a LinuxCNC call, the first or a later one.
+them always comes from LinuxCNC: a call failed, the first or a later one, or
+LinuxCNC took none of the messages.
+
+The check for a command LinuxCNC did not take looks at the command as a whole.
+If LinuxCNC takes some of these messages and silently drops another, the
+answer is `RCS_DONE`. The same holds for opening a program, which LinuxCNC
+itself sends as two messages (close the current program, open the new one).
 
 After `RCS_ERROR` from one of these four commands, read the status before you
 send the command again: part of it may have taken effect.
@@ -297,6 +309,34 @@ bookkeeping: the server does not use it to identify a command later, and
 `WaitComplete` ignores it. The server's counter wraps to 1 after 2147483647
 (the field is an int32); the HAL service's counter does the same.
 
+### `linuxcnc_serial` identifies the command to LinuxCNC
+
+`CommandResponse.linuxcnc_serial` is LinuxCNC's own serial number for the
+command. It is set whenever the command was dispatched:
+
+- **It identifies the command; it does not prove the task received it.**
+  LinuxCNC's send call normally returns once the task has echoed the command,
+  so `task.echo_serial_number` is normally at or past this value by the time
+  you get the response. But if the task does not answer, the send gives up
+  after about 5 seconds without an error and the serial is returned all the
+  same.
+  The server does not check the echo itself. To confirm that the command was
+  received, call `WaitComplete` with the value or compare it with
+  `task.echo_serial_number` in the status.
+- **It says nothing about the outcome.** LinuxCNC can still refuse the command
+  (an MDI line in the wrong mode, for example) or fail part-way. Pass the
+  value to `WaitComplete` to get `RCS_DONE` or `RCS_ERROR` for it, within the
+  limits described [below](#waitcomplete).
+- **For a command sent as several LinuxCNC messages** (see the table
+  [above](#rcs_error-from-sendcommand)) it is the serial of the last message
+  LinuxCNC took, so a wait on it covers that message only.
+- **It is unset** whenever the answer is `RCS_ERROR`, also when part of the
+  command was sent (see [`RCS_ERROR` from `SendCommand`](#rcs_error-from-sendcommand)),
+  and when the LinuxCNC Python bindings don't expose `command.serial`.
+  LinuxCNC 2.8, 2.9 and master do.
+- Serials are only meaningful for one run of LinuxCNC. Don't keep them across
+  a restart of LinuxCNC.
+
 ### `WaitComplete`
 
 `WaitComplete` waits until **the most recent command sent through this
@@ -305,8 +345,43 @@ has been, and is only echoed back in the response. After sending A and then B,
 `WaitComplete` reports on B whichever serial you pass.
 
 With several clients on one server, "most recent" means the most recent from
-any of them, so `WaitComplete` cannot tell you about your own command if
-another client has sent one since. Watch the status in that case.
+any of them, so a plain `WaitComplete` cannot tell you about your own command
+if another client has sent one since.
+
+**To wait on one command's serial, set `linuxcnc_serial`** in the request to
+the value `SendCommand` returned for it. The wait then applies LinuxCNC's own
+serial rule (the one its `wait_complete` uses) to that serial instead of the
+latest one:
+
+- If the task is on that command, the result is `RCS_DONE` or `RCS_ERROR` when
+  it stops executing.
+- If LinuxCNC has echoed a later command, the result is `RCS_DONE` at once,
+  whatever became of the earlier one.
+- If the value is not a serial this server returned from `SendCommand` on its
+  current connection to LinuxCNC, the result is `RCS_ERROR` at once with a
+  message saying so. That covers a made-up serial, one from before the server
+  last reconnected (unless the new connection has by chance issued the same
+  number), and one older than the last 4096 commands. An explicit 0 is
+  treated like any other value: it is refused unless this server issued 0.
+  Copy the field only when the response has it set (`HasField` in Python),
+  because an unset field reads as 0.
+- If the server reconnects to LinuxCNC during the wait, the result is
+  `RCS_ERROR` with a message saying the outcome is unknown: LinuxCNC may have
+  restarted and begun counting serials again. A reconnect in the instant
+  between the wait's last look at the status and its answer is not noticed,
+  and the answer can then still be `RCS_DONE`.
+
+**What the answer proves.** A wait with `linuxcnc_serial` is exact as long as
+nothing else is sent to LinuxCNC meanwhile. Once a later command has been
+echoed, sent through this server or by any other client of the same LinuxCNC
+(the GUI, for example, or a feed override sent while a long MDI move runs),
+the answer is `RCS_DONE` and the wait does not say how the earlier command
+ended: it may still be executing, or it may have failed. A client that needs
+to know a motion has finished should also read the status:
+`task.interp_state` back at `INTERP_IDLE`, `trajectory.inpos` true and
+`trajectory.current_vel` at zero, as fits the command.
+
+The rest of this section describes the wait without `linuxcnc_serial`.
 
 | Status | Meaning |
 |--------|---------|

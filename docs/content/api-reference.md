@@ -102,13 +102,19 @@ rpc SendCommand(LinuxCNCCommand) returns (CommandResponse)
 | `override_limits` | OverrideLimitsCommand | Override limit switches |
 | `program_options` | ProgramOptionsCommand | Set optional stop/block delete |
 
+> **`AutoCommand` is deprecated.** The message is in the proto, but
+> `LinuxCNCCommand` has no field for it, so it cannot be sent. Use
+> `ProgramCommand` (`open`, `run_from_line`, `pause`, `resume`, `step`,
+> `abort`) instead. `AutoCommand` and `AutoCommandType` will be removed in 2.0.
+
 **Response:** `CommandResponse`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `serial` | int32 | The request's `serial`, or one from the server's own counter if the request left it at 0 (the counter wraps to 1 after 2147483647). A label only: it is not LinuxCNC's serial (don't compare it with `echo_serial_number`) and `WaitComplete` ignores it |
-| `status` | RcsStatus | `RCS_DONE` if the command was dispatched. `RCS_ERROR` if the server rejected it or a LinuxCNC call failed; a command made of several LinuxCNC messages may then be partly sent (see [`RCS_ERROR` from `SendCommand`](server.md#rcs_error-from-sendcommand)) |
+| `status` | RcsStatus | `RCS_DONE` if the command was dispatched. `RCS_ERROR` if the server rejected it, a LinuxCNC call failed or LinuxCNC did not take the command; a command made of several LinuxCNC messages may then be partly sent (see [`RCS_ERROR` from `SendCommand`](server.md#rcs_error-from-sendcommand)) |
 | `error_message` | string | Error details if status is RCS_ERROR |
+| `linuxcnc_serial` | optional int32 | LinuxCNC's own serial for the command. Set when the command was dispatched. It identifies the command LinuxCNC was given; it is not proof that the task received it or finished it. Pass it to [WaitComplete](#waitcomplete), or compare it with `task.echo_serial_number` in the status, to follow the command and confirm it (see [Command and Error Semantics](server.md#linuxcnc_serial-identifies-the-command-to-linuxcnc)). For a command sent as several LinuxCNC messages it is the serial of the last one LinuxCNC took. Unset whenever `status` is `RCS_ERROR` (also when part of the command was sent), or if the LinuxCNC bindings on the server don't expose the serial (they do in 2.8, 2.9 and master) |
 
 **Example (Python):**
 
@@ -144,6 +150,7 @@ rpc WaitComplete(WaitCompleteRequest) returns (CommandResponse)
 |-------|------|-------------|
 | `serial` | int32 | Ignored. The wait is always on the most recent command sent through this server; the value is only echoed back in the response |
 | `timeout` | double | Timeout in seconds. 0, a negative number or NaN means the default, 5 seconds. An infinite timeout waits until the command finishes or the client goes away |
+| `linuxcnc_serial` | optional int32 | Wait on this serial: the `linuxcnc_serial` that `SendCommand` returned for a command. It must be a serial this server issued on its current connection to LinuxCNC; any other value gets `RCS_ERROR`. When unset, the wait is on the most recent command sent through this server |
 
 **Response:** `CommandResponse`
 
@@ -161,8 +168,18 @@ answer is `RCS_EXEC`, as for any timeout.
 
 If LinuxCNC has already moved on to a later command, or the server has no
 command to wait for (nothing sent yet, or it reconnected to LinuxCNC), the
-result is `RCS_DONE` immediately. See
-[Command and Error Semantics](server.md#waitcomplete) for the exact rules.
+result is `RCS_DONE` immediately. A wait that names a `linuxcnc_serial` is
+stricter in one respect: after a reconnect it returns `RCS_ERROR`, not
+`RCS_DONE`.
+
+A wait with `linuxcnc_serial` follows LinuxCNC's own serial rule for that
+command. It is exact as long as nothing else is sent to LinuxCNC meanwhile.
+Once a later command has been echoed, sent through this server or by any
+other client of the same LinuxCNC, the answer is `RCS_DONE` and the outcome
+of the earlier command is not known from the wait. A client that needs to
+know a motion has finished should also read the status (`task.interp_state`,
+`trajectory.inpos`, `trajectory.current_vel`). See
+[Command and Error Semantics](server.md#waitcomplete) for the rules in full.
 
 **Example (Python):**
 
@@ -171,15 +188,23 @@ result is `RCS_DONE` immediately. See
 cmd = linuxcnc_pb2.LinuxCNCCommand()
 cmd.serial = 1
 cmd.mdi.command = "G0 X10 Y10"
-stub.SendCommand(cmd)
+sent = stub.SendCommand(cmd)
+if sent.status != linuxcnc_pb2.RCS_DONE:
+    raise SystemExit(f"Not sent: {sent.error_message}")
 
-# Wait for completion
-request = linuxcnc_pb2.WaitCompleteRequest(serial=1, timeout=30.0)
+# Wait on this command's serial. linuxcnc_serial is optional: only pass
+# it on if the server set it, or the request would name serial 0.
+request = linuxcnc_pb2.WaitCompleteRequest(timeout=30.0)
+if sent.HasField("linuxcnc_serial"):
+    request.linuxcnc_serial = sent.linuxcnc_serial
 response = stub.WaitComplete(request)
 
 if response.status == linuxcnc_pb2.RCS_DONE:
     print("Command completed")
 ```
+
+Without `linuxcnc_serial`, `WaitComplete` reports on whatever command was sent
+through the server last, which may be another client's.
 
 ---
 

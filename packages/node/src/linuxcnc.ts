@@ -707,7 +707,12 @@ export function jogTypeToJSON(object: JogType): string {
   }
 }
 
-/** Auto command type */
+/**
+ * Auto command type.
+ * Deprecated together with AutoCommand: SendCommand has never accepted it.
+ *
+ * @deprecated
+ */
 export enum AutoCommandType {
   AUTO_RUN = 0,
   AUTO_PAUSE = 1,
@@ -1224,7 +1229,15 @@ export interface ProgramCommand {
   abort?: boolean | undefined;
 }
 
-/** Auto mode command */
+/**
+ * Auto mode command.
+ * Deprecated: LinuxCNCCommand has no field for this message, so SendCommand
+ * has never been able to carry it. Use ProgramCommand to run, pause, resume,
+ * step or abort a program. The message stays in the 1.x protos only so that
+ * code referring to it keeps compiling; it will be removed in 2.0.
+ *
+ * @deprecated
+ */
 export interface AutoCommand {
   command: AutoCommandType;
   /** For AUTO_RUN, starting line */
@@ -1378,12 +1391,34 @@ export interface LinuxCNCCommand {
 }
 
 export interface CommandResponse {
-  /** Echo of command serial */
+  /**
+   * The request's serial, or one from the server's own counter if the request
+   * left it at 0. A label only: it is NOT LinuxCNC's serial.
+   */
   serial: number;
-  /** Command status */
+  /**
+   * From SendCommand: RCS_DONE means the command was dispatched to LinuxCNC,
+   * not that it finished. From WaitComplete: the outcome of the wait.
+   */
   status: RcsStatus;
   /** Error message if status is RCS_ERROR */
   errorMessage: string;
+  /**
+   * LinuxCNC's own serial number for the command the server handed to
+   * LinuxCNC, set by SendCommand when the command was dispatched. It
+   * identifies the command; it does not prove the task received it.
+   * LinuxCNC's send normally returns once the task has echoed the serial
+   * (TaskStatus.echo_serial_number), but it gives up after about 5 seconds
+   * without an error if the task does not answer. Use WaitComplete, or the
+   * status, to confirm receipt and completion: compare this value with
+   * echo_serial_number, or pass it to WaitComplete. For a command the server
+   * sends as several LinuxCNC messages (coolant, set_limit, override_config,
+   * program_options) it is the serial of the last one LinuxCNC took. Unset
+   * when the command was not dispatched, which includes a command LinuxCNC
+   * did not take, or when the LinuxCNC bindings on the server do not expose
+   * the serial.
+   */
+  linuxcncSerial?: number | undefined;
 }
 
 /** Empty - returns full status */
@@ -1391,10 +1426,26 @@ export interface GetStatusRequest {
 }
 
 export interface WaitCompleteRequest {
-  /** Command serial to wait for */
+  /**
+   * Ignored by the server and only echoed back in the response. Without
+   * linuxcnc_serial, the wait is on the latest command sent through the server.
+   */
   serial: number;
-  /** Timeout in seconds */
+  /** Timeout in seconds (default 5) */
   timeout: number;
+  /**
+   * Wait on this serial: the linuxcnc_serial that SendCommand returned for a
+   * command. The wait follows LinuxCNC's own serial rule. While the task's
+   * echo serial equals this value, the answer is that command's outcome. Once
+   * a later command has been echoed, sent through this server or by any other
+   * client of the same LinuxCNC, the answer is RCS_DONE and does not say how
+   * the earlier command ended. So the wait is exact only as long as nothing
+   * else is sent to LinuxCNC meanwhile; read the status as well to know that
+   * a motion has finished. A value this server did not issue on its current
+   * connection to LinuxCNC gets RCS_ERROR. When unset, the wait is on the
+   * latest command sent through the server, as it always was.
+   */
+  linuxcncSerial?: number | undefined;
 }
 
 export interface StreamStatusRequest {
@@ -7725,7 +7776,7 @@ export const LinuxCNCCommand: MessageFns<LinuxCNCCommand> = {
 };
 
 function createBaseCommandResponse(): CommandResponse {
-  return { serial: 0, status: 0, errorMessage: "" };
+  return { serial: 0, status: 0, errorMessage: "", linuxcncSerial: undefined };
 }
 
 export const CommandResponse: MessageFns<CommandResponse> = {
@@ -7738,6 +7789,9 @@ export const CommandResponse: MessageFns<CommandResponse> = {
     }
     if (message.errorMessage !== "") {
       writer.uint32(26).string(message.errorMessage);
+    }
+    if (message.linuxcncSerial !== undefined) {
+      writer.uint32(32).int32(message.linuxcncSerial);
     }
     return writer;
   },
@@ -7773,6 +7827,14 @@ export const CommandResponse: MessageFns<CommandResponse> = {
           message.errorMessage = reader.string();
           continue;
         }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.linuxcncSerial = reader.int32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -7787,6 +7849,7 @@ export const CommandResponse: MessageFns<CommandResponse> = {
       serial: isSet(object.serial) ? globalThis.Number(object.serial) : 0,
       status: isSet(object.status) ? rcsStatusFromJSON(object.status) : 0,
       errorMessage: isSet(object.errorMessage) ? globalThis.String(object.errorMessage) : "",
+      linuxcncSerial: isSet(object.linuxcncSerial) ? globalThis.Number(object.linuxcncSerial) : undefined,
     };
   },
 
@@ -7801,6 +7864,9 @@ export const CommandResponse: MessageFns<CommandResponse> = {
     if (message.errorMessage !== "") {
       obj.errorMessage = message.errorMessage;
     }
+    if (message.linuxcncSerial !== undefined) {
+      obj.linuxcncSerial = Math.round(message.linuxcncSerial);
+    }
     return obj;
   },
 
@@ -7812,6 +7878,7 @@ export const CommandResponse: MessageFns<CommandResponse> = {
     message.serial = object.serial ?? 0;
     message.status = object.status ?? 0;
     message.errorMessage = object.errorMessage ?? "";
+    message.linuxcncSerial = object.linuxcncSerial ?? undefined;
     return message;
   },
 };
@@ -7860,7 +7927,7 @@ export const GetStatusRequest: MessageFns<GetStatusRequest> = {
 };
 
 function createBaseWaitCompleteRequest(): WaitCompleteRequest {
-  return { serial: 0, timeout: 0 };
+  return { serial: 0, timeout: 0, linuxcncSerial: undefined };
 }
 
 export const WaitCompleteRequest: MessageFns<WaitCompleteRequest> = {
@@ -7870,6 +7937,9 @@ export const WaitCompleteRequest: MessageFns<WaitCompleteRequest> = {
     }
     if (message.timeout !== 0) {
       writer.uint32(17).double(message.timeout);
+    }
+    if (message.linuxcncSerial !== undefined) {
+      writer.uint32(24).int32(message.linuxcncSerial);
     }
     return writer;
   },
@@ -7897,6 +7967,14 @@ export const WaitCompleteRequest: MessageFns<WaitCompleteRequest> = {
           message.timeout = reader.double();
           continue;
         }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.linuxcncSerial = reader.int32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -7910,6 +7988,7 @@ export const WaitCompleteRequest: MessageFns<WaitCompleteRequest> = {
     return {
       serial: isSet(object.serial) ? globalThis.Number(object.serial) : 0,
       timeout: isSet(object.timeout) ? globalThis.Number(object.timeout) : 0,
+      linuxcncSerial: isSet(object.linuxcncSerial) ? globalThis.Number(object.linuxcncSerial) : undefined,
     };
   },
 
@@ -7921,6 +8000,9 @@ export const WaitCompleteRequest: MessageFns<WaitCompleteRequest> = {
     if (message.timeout !== 0) {
       obj.timeout = message.timeout;
     }
+    if (message.linuxcncSerial !== undefined) {
+      obj.linuxcncSerial = Math.round(message.linuxcncSerial);
+    }
     return obj;
   },
 
@@ -7931,6 +8013,7 @@ export const WaitCompleteRequest: MessageFns<WaitCompleteRequest> = {
     const message = createBaseWaitCompleteRequest();
     message.serial = object.serial ?? 0;
     message.timeout = object.timeout ?? 0;
+    message.linuxcncSerial = object.linuxcncSerial ?? undefined;
     return message;
   },
 };
