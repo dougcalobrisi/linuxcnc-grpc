@@ -30,6 +30,13 @@ MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 # WaitComplete polling
 DEFAULT_WAIT_COMPLETE_TIMEOUT = 5.0  # seconds, used when the request gives none
 WAIT_COMPLETE_POLL_INTERVAL = 0.05  # seconds slept between polls, lock released
+# Longest single attempt at the lock, in seconds. Between attempts the wait
+# checks that its client is still there.
+LOCK_ACQUIRE_SLICE = 0.1
+
+# LinuxCNC's serials are C ints and wrap at 32 bits.
+SERIAL_HALF_RANGE = 2**31
+SERIAL_FULL_RANGE = 2**32
 
 # CommandResponse.serial is an int32; the server's own counter wraps to 1
 # after this value.
@@ -54,6 +61,19 @@ class DispatchRecord(NamedTuple):
 
     linuxcnc_serial: int | None
     echo_serial_before_dispatch: int | None
+
+
+def _signed_serial_difference(serial: int, reference_serial: int) -> int:
+    """
+    How far serial is ahead of reference_serial, as a signed 32-bit number.
+
+    LinuxCNC subtracts serials into a C int, so the counter can wrap and
+    the newer serial still compares as ahead. A plain Python comparison
+    would get the order wrong on either side of the wrap.
+    """
+    return (
+        (serial - reference_serial + SERIAL_HALF_RANGE) % SERIAL_FULL_RANGE
+    ) - SERIAL_HALF_RANGE
 
 
 def _as_plain_int(value) -> int | None:
@@ -186,21 +206,25 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             self._command_serial = self._command_serial % MAX_RESPONSE_SERIAL + 1
             return self._command_serial
 
-    def _acquire_lock_until(self, deadline: float) -> bool:
+    def _acquire_lock_until(self, deadline: float, context: grpc.ServicerContext) -> bool:
         """
-        Take self._lock, giving up at deadline (a time.monotonic() value).
+        Take self._lock, giving up at deadline (a time.monotonic() value)
+        or when the RPC behind context is no longer active.
 
         Returns whether the lock was taken; the caller releases it. At or
         past the deadline the lock is still taken if it is free.
         """
         while True:
             seconds_remaining = max(0.0, deadline - time.monotonic())
-            # acquire() raises OverflowError for a timeout above TIMEOUT_MAX,
-            # which a very long or infinite deadline would give it, so such
-            # a wait is made in pieces.
-            if self._lock.acquire(timeout=min(seconds_remaining, threading.TIMEOUT_MAX)):
+            # Short attempts, so that a cancelled RPC gives up its worker
+            # thread while another RPC still holds the lock. They also keep
+            # the timeout far below threading.TIMEOUT_MAX, above which
+            # acquire() raises OverflowError (an infinite deadline).
+            if self._lock.acquire(timeout=min(seconds_remaining, LOCK_ACQUIRE_SLICE)):
                 return True
-            if seconds_remaining <= threading.TIMEOUT_MAX:
+            if seconds_remaining <= LOCK_ACQUIRE_SLICE:
+                return False
+            if not context.is_active():
                 return False
 
     def _read_linuxcnc_command_serial(self) -> int | None:
@@ -266,14 +290,16 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             # Nothing this server sent is being tracked (nothing sent yet, or
             # a reconnect cleared the records), so there is no command to
             # wait for: report done straight away, whatever the task is
-            # doing. linuxcnc's own wait_complete() behaves the same way on a
-            # command channel that has not sent anything.
+            # doing. This is the server's own rule; linuxcnc's
+            # wait_complete() has no such case.
             return linuxcnc.RCS_DONE
 
         task_is_idle = task_rcs_state in (linuxcnc.RCS_DONE, linuxcnc.RCS_ERROR)
 
         if dispatch_record.linuxcnc_serial is not None:
-            serials_ahead = echo_serial_number - dispatch_record.linuxcnc_serial
+            serials_ahead = _signed_serial_difference(
+                echo_serial_number, dispatch_record.linuxcnc_serial
+            )
             if serials_ahead > 0:
                 # A later command has been echoed, so ours is finished.
                 # Whatever the task is doing now (executing, or in error)
@@ -286,7 +312,10 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
         # Fallback: no LinuxCNC serial, so wait for the echo serial to move
         # past where it was before we dispatched, and for the task to be idle.
-        if echo_serial_number > dispatch_record.echo_serial_before_dispatch and task_is_idle:
+        echo_has_advanced = _signed_serial_difference(
+            echo_serial_number, dispatch_record.echo_serial_before_dispatch
+        ) > 0
+        if echo_has_advanced and task_is_idle:
             return task_rcs_state
         return None
 
@@ -717,7 +746,9 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         request.serial is ignored, as it always has been: the wait is on the
         latest command dispatched when the call arrives, and the serial is
         only echoed back in the response. If there is no such command
-        (nothing sent since connecting), it returns RCS_DONE at once.
+        (nothing sent since connecting), it returns RCS_DONE at once. A
+        command sent during the wait is not followed: once LinuxCNC has
+        moved past the awaited one, the answer is RCS_DONE.
 
         Returns RCS_DONE or RCS_ERROR ("Command failed") on completion, and
         RCS_EXEC with an empty error_message on timeout.
@@ -729,9 +760,10 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         # NaN fails the comparison, so it gets the default like 0 does.
         timeout = request.timeout if request.timeout > 0 else DEFAULT_WAIT_COMPLETE_TIMEOUT
         deadline = time.monotonic() + timeout
-        # Every lock acquisition below gives up at the deadline, so a wait
-        # cannot overrun its timeout behind another RPC that holds the lock.
-        # Running out of time that way is reported like any other timeout.
+        # Every lock acquisition below gives up at the deadline or when the
+        # client has gone, so a wait cannot overrun its timeout, or outlive
+        # its client, behind another RPC that holds the lock. Either way
+        # the answer is the one for a timeout.
         timed_out_response = linuxcnc_pb2.CommandResponse(
             serial=request.serial,
             status=linuxcnc_pb2.RCS_EXEC,
@@ -741,7 +773,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         logger.debug(f"WaitComplete called - serial={request.serial}, timeout={timeout}")
 
         try:
-            if not self._acquire_lock_until(deadline):
+            if not self._acquire_lock_until(deadline, context):
                 return timed_out_response
             try:
                 dispatch_record = self._latest_dispatch_record
@@ -751,7 +783,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
             result = None
             while True:
-                if not self._acquire_lock_until(deadline):
+                if not self._acquire_lock_until(deadline, context):
                     break
                 try:
                     if self._connection_generation != resolved_connection_generation:
