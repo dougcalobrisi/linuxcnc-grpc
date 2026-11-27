@@ -1065,73 +1065,1101 @@ class TestProgramCommand:
             mock_cmd.abort.assert_called_once()
 
 
+class FakeLinuxCNCCommand:
+    """
+    Stand-in for linuxcnc.command() that tracks a real integer ``serial``.
+
+    Like the real bindings, each sent command bumps ``serial`` and the task
+    echoes it back in ``stat.echo_serial_number`` before the send returns.
+    """
+
+    def __init__(self, stat, first_serial=100, exposes_serial=True):
+        self._stat = stat
+        self._next_linuxcnc_serial = first_serial
+        self.sent_commands = []
+        # Set to an exception to make flood() fail, as the second message of
+        # a coolant command.
+        self.flood_error = None
+        if exposes_serial:
+            self.serial = 0
+
+    def _send(self, name, *args):
+        linuxcnc_serial = self._next_linuxcnc_serial
+        self._next_linuxcnc_serial += 1
+        if hasattr(self, "serial"):
+            self.serial = linuxcnc_serial
+        self._stat.echo_serial_number = linuxcnc_serial
+        self.sent_commands.append((name, args))
+
+    def state(self, *args):
+        self._send("state", *args)
+
+    def mist(self, *args):
+        self._send("mist", *args)
+
+    def flood(self, *args):
+        if self.flood_error is not None:
+            raise self.flood_error
+        self._send("flood", *args)
+
+    def mdi(self, *args):
+        self._send("mdi", *args)
+
+
+class LockThatReportsFailedAttempts:
+    """
+    Wraps the servicer lock and sets an event when an acquire() times out.
+
+    A test that waits for the event knows another thread really was blocked
+    on the lock, without sleeping and hoping.
+    """
+
+    def __init__(self, wrapped_lock):
+        import threading
+
+        self._wrapped_lock = wrapped_lock
+        self.an_attempt_failed = threading.Event()
+
+    def acquire(self, *args, **kwargs):
+        acquired = self._wrapped_lock.acquire(*args, **kwargs)
+        if not acquired:
+            self.an_attempt_failed.set()
+        return acquired
+
+    def release(self):
+        self._wrapped_lock.release()
+
+    def __enter__(self):
+        self._wrapped_lock.acquire()
+        return self
+
+    def __exit__(self, *exception_details):
+        self._wrapped_lock.release()
+
+
+INT32_MAX = 2**31 - 1
+INT32_MIN = -(2**31)
+
+
 class TestWaitComplete:
     """Test WaitComplete RPC."""
+
+    @staticmethod
+    def _make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command):
+        """Build a servicer wired to the given stat and command stand-ins."""
+        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
+        mock_linuxcnc_module.command.return_value = command
+        mock_linuxcnc_module.error_channel.return_value = MagicMock()
+
+        # Import the protobuf modules before patch.dict: anything first
+        # imported inside it is dropped from sys.modules on exit, and a second
+        # import of the generated code would then clash with the first.
+        from linuxcnc_pb import linuxcnc_pb2  # noqa: F401
+
+        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
+            # Force reimport so the service module binds to this test's mock
+            sys.modules.pop("linuxcnc_grpc.linuxcnc_service", None)
+            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
+
+            return LinuxCNCServiceServicer()
+
+    @staticmethod
+    def _estop_request(serial=0):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        request = linuxcnc_pb2.LinuxCNCCommand(serial=serial)
+        request.state.state = linuxcnc_pb2.STATE_ESTOP
+        return request
+
+    @staticmethod
+    def _mdi_request(gcode, serial=0):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        request = linuxcnc_pb2.LinuxCNCCommand(serial=serial)
+        request.mdi.command = gcode
+        return request
 
     def test_rcs_done(
         self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
     ):
-        """Returns RCS_DONE when complete."""
-        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
-        mock_cmd = MagicMock()
-        mock_cmd.wait_complete.return_value = 1  # RCS_DONE
-        mock_linuxcnc_module.command.return_value = mock_cmd
-        mock_linuxcnc_module.error_channel.return_value = MagicMock()
-        mock_linuxcnc_module.RCS_DONE = 1
+        """Returns RCS_DONE when the awaited command has completed."""
+        from linuxcnc_pb import linuxcnc_pb2
 
-        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_pb import linuxcnc_pb2
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
 
-            service = LinuxCNCServiceServicer()
-            request = linuxcnc_pb2.WaitCompleteRequest(serial=1, timeout=5.0)
-            response = service.WaitComplete(request, mock_grpc_context)
+        request = linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=5.0)
+        response = service.WaitComplete(request, mock_grpc_context)
 
-            assert response.status == linuxcnc_pb2.RCS_DONE
-            assert response.error_message == ""
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert response.error_message == ""
+        assert response.serial == send_response.serial
 
     def test_rcs_error(
         self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
     ):
-        """Returns RCS_ERROR on failure."""
-        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
-        mock_cmd = MagicMock()
-        mock_cmd.wait_complete.return_value = 3  # RCS_ERROR
-        mock_linuxcnc_module.command.return_value = mock_cmd
-        mock_linuxcnc_module.error_channel.return_value = MagicMock()
-        mock_linuxcnc_module.RCS_DONE = 1
-        mock_linuxcnc_module.RCS_ERROR = 3
+        """Returns RCS_ERROR when the awaited command failed."""
+        from linuxcnc_pb import linuxcnc_pb2
 
-        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_pb import linuxcnc_pb2
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_ERROR
 
-            service = LinuxCNCServiceServicer()
-            request = linuxcnc_pb2.WaitCompleteRequest(serial=1, timeout=5.0)
-            response = service.WaitComplete(request, mock_grpc_context)
+        request = linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=5.0)
+        response = service.WaitComplete(request, mock_grpc_context)
 
-            assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == "Command failed"
+
+    @pytest.mark.parametrize("task_state_name", ["RCS_DONE", "RCS_EXEC", "RCS_ERROR"])
+    def test_nothing_sent_reports_done_immediately(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, task_state_name
+    ):
+        """With no command of ours to wait for, the answer is RCS_DONE at once."""
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        mock_linuxcnc_stat.state = getattr(mock_linuxcnc_module, task_state_name)
+        service = self._make_service(
+            mock_linuxcnc_module, mock_linuxcnc_stat, MagicMock()
+        )
+
+        polls_before_wait = mock_linuxcnc_stat.poll.call_count
+        with patch.object(time, "sleep") as sleep_between_polls:
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(timeout=30.0), mock_grpc_context
+            )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert response.error_message == ""
+        # At once: decided on the first poll, without ever sleeping.
+        sleep_between_polls.assert_not_called()
+        assert mock_linuxcnc_stat.poll.call_count == polls_before_wait + 1
+
+    def test_linuxcnc_error_reported_as_rcs_error(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A linuxcnc.error while polling is returned as RCS_ERROR with its text."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        service = self._make_service(
+            mock_linuxcnc_module, mock_linuxcnc_stat, MagicMock()
+        )
+        mock_linuxcnc_stat.poll.side_effect = mock_linuxcnc_module.error("NML gone")
+
+        request = linuxcnc_pb2.WaitCompleteRequest(serial=1, timeout=5.0)
+        response = service.WaitComplete(request, mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == "NML gone"
 
     def test_default_timeout(
         self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
     ):
         """Uses 5.0s default timeout when not specified."""
-        mock_linuxcnc_module.stat.return_value = mock_linuxcnc_stat
-        mock_cmd = MagicMock()
-        mock_cmd.wait_complete.return_value = 1
-        mock_linuxcnc_module.command.return_value = mock_cmd
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G1 X5 F5"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        # Fake clock: every sleep advances monotonic time by the slept amount.
+        fake_clock = {"now": 1000.0}
+        slept_durations = []
+
+        def fake_sleep(duration):
+            slept_durations.append(duration)
+            fake_clock["now"] += duration
+
+        with patch.object(
+            time, "monotonic", side_effect=lambda: fake_clock["now"]
+        ), patch.object(time, "sleep", side_effect=fake_sleep):
+            request = linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0)
+            response = service.WaitComplete(request, mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_EXEC
+        assert sum(slept_durations) == pytest.approx(5.0)
+        assert max(slept_durations) <= 0.05 + 1e-9
+
+    def test_timeout_returns_rcs_exec(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A command still executing at the deadline reports RCS_EXEC, no error text."""
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        send_response = service.SendCommand(self._mdi_request("G1 X5 F5"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        # Fake clock: every sleep advances monotonic time by the slept amount,
+        # so the length of the wait does not depend on how busy the machine is.
+        fake_clock = {"now": 1000.0}
+        slept_durations = []
+
+        def fake_sleep(duration):
+            slept_durations.append(duration)
+            fake_clock["now"] += duration
+
+        with patch.object(
+            time, "monotonic", side_effect=lambda: fake_clock["now"]
+        ), patch.object(time, "sleep", side_effect=fake_sleep):
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.2),
+                mock_grpc_context,
+            )
+
+        assert response.status == linuxcnc_pb2.RCS_EXEC
+        assert response.error_message == ""
+        assert response.serial == send_response.serial
+        assert sum(slept_durations) == pytest.approx(0.2)
+
+    def test_stops_waiting_when_client_disconnects(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A cancelled RPC stops polling instead of running out the timeout."""
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G1 X5 F5"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+        mock_grpc_context.is_active.return_value = False
+
+        polls_before_wait = mock_linuxcnc_stat.poll.call_count
+        with patch.object(time, "sleep") as sleep_between_polls:
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=30.0),
+                mock_grpc_context,
+            )
+
+        assert response.status == linuxcnc_pb2.RCS_EXEC
+        assert response.error_message == ""
+        # It polled once, saw the client gone and left without sleeping.
+        sleep_between_polls.assert_not_called()
+        assert mock_linuxcnc_stat.poll.call_count == polls_before_wait + 1
+
+    @staticmethod
+    def _hold_service_lock(service):
+        """
+        Take the servicer lock on a helper thread, as another RPC would.
+
+        Returns once the lock is held, with the event that releases it and
+        the holding thread.
+        """
+        import threading
+
+        lock_is_held = threading.Event()
+        release_lock = threading.Event()
+
+        def hold_lock():
+            with service._lock:
+                lock_is_held.set()
+                release_lock.wait(timeout=30)
+
+        lock_holder = threading.Thread(target=hold_lock, daemon=True)
+        lock_holder.start()
+        assert lock_is_held.wait(timeout=5)
+        return release_lock, lock_holder
+
+    def test_times_out_while_another_rpc_holds_the_lock_at_the_start(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A wait that cannot get the lock before its deadline reports a timeout."""
+        import threading
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G1 X5 F5"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+        polls_before_wait = mock_linuxcnc_stat.poll.call_count
+        wait_responses = []
+
+        def run_wait():
+            wait_responses.append(service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.2),
+                mock_grpc_context,
+            ))
+
+        release_lock, lock_holder = self._hold_service_lock(service)
+        try:
+            wait_thread = threading.Thread(target=run_wait, daemon=True)
+            wait_thread.start()
+            # The lock is held until the finally below, so the wait can only
+            # return by giving up on it.
+            wait_thread.join(timeout=10)
+            wait_returned_while_lock_was_held = not wait_thread.is_alive()
+        finally:
+            release_lock.set()
+            lock_holder.join(timeout=5)
+
+        assert wait_returned_while_lock_was_held, "WaitComplete overran its timeout"
+        assert wait_responses[0].status == linuxcnc_pb2.RCS_EXEC
+        assert wait_responses[0].error_message == ""
+        assert wait_responses[0].serial == send_response.serial
+        assert mock_linuxcnc_stat.poll.call_count == polls_before_wait
+        mock_grpc_context.abort.assert_not_called()
+
+    def test_times_out_while_another_rpc_holds_the_lock_between_polls(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """The deadline also bounds the lock acquisition of each later poll."""
+        import threading
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G1 X5 F5"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+        polls_before_wait = mock_linuxcnc_stat.poll.call_count
+        lock_holds = []
+        wait_responses = []
+
+        def sleep_during_which_the_lock_is_taken(duration):
+            # Runs on the WaitComplete thread where it sleeps between polls,
+            # with the lock released; from here on another RPC keeps it.
+            if not lock_holds:
+                lock_holds.append(self._hold_service_lock(service))
+
+        def run_wait():
+            wait_responses.append(service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=1.0),
+                mock_grpc_context,
+            ))
+
+        try:
+            with patch.object(time, "sleep", side_effect=sleep_during_which_the_lock_is_taken):
+                wait_thread = threading.Thread(target=run_wait, daemon=True)
+                wait_thread.start()
+                wait_thread.join(timeout=10)
+                wait_returned_while_lock_was_held = not wait_thread.is_alive()
+        finally:
+            for release_lock, lock_holder in lock_holds:
+                release_lock.set()
+                lock_holder.join(timeout=5)
+
+        assert len(lock_holds) == 1
+        assert wait_returned_while_lock_was_held, "WaitComplete overran its timeout"
+        assert wait_responses[0].status == linuxcnc_pb2.RCS_EXEC
+        assert wait_responses[0].error_message == ""
+        # Only the first poll happened; the second never got the lock.
+        assert mock_linuxcnc_stat.poll.call_count == polls_before_wait + 1
+
+    def test_free_lock_is_still_taken_with_a_tiny_timeout(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """An uncontended wait polls once and reports the result however short the timeout."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=1e-9),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+
+    def test_send_command_not_blocked_during_wait(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """An estop sent while WaitComplete sleeps between polls is not blocked."""
+        import threading
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        # A long move is dispatched and stays in RCS_EXEC.
+        move_response = service.SendCommand(self._mdi_request("G1 X100 F1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        estop_responses = []
+        estop_finished_during_sleep = []
+
+        def run_estop():
+            estop_responses.append(
+                service.SendCommand(self._estop_request(), mock_grpc_context)
+            )
+
+        def sleep_that_sends_estop(duration):
+            # Runs on the WaitComplete thread, exactly where the service
+            # sleeps between polls. If the service still held its lock here,
+            # the estop on the helper thread could not get through.
+            if estop_finished_during_sleep:
+                return
+            estop_thread = threading.Thread(target=run_estop, daemon=True)
+            estop_thread.start()
+            # A blocked estop would never finish while this sleep lasts, so
+            # the bound only has to be longer than a busy machine needs.
+            estop_thread.join(timeout=10)
+            estop_finished_during_sleep.append(not estop_thread.is_alive())
+
+        with patch.object(time, "sleep", side_effect=sleep_that_sends_estop):
+            wait_response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=move_response.serial, timeout=2.0),
+                mock_grpc_context,
+            )
+
+        assert estop_finished_during_sleep == [True], "estop was blocked behind WaitComplete"
+        assert estop_responses[0].status == linuxcnc_pb2.RCS_DONE
+        assert ("state", (mock_linuxcnc_module.STATE_ESTOP,)) in command.sent_commands
+        # The estop was echoed after the move, so the move is reported done.
+        assert wait_response.status == linuxcnc_pb2.RCS_DONE
+
+    def test_done_immediately_once_echo_serial_has_passed(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Echo serial past ours means done, even while a later command executes."""
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+
+        # Someone else's later command (501) is now executing.
+        mock_linuxcnc_stat.echo_serial_number = 501
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        with patch.object(time, "sleep") as service_sleep:
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=30.0),
+                mock_grpc_context,
+            )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert response.error_message == ""
+        service_sleep.assert_not_called()
+
+    @staticmethod
+    def _coolant_request():
+        from linuxcnc_pb import linuxcnc_pb2
+
+        request = linuxcnc_pb2.LinuxCNCCommand()
+        request.coolant.mist = True
+        request.coolant.flood = True
+        return request
+
+    def test_partly_dispatched_command_becomes_the_one_waited_on(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """If a handler fails after sending one message, WaitComplete waits on that message."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+
+        # Coolant sends mist, then flood. Flood fails, but mist has gone out
+        # and is still executing.
+        command.flood_error = mock_linuxcnc_module.error("flood failed")
+        send_response = service.SendCommand(self._coolant_request(), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        assert send_response.status == linuxcnc_pb2.RCS_ERROR
+        assert [name for name, _ in command.sent_commands] == ["mdi", "mist"]
+        wait_response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(timeout=0.1), mock_grpc_context
+        )
+        # Without the record for mist, the wait would see the finished MDI
+        # command overtaken and answer RCS_DONE.
+        assert wait_response.status == linuxcnc_pb2.RCS_EXEC
+
+    def test_command_rejected_before_any_message_keeps_the_previous_record(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A command that sent nothing does not replace what WaitComplete waits on."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        record_before_rejection = service._latest_dispatch_record
+
+        rejected_response = service.SendCommand(self._mdi_request("   "), mock_grpc_context)
+
+        assert rejected_response.status == linuxcnc_pb2.RCS_ERROR
+        assert service._latest_dispatch_record == record_before_rejection
+
+    def test_fallback_refuses_to_dispatch_when_the_baseline_cannot_be_sampled(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Without command.serial, a failed status poll stops the command going out untracked."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, exposes_serial=False)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        mock_linuxcnc_stat.poll.side_effect = mock_linuxcnc_module.error("status unavailable")
+
+        response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "status unavailable" in response.error_message
+        assert command.sent_commands == []
+
+    def test_reconnect_during_wait_drops_the_stale_serial(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """After a reconnect mid-wait, the old LinuxCNC serial is not compared against."""
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        sleep_calls = []
+
+        def sleep_that_reconnects(duration):
+            sleep_calls.append(duration)
+            if len(sleep_calls) == 1:
+                service._connect()
+                # The new channel's serials start far below the stale 500,
+                # which the old record would wait on until the timeout.
+                mock_linuxcnc_stat.echo_serial_number = 3
+
+        with patch.object(time, "sleep", side_effect=sleep_that_reconnects):
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=2.0),
+                mock_grpc_context,
+            )
+
+        # Nothing has been sent on the new channel, so "latest" is empty: done.
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert len(sleep_calls) == 1
+
+    def test_reconnect_during_wait_follows_latest_command_on_new_channel(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """After a reconnect mid-wait, the wait moves to the newest command sent since."""
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        sleep_calls = []
+
+        def sleep_that_reconnects_then_finishes(duration):
+            sleep_calls.append(duration)
+            if len(sleep_calls) == 1:
+                service._connect()
+                command._next_linuxcnc_serial = 7
+                service.SendCommand(self._mdi_request("G0 X2"), mock_grpc_context)
+                mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+            elif len(sleep_calls) == 3:
+                mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_ERROR
+
+        with patch.object(time, "sleep", side_effect=sleep_that_reconnects_then_finishes):
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=2.0),
+                mock_grpc_context,
+            )
+
+        # It kept waiting on the new command (7) and reported that one's result.
+        assert len(sleep_calls) == 3
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+
+    def test_tracks_linuxcnc_serial_of_latest_dispatch(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """SendCommand remembers LinuxCNC's own serial for the latest command only."""
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        first_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        assert first_response.serial != 500  # server counter, not LinuxCNC's serial
+        assert service._latest_dispatch_record.linuxcnc_serial == 500
+
+        second_response = service.SendCommand(
+            self._mdi_request("G0 X2", serial=77), mock_grpc_context
+        )
+        assert second_response.serial == 77
+        assert service._latest_dispatch_record.linuxcnc_serial == 501
+
+    @pytest.mark.parametrize("which_serial", ["first", "second", "zero", "unknown"])
+    def test_request_serial_is_ignored_and_latest_command_is_reported(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, which_serial
+    ):
+        """After send A then send B, any WaitComplete reports on B, as it always has."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        first_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        second_response = service.SendCommand(self._mdi_request("G0 X2"), mock_grpc_context)
+        requested_serial = {
+            "first": first_response.serial,
+            "second": second_response.serial,
+            "zero": 0,
+            "unknown": 424242,
+        }[which_serial]
+
+        # LinuxCNC has echoed the second command (501) and it failed.
+        mock_linuxcnc_stat.echo_serial_number = 501
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_ERROR
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=requested_serial, timeout=1.0),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == "Command failed"
+        assert response.serial == requested_serial  # echoed back, nothing more
+
+    def test_request_serial_is_ignored_while_latest_command_executes(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Asking about an older, finished command still waits on the latest one."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        first_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        service.SendCommand(self._mdi_request("G0 X2"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC  # 501 still running
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=first_response.serial, timeout=0.15),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_EXEC
+
+    def test_waits_until_echo_reaches_linuxcnc_serial(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """An idle state is not 'done' until the task has echoed our serial."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+
+        # Task is idle but still showing an older serial.
+        mock_linuxcnc_stat.echo_serial_number = 499
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+
+        stale_wait = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.15),
+            mock_grpc_context,
+        )
+        assert stale_wait.status == linuxcnc_pb2.RCS_EXEC
+
+        mock_linuxcnc_stat.echo_serial_number = 500
+        caught_up_wait = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.15),
+            mock_grpc_context,
+        )
+        assert caught_up_wait.status == linuxcnc_pb2.RCS_DONE
+
+    def test_failed_dispatch_does_not_replace_latest_record(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A command rejected by validation is not what WaitComplete waits on."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        record_before_rejection = service._latest_dispatch_record
+
+        response = service.SendCommand(self._mdi_request("", serial=9), mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert service._latest_dispatch_record is record_before_rejection
+        assert record_before_rejection.linuxcnc_serial == 500
+
+    def test_fallback_without_command_serial(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Without command.serial, wait for the echo serial to pass its pre-send value."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(
+            mock_linuxcnc_stat, first_serial=1235, exposes_serial=False
+        )
+        mock_linuxcnc_stat.echo_serial_number = 1234
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        record = service._latest_dispatch_record
+        assert record.linuxcnc_serial is None
+        assert record.echo_serial_before_dispatch == 1234
+
+        # Echo serial back at its pre-send value: not our command yet.
+        mock_linuxcnc_stat.echo_serial_number = 1234
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+        not_yet_response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.15),
+            mock_grpc_context,
+        )
+        assert not_yet_response.status == linuxcnc_pb2.RCS_EXEC
+
+        # Echo serial advanced but still executing: keep waiting.
+        mock_linuxcnc_stat.echo_serial_number = 1235
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+        executing_response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.15),
+            mock_grpc_context,
+        )
+        assert executing_response.status == linuxcnc_pb2.RCS_EXEC
+
+        # Advanced and idle: done.
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+        done_response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.15),
+            mock_grpc_context,
+        )
+        assert done_response.status == linuxcnc_pb2.RCS_DONE
+
+        # Advanced and errored: reported as before.
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_ERROR
+        error_response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.15),
+            mock_grpc_context,
+        )
+        assert error_response.status == linuxcnc_pb2.RCS_ERROR
+        assert error_response.error_message == "Command failed"
+
+    def test_reconnect_clears_latest_record(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """The serial from the old command channel is dropped on reconnect."""
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        assert service._latest_dispatch_record is not None
+        generation_before_reconnect = service._connection_generation
+
+        service._connect()
+
+        assert service._latest_dispatch_record is None
+        assert service._connection_generation == generation_before_reconnect + 1
+
+    @pytest.mark.parametrize("failing_step", ["stat", "command", "error_channel", "poll"])
+    def test_failed_reconnect_changes_nothing(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, failing_step
+    ):
+        """A reconnect attempt that fails leaves channels, record and generation alone."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        original_error_channel = service._error_channel
+        record_before_attempt = service._latest_dispatch_record
+        generation_before_attempt = service._connection_generation
+
+        # The next connection attempt hands out fresh objects and then fails.
+        replacement_stat = MagicMock()
+        replacement_stat.echo_serial_number = 3
+        replacement_stat.state = mock_linuxcnc_module.RCS_DONE
+        mock_linuxcnc_module.stat.return_value = replacement_stat
+        mock_linuxcnc_module.command.return_value = MagicMock()
         mock_linuxcnc_module.error_channel.return_value = MagicMock()
-        mock_linuxcnc_module.RCS_DONE = 1
+        connection_failure = mock_linuxcnc_module.error("LinuxCNC went away")
+        if failing_step == "poll":
+            replacement_stat.poll.side_effect = connection_failure
+        else:
+            getattr(mock_linuxcnc_module, failing_step).side_effect = connection_failure
 
-        with patch.dict(sys.modules, {"linuxcnc": mock_linuxcnc_module}):
-            from linuxcnc_grpc.linuxcnc_service import LinuxCNCServiceServicer
-            from linuxcnc_pb import linuxcnc_pb2
+        with pytest.raises(mock_linuxcnc_module.error):
+            service._connect()
 
-            service = LinuxCNCServiceServicer()
-            request = linuxcnc_pb2.WaitCompleteRequest(serial=1, timeout=0)
-            service.WaitComplete(request, mock_grpc_context)
+        assert service._stat is mock_linuxcnc_stat
+        assert service._command is command
+        assert service._error_channel is original_error_channel
+        assert service._latest_dispatch_record is record_before_attempt
+        assert service._connection_generation == generation_before_attempt
 
-            mock_cmd.wait_complete.assert_called_once_with(5.0)
+        # A wait is still judged against the live channel and the real serial:
+        # the move (500) is executing, so this must not come back as done.
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=0.15),
+            mock_grpc_context,
+        )
+        assert response.status == linuxcnc_pb2.RCS_EXEC
+
+    @pytest.mark.parametrize("wait_timeout", [float("inf"), 3600.0])
+    def test_cancelled_wait_returns_while_another_rpc_holds_the_lock_at_the_start(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, wait_timeout
+    ):
+        """A client that cancels gets its worker back without the lock being released."""
+        import threading
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G1 X5 F5"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+        polls_before_wait = mock_linuxcnc_stat.poll.call_count
+        observed_lock = LockThatReportsFailedAttempts(service._lock)
+        service._lock = observed_lock
+        client_cancelled = threading.Event()
+        mock_grpc_context.is_active.side_effect = lambda: not client_cancelled.is_set()
+        wait_responses = []
+
+        def run_wait():
+            wait_responses.append(service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(
+                    serial=send_response.serial, timeout=wait_timeout
+                ),
+                mock_grpc_context,
+            ))
+
+        release_lock, lock_holder = self._hold_service_lock(service)
+        try:
+            wait_thread = threading.Thread(target=run_wait, daemon=True)
+            wait_thread.start()
+            # Cancel only once the wait is known to be stuck behind the lock.
+            wait_was_blocked_on_the_lock = observed_lock.an_attempt_failed.wait(10)
+            client_cancelled.set()
+            # The lock stays held until the finally below, so the wait can
+            # only return by noticing the cancellation.
+            wait_thread.join(timeout=10)
+            wait_returned_while_lock_was_held = not wait_thread.is_alive()
+        finally:
+            release_lock.set()
+            lock_holder.join(timeout=5)
+            wait_thread.join(timeout=5)
+
+        assert wait_was_blocked_on_the_lock
+        assert wait_returned_while_lock_was_held, "a cancelled wait kept its worker"
+        assert wait_responses[0].status == linuxcnc_pb2.RCS_EXEC
+        assert wait_responses[0].error_message == ""
+        assert wait_responses[0].serial == send_response.serial
+        assert mock_linuxcnc_stat.poll.call_count == polls_before_wait
+        mock_grpc_context.abort.assert_not_called()
+
+    def test_cancelled_wait_returns_while_another_rpc_holds_the_lock_between_polls(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """The same holds for the lock acquisition of each later poll."""
+        import threading
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G1 X5 F5"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+        polls_before_wait = mock_linuxcnc_stat.poll.call_count
+        observed_lock = LockThatReportsFailedAttempts(service._lock)
+        service._lock = observed_lock
+        client_cancelled = threading.Event()
+        mock_grpc_context.is_active.side_effect = lambda: not client_cancelled.is_set()
+        lock_holds = []
+        wait_responses = []
+
+        def sleep_during_which_the_lock_is_taken(duration):
+            # Runs on the WaitComplete thread where it sleeps between polls,
+            # with the lock released; from here on another RPC keeps it.
+            if not lock_holds:
+                lock_holds.append(self._hold_service_lock(service))
+
+        def run_wait():
+            wait_responses.append(service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(
+                    serial=send_response.serial, timeout=float("inf")
+                ),
+                mock_grpc_context,
+            ))
+
+        try:
+            with patch.object(time, "sleep", side_effect=sleep_during_which_the_lock_is_taken):
+                wait_thread = threading.Thread(target=run_wait, daemon=True)
+                wait_thread.start()
+                wait_was_blocked_on_the_lock = observed_lock.an_attempt_failed.wait(10)
+                client_cancelled.set()
+                wait_thread.join(timeout=10)
+                wait_returned_while_lock_was_held = not wait_thread.is_alive()
+        finally:
+            for release_lock, lock_holder in lock_holds:
+                release_lock.set()
+                lock_holder.join(timeout=5)
+            wait_thread.join(timeout=5)
+
+        assert len(lock_holds) == 1
+        assert wait_was_blocked_on_the_lock
+        assert wait_returned_while_lock_was_held, "a cancelled wait kept its worker"
+        assert wait_responses[0].status == linuxcnc_pb2.RCS_EXEC
+        assert wait_responses[0].error_message == ""
+        # Only the first poll happened; the second never got the lock.
+        assert mock_linuxcnc_stat.poll.call_count == polls_before_wait + 1
+
+    # LinuxCNC's serial is a C int. Around the wrap from INT32_MAX to
+    # INT32_MIN the newer serial is the smaller number, and the comparison
+    # has to come out as LinuxCNC's own signed subtraction does.
+    @pytest.mark.parametrize(
+        "awaited_serial, echo_serial, task_state_name, expected_state_name",
+        [
+            # Echo behind the awaited serial: keep waiting, whatever the state.
+            (INT32_MIN, INT32_MAX, "RCS_DONE", None),
+            (INT32_MIN, INT32_MAX, "RCS_ERROR", None),
+            (INT32_MIN + 3, INT32_MAX - 1, "RCS_DONE", None),
+            (INT32_MAX, INT32_MAX - 1, "RCS_DONE", None),
+            (INT32_MIN + 1, INT32_MIN, "RCS_DONE", None),
+            # Echo equal to it: the task's state decides.
+            (INT32_MAX, INT32_MAX, "RCS_DONE", "RCS_DONE"),
+            (INT32_MAX, INT32_MAX, "RCS_EXEC", None),
+            (INT32_MIN, INT32_MIN, "RCS_ERROR", "RCS_ERROR"),
+            (INT32_MIN, INT32_MIN, "RCS_EXEC", None),
+            # Echo past it: done, whatever the state.
+            (INT32_MAX, INT32_MIN, "RCS_EXEC", "RCS_DONE"),
+            (INT32_MAX, INT32_MIN, "RCS_ERROR", "RCS_DONE"),
+            (INT32_MAX - 1, INT32_MIN + 3, "RCS_EXEC", "RCS_DONE"),
+            (INT32_MAX - 1, INT32_MAX, "RCS_EXEC", "RCS_DONE"),
+            (INT32_MIN, INT32_MIN + 1, "RCS_EXEC", "RCS_DONE"),
+        ],
+    )
+    def test_completion_state_across_the_serial_rollover(
+        self,
+        mock_linuxcnc_module,
+        mock_linuxcnc_stat,
+        mock_grpc_context,
+        awaited_serial,
+        echo_serial,
+        task_state_name,
+        expected_state_name,
+    ):
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        dispatch_record = service._latest_dispatch_record._replace(
+            linuxcnc_serial=awaited_serial
+        )
+
+        completion_state = service._completion_state(
+            dispatch_record, echo_serial, getattr(mock_linuxcnc_module, task_state_name)
+        )
+
+        expected_state = (
+            None
+            if expected_state_name is None
+            else getattr(mock_linuxcnc_module, expected_state_name)
+        )
+        assert completion_state == expected_state
+
+    @pytest.mark.parametrize(
+        "echo_serial_before_dispatch, echo_serial, task_state_name, expected_state_name",
+        [
+            # Echo not past the sample taken before dispatch: keep waiting.
+            (INT32_MIN, INT32_MAX, "RCS_DONE", None),
+            (INT32_MIN + 3, INT32_MAX - 1, "RCS_ERROR", None),
+            (INT32_MAX, INT32_MAX, "RCS_DONE", None),
+            (INT32_MIN, INT32_MIN, "RCS_DONE", None),
+            # Echo past the sample: the task's state decides.
+            (INT32_MAX, INT32_MIN, "RCS_DONE", "RCS_DONE"),
+            (INT32_MAX, INT32_MIN, "RCS_ERROR", "RCS_ERROR"),
+            (INT32_MAX, INT32_MIN, "RCS_EXEC", None),
+            (INT32_MAX - 1, INT32_MIN + 3, "RCS_DONE", "RCS_DONE"),
+            (INT32_MAX - 1, INT32_MAX, "RCS_DONE", "RCS_DONE"),
+        ],
+    )
+    def test_fallback_completion_state_across_the_serial_rollover(
+        self,
+        mock_linuxcnc_module,
+        mock_linuxcnc_stat,
+        mock_grpc_context,
+        echo_serial_before_dispatch,
+        echo_serial,
+        task_state_name,
+        expected_state_name,
+    ):
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, exposes_serial=False)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        assert service._latest_dispatch_record.linuxcnc_serial is None
+        dispatch_record = service._latest_dispatch_record._replace(
+            echo_serial_before_dispatch=echo_serial_before_dispatch
+        )
+
+        completion_state = service._completion_state(
+            dispatch_record, echo_serial, getattr(mock_linuxcnc_module, task_state_name)
+        )
+
+        expected_state = (
+            None
+            if expected_state_name is None
+            else getattr(mock_linuxcnc_module, expected_state_name)
+        )
+        assert completion_state == expected_state
+
+    def test_wait_reports_done_when_the_echo_serial_wrapped_past_the_command(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """The command got LinuxCNC's largest serial; a later one wrapped to the smallest."""
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=INT32_MAX)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        assert service._latest_dispatch_record.linuxcnc_serial == INT32_MAX
+        # Another client's command, still executing.
+        mock_linuxcnc_stat.echo_serial_number = INT32_MIN
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        with patch.object(time, "sleep") as sleep_between_polls:
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(serial=send_response.serial, timeout=30.0),
+                mock_grpc_context,
+            )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        sleep_between_polls.assert_not_called()
+
+
+class TestResponseSerialCounter:
+    """The server's own serial counter must fit CommandResponse.serial (int32)."""
+
+    def test_counter_wraps_to_one_after_the_largest_int32(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        largest_int32 = 2**31 - 1
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = TestWaitComplete._make_service(
+            mock_linuxcnc_module, mock_linuxcnc_stat, command
+        )
+        service._command_serial = largest_int32 - 1
+
+        response_serials = [
+            service.SendCommand(
+                TestWaitComplete._mdi_request("G0 X1"), mock_grpc_context
+            ).serial
+            for _ in range(3)
+        ]
+
+        assert response_serials == [largest_int32, 1, 2]
+        assert len(command.sent_commands) == 3
+        assert linuxcnc_pb2.CommandResponse(serial=service._next_serial()).serial == 3
 
 
 class TestStreamStatus:
@@ -1762,3 +2790,130 @@ class TestDeleteFile:
                     mock_grpc_context.abort.assert_called_once()
                     args = mock_grpc_context.abort.call_args
                     assert args[0][0] == grpc.StatusCode.INVALID_ARGUMENT
+
+
+class TestWaitCompleteTimeoutValues:
+    """Timeouts that are not ordinary numbers of seconds."""
+
+    @staticmethod
+    def _service_with_one_command_sent(
+        mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = TestWaitComplete._make_service(
+            mock_linuxcnc_module, mock_linuxcnc_stat, command
+        )
+        service.SendCommand(TestWaitComplete._mdi_request("G1 X5 F5"), mock_grpc_context)
+        return service
+
+    @pytest.mark.parametrize("huge_timeout", [float("inf"), 1e300, 1e12])
+    def test_huge_or_infinite_timeout_waits_instead_of_failing(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, huge_timeout
+    ):
+        """Such a timeout is more than a lock wait accepts in one piece."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        service = self._service_with_one_command_sent(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+        )
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(timeout=huge_timeout), mock_grpc_context
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+
+    def test_nan_timeout_means_the_default_like_zero(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        service = self._service_with_one_command_sent(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+        )
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        # Fake clock: every sleep advances monotonic time by the slept amount.
+        fake_clock = {"now": 1000.0}
+        slept_durations = []
+
+        def fake_sleep(duration):
+            slept_durations.append(duration)
+            fake_clock["now"] += duration
+
+        with patch.object(
+            time, "monotonic", side_effect=lambda: fake_clock["now"]
+        ), patch.object(time, "sleep", side_effect=fake_sleep):
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(timeout=float("nan")), mock_grpc_context
+            )
+
+        assert response.status == linuxcnc_pb2.RCS_EXEC
+        assert sum(slept_durations) == pytest.approx(5.0)
+
+    def test_lock_wait_with_an_infinite_deadline_outlasts_a_busy_lock(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        import math
+        import threading
+
+        service = self._service_with_one_command_sent(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+        )
+        observed_lock = LockThatReportsFailedAttempts(service._lock)
+        service._lock = observed_lock
+        lock_is_held = threading.Event()
+        release_the_lock = threading.Event()
+
+        def hold_the_lock():
+            with service._lock:
+                lock_is_held.set()
+                release_the_lock.wait(30)
+
+        acquire_results = []
+
+        def acquire_with_infinite_deadline():
+            try:
+                acquired = service._acquire_lock_until(math.inf, mock_grpc_context)
+            except Exception as acquire_error:
+                acquire_results.append(acquire_error)
+                return
+            acquire_results.append(acquired)
+            service._lock.release()
+
+        holder_thread = threading.Thread(target=hold_the_lock, daemon=True)
+        holder_thread.start()
+        assert lock_is_held.wait(10)
+        waiter_thread = threading.Thread(target=acquire_with_infinite_deadline, daemon=True)
+        waiter_thread.start()
+        try:
+            # The lock is released only after the waiter has been seen to
+            # fail an attempt at it, so the waiter met a busy lock and went
+            # on trying.
+            waiter_was_blocked = observed_lock.an_attempt_failed.wait(10)
+            waiter_gave_up = bool(acquire_results)
+        finally:
+            release_the_lock.set()
+            waiter_thread.join(10)
+            holder_thread.join(10)
+
+        assert waiter_was_blocked, "the waiter never had to wait for the lock"
+        assert not waiter_gave_up, "a failed attempt ended the wait"
+        assert acquire_results == [True]
+
+    def test_free_lock_is_taken_even_for_a_cancelled_rpc_past_its_deadline(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        import time
+
+        service = self._service_with_one_command_sent(
+            mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+        )
+        mock_grpc_context.is_active.return_value = False
+
+        acquired = service._acquire_lock_until(time.monotonic() - 1.0, mock_grpc_context)
+
+        assert acquired
+        service._lock.release()

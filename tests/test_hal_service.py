@@ -231,6 +231,30 @@ class TestSendCommand:
 
             assert response2.serial == response1.serial + 1
 
+    def test_serial_counter_wraps_to_one_after_the_largest_int32(
+        self, mock_hal_module, mock_grpc_context
+    ):
+        """The server's own counter must fit the int32 serial fields."""
+        with patch.dict(sys.modules, {"hal": mock_hal_module}):
+            from linuxcnc_grpc.hal_service import HalServiceServicer
+            from linuxcnc_pb import hal_pb2
+
+            largest_int32 = 2**31 - 1
+            service = HalServiceServicer()
+            service._command_serial = largest_int32 - 1
+
+            response_serials = [
+                service.SendCommand(
+                    hal_pb2.HalCommand(
+                        component_exists=hal_pb2.ComponentExistsCommand(name="test")
+                    ),
+                    mock_grpc_context,
+                ).serial
+                for _ in range(3)
+            ]
+
+            assert response_serials == [largest_int32, 1, 2]
+
     def test_command_exception_handling(self, mock_hal_module, mock_grpc_context):
         """Returns error when command raises exception."""
         mock_hal_module.component_exists.side_effect = Exception("HAL error")
