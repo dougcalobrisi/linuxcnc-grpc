@@ -40,7 +40,7 @@ fi
 EXPECTED_PY_VERSION=$(get_python_version)
 for artifact in dist/*; do
     basename="$(basename "$artifact")"
-    if ! echo "$basename" | grep -q "$EXPECTED_PY_VERSION"; then
+    if ! python_artifact_matches_version "$basename" "$EXPECTED_PY_VERSION"; then
         error "Stale artifact found: $basename (expected version $EXPECTED_PY_VERSION)"
         echo "  Run: make build-python"
         exit 1

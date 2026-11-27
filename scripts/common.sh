@@ -121,6 +121,32 @@ to_semver_prerelease() {
         -e 's/([0-9])rc([0-9])/\1-rc.\2/'
 }
 
+# Check that a built Python artifact's file name is for exactly this version.
+# Usage: python_artifact_matches_version <file name> <version>
+# The version is compared in its PEP 440 form (0.6.0-beta.1 -> 0.6.0b1), which
+# is what the build writes into file names. The comparison is on the literal,
+# delimited name, so 1.1.0 does not accept 11.1.0, 1.1.0.post1 or 1x1y0.
+python_artifact_matches_version() {
+    local artifact_name="$1"
+    local expected_version
+    expected_version=$(to_pep440 "$2")
+    case "$artifact_name" in
+        "linuxcnc_grpc-${expected_version}-"*.whl) return 0 ;;
+        "linuxcnc_grpc-${expected_version}.tar.gz") return 0 ;;
+        "linuxcnc-grpc-${expected_version}.tar.gz") return 0 ;;
+    esac
+    return 1
+}
+
+# Derive the npm dist-tag for a version: prints alpha, beta or rc for a
+# pre-release (0.6.0-beta.1 -> beta) and nothing for a stable version.
+npm_dist_tag_for_version() {
+    local ver="$1"
+    if echo "$ver" | grep -qE -- '-(alpha|beta|rc)\.'; then
+        echo "$ver" | sed -E 's/.*-(alpha|beta|rc)\..*/\1/'
+    fi
+}
+
 # Extract major.minor from a version string for use in documentation examples.
 # Examples:
 #   0.6.0           -> 0.6

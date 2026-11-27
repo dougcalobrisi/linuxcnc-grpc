@@ -7,52 +7,69 @@ on:
     branches: [main, master]
   workflow_call:
 
+# Every job only reads the repository.
+permissions:
+  contents: read
+
 env:
   PROTOC_VERSION: "32.1"
+  # SHA-256 of protoc-<PROTOC_VERSION>-linux-x86_64.zip from the protobuf
+  # release page. Change it together with PROTOC_VERSION (release.yml has a
+  # copy). It is part of the cache key, so a cached protoc is always one that
+  # was verified against this value.
+  PROTOC_SHA256: "e9c129c176bb7df02546c4cd6185126ca53c89e7d2f09511e209319704b5dd7e"
+  # Versions of the Rust protoc plugins from crates.io. Both are part of the
+  # cache key of ~/.cargo/bin, so changing one installs it afresh.
+  PROTOC_GEN_PROST_VERSION: "0.5.0"
+  PROTOC_GEN_TONIC_VERSION: "0.5.0"
 
 jobs:
   # Verify generated proto code is up-to-date
   proto-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python
         run: uv python install 3.12
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: "1.24"
           cache: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: 'npm'
           cache-dependency-path: 'packages/node/package-lock.json'
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
 
       - name: Cache protoc binary
         id: cache-protoc
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/protoc
-          key: protoc-${{ env.PROTOC_VERSION }}-linux
+          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64-sha256-${{ env.PROTOC_SHA256 }}
 
       - name: Download protoc
         if: steps.cache-protoc.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/protoc
-          curl -L "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o ~/protoc/protoc.zip
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o ~/protoc/protoc.zip
+          echo "${PROTOC_SHA256}  $HOME/protoc/protoc.zip" | sha256sum --check --strict -
           unzip ~/protoc/protoc.zip -d ~/protoc
 
       - name: Install protoc
@@ -62,10 +79,10 @@ jobs:
           protoc --version
 
       - name: Cache Cargo bin (protoc plugins)
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin
-          key: cargo-bin-proto-plugins-${{ runner.os }}-v1
+          key: cargo-bin-proto-plugins-${{ runner.os }}-prost-${{ env.PROTOC_GEN_PROST_VERSION }}-tonic-${{ env.PROTOC_GEN_TONIC_VERSION }}-v2
 
       - name: Install proto plugins
         run: |
@@ -80,8 +97,8 @@ jobs:
           cd packages/node && npm ci
 
           # Rust (skip if already cached)
-          command -v protoc-gen-prost || cargo install protoc-gen-prost
-          command -v protoc-gen-tonic || cargo install protoc-gen-tonic
+          command -v protoc-gen-prost || cargo install --locked protoc-gen-prost --version "${PROTOC_GEN_PROST_VERSION}"
+          command -v protoc-gen-tonic || cargo install --locked protoc-gen-tonic --version "${PROTOC_GEN_TONIC_VERSION}"
 
       - name: Regenerate protos
         run: uv run ./scripts/generate-protos.sh --all
@@ -108,7 +125,7 @@ jobs:
   readme-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Regenerate package READMEs
         run: ./scripts/generate-package-readmes.sh
@@ -124,12 +141,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python
         run: uv python install 3.12
@@ -149,12 +167,13 @@ jobs:
         python-version: ["3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -171,19 +190,20 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-python]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: 'npm'
           cache-dependency-path: 'packages/node/package-lock.json'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python (for mock server)
         run: uv python install 3.12
@@ -206,15 +226,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-python]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python (for mock server)
         run: uv python install 3.12
@@ -224,16 +247,17 @@ jobs:
 
       - name: Cache protoc binary
         id: cache-protoc
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/protoc
-          key: protoc-${{ env.PROTOC_VERSION }}-linux
+          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64-sha256-${{ env.PROTOC_SHA256 }}
 
       - name: Download protoc
         if: steps.cache-protoc.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/protoc
-          curl -L "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o ~/protoc/protoc.zip
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o ~/protoc/protoc.zip
+          echo "${PROTOC_SHA256}  $HOME/protoc/protoc.zip" | sha256sum --check --strict -
           unzip ~/protoc/protoc.zip -d ~/protoc
 
       - name: Install protoc
@@ -242,7 +266,7 @@ jobs:
           sudo cp -r ~/protoc/include/* /usr/local/include/
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: packages/rust -> target
           shared-key: rust-ci
@@ -260,18 +284,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-python]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: "1.24"
           cache: true
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python (for mock server)
         run: uv python install 3.12
@@ -290,12 +315,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-python]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python
         run: uv python install 3.12
@@ -328,7 +354,14 @@ jobs:
       - name: Test Python examples
         run: |
           uv run python examples/python/get_status.py --port 50051
-          timeout 5 uv run python examples/python/stream_status.py --port 50051 || true
+          # The stream never ends by itself, so the timeout stopping it (exit 124)
+          # is the expected result. Any other failure is a real one.
+          stream_exit_status=0
+          timeout 5 uv run python examples/python/stream_status.py --port 50051 || stream_exit_status=$?
+          if [ "$stream_exit_status" -ne 0 ] && [ "$stream_exit_status" -ne 124 ]; then
+            echo "::error::stream_status example failed with exit status $stream_exit_status"
+            exit 1
+          fi
           uv run python examples/python/hal_query.py --port 50051 status
 
   # Integration tests - Go examples against mock server
@@ -336,18 +369,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-go]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: "1.24"
           cache: true
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python (for mock server)
         run: uv python install 3.12
@@ -381,7 +415,16 @@ jobs:
         run: |
           cd examples/go
           go run ./cmd/get_status --port 50051
-          timeout 5 go run ./cmd/stream_status --port 50051 || true
+          # Built first, so the 5 seconds are spent streaming, not compiling.
+          go build -o "$RUNNER_TEMP/stream_status" ./cmd/stream_status
+          # The stream never ends by itself, so the timeout stopping it (exit 124)
+          # is the expected result. Any other failure is a real one.
+          stream_exit_status=0
+          timeout 5 "$RUNNER_TEMP/stream_status" --port 50051 || stream_exit_status=$?
+          if [ "$stream_exit_status" -ne 0 ] && [ "$stream_exit_status" -ne 124 ]; then
+            echo "::error::stream_status example failed with exit status $stream_exit_status"
+            exit 1
+          fi
           go run ./cmd/hal_query --port 50051 status
 
   # Integration tests - Node.js examples against mock server
@@ -389,10 +432,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-node]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: 'npm'
@@ -401,9 +444,10 @@ jobs:
             examples/node/package-lock.json
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python (for mock server)
         run: uv python install 3.12
@@ -443,7 +487,14 @@ jobs:
         run: |
           cd examples/node
           npx tsx get_status.ts --port 50051
-          timeout 5 npx tsx stream_status.ts --port 50051 || true
+          # The stream never ends by itself, so the timeout stopping it (exit 124)
+          # is the expected result. Any other failure is a real one.
+          stream_exit_status=0
+          timeout 5 npx tsx stream_status.ts --port 50051 || stream_exit_status=$?
+          if [ "$stream_exit_status" -ne 0 ] && [ "$stream_exit_status" -ne 124 ]; then
+            echo "::error::stream_status example failed with exit status $stream_exit_status"
+            exit 1
+          fi
           npx tsx hal_query.ts --port 50051 status
 
   # Integration tests - Rust examples against mock server
@@ -451,15 +502,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-rust]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python (for mock server)
         run: uv python install 3.12
@@ -469,16 +523,17 @@ jobs:
 
       - name: Cache protoc binary
         id: cache-protoc
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/protoc
-          key: protoc-${{ env.PROTOC_VERSION }}-linux
+          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64-sha256-${{ env.PROTOC_SHA256 }}
 
       - name: Download protoc
         if: steps.cache-protoc.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/protoc
-          curl -L "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o ~/protoc/protoc.zip
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o ~/protoc/protoc.zip
+          echo "${PROTOC_SHA256}  $HOME/protoc/protoc.zip" | sha256sum --check --strict -
           unzip ~/protoc/protoc.zip -d ~/protoc
 
       - name: Install protoc
@@ -487,7 +542,7 @@ jobs:
           sudo cp -r ~/protoc/include/* /usr/local/include/
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             packages/rust -> target
@@ -524,5 +579,12 @@ jobs:
         run: |
           cd examples/rust
           ./target/release/get_status --port 50051
-          timeout 5 ./target/release/stream_status --port 50051 || true
+          # The stream never ends by itself, so the timeout stopping it (exit 124)
+          # is the expected result. Any other failure is a real one.
+          stream_exit_status=0
+          timeout 5 ./target/release/stream_status --port 50051 || stream_exit_status=$?
+          if [ "$stream_exit_status" -ne 0 ] && [ "$stream_exit_status" -ne 124 ]; then
+            echo "::error::stream_status example failed with exit status $stream_exit_status"
+            exit 1
+          fi
           ./target/release/hal_query --port 50051 status

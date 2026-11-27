@@ -18,6 +18,10 @@ parse_common_args "$@"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --tag)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                error "--tag needs a value (e.g. --tag beta)"
+                exit 1
+            fi
             NPM_TAG="$2"
             shift 2
             ;;
@@ -65,21 +69,29 @@ fi
 # Pre-release versions (e.g., 0.6.0-beta.1) default to their pre-release type
 # so they don't become the "latest" tag on npm.
 if [ -z "$NPM_TAG" ]; then
-    if echo "$EXPECTED_NODE_VERSION" | grep -qE '-(alpha|beta|rc)\.'; then
-        NPM_TAG=$(echo "$EXPECTED_NODE_VERSION" | sed -E 's/.*-(alpha|beta|rc)\..*/\1/')
+    NPM_TAG=$(npm_dist_tag_for_version "$EXPECTED_NODE_VERSION")
+    if [ -n "$NPM_TAG" ]; then
         info "Auto-detected npm tag: $NPM_TAG (pre-release version)"
+    elif [[ "$EXPECTED_NODE_VERSION" == *-* ]]; then
+        # A pre-release of a kind this script does not know must not be
+        # published as "latest" by default.
+        error "Version $EXPECTED_NODE_VERSION is a pre-release, but no npm tag could be derived from it"
+        echo "  Pass one explicitly: --tag <tag>"
+        exit 1
     fi
 fi
 
-# Build publish command
-PUBLISH_CMD="npm publish --access public"
+# Build the npm arguments. The array is never empty, so expanding it is safe
+# under "set -u" in bash 3.2 (macOS) as well. The tag goes to the dry run too:
+# npm refuses a pre-release version without --tag, also with --dry-run.
+NPM_PUBLISH_ARGS=(publish --access public)
 if [ -n "$NPM_TAG" ]; then
-    PUBLISH_CMD="$PUBLISH_CMD --tag $NPM_TAG"
+    NPM_PUBLISH_ARGS+=(--tag "$NPM_TAG")
 fi
 
 if [ "$DRY_RUN" = true ]; then
     info "Dry run - validating package..."
-    npm publish --dry-run --access public
+    npm "${NPM_PUBLISH_ARGS[@]}" --dry-run
     echo ""
     success "Dry run complete - package validated successfully"
     exit 0
@@ -87,7 +99,7 @@ fi
 
 # Publish
 info "Publishing to npm..."
-$PUBLISH_CMD
+npm "${NPM_PUBLISH_ARGS[@]}"
 
 echo ""
 success "Published to npm!"

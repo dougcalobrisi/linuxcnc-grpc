@@ -7,41 +7,59 @@ on:
       - 'docs/**'
   workflow_dispatch:
 
+# The build job only reads the repository. Publishing rights are granted to
+# the deploy job alone (below).
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
-# Force Node.js 24 for actions that still bundle Node 20 internally
-# (upload-pages-artifact@v4 pins upload-artifact to a Node 20 SHA)
-# Remove once upstream releases a Node 24 compatible version
 env:
+  # Forces Node.js 24 for JavaScript actions that still bundle Node 20. It was
+  # added for upload-pages-artifact v4. v5 uses upload-artifact v7, which runs
+  # on Node 24 itself, so this is probably no longer needed.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  HUGO_VERSION: "0.170.1"
+  # SHA-256 of hugo_extended_<HUGO_VERSION>_linux-amd64.tar.gz, from
+  # hugo_<HUGO_VERSION>_checksums.txt on the Hugo release page. Change it
+  # together with HUGO_VERSION.
+  HUGO_SHA256: "841a5462853aefc9942e4de1e8a5d75584b6a5181941e6ad3f1d745190e03cd8"
+  # hugo-book release and the commit its tag points to. The clone is checked
+  # against the commit. This release needs Hugo 0.158 or newer.
+  HUGO_BOOK_VERSION: "v0.16.0"
+  HUGO_BOOK_COMMIT: "c3319fd7fa8fa18f8f2c3dcaa4f7193652f88b15"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Hugo
         run: |
-          curl -sL "https://github.com/gohugoio/hugo/releases/latest/download/hugo_extended_$(curl -s https://api.github.com/repos/gohugoio/hugo/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')_linux-amd64.tar.gz" | tar -xz -C /usr/local/bin hugo
+          HUGO_ARCHIVE="$RUNNER_TEMP/hugo_extended_${HUGO_VERSION}_linux-amd64.tar.gz"
+          curl -fsSL "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.tar.gz" -o "$HUGO_ARCHIVE"
+          echo "${HUGO_SHA256}  $HUGO_ARCHIVE" | sha256sum --check --strict -
+          tar -xzf "$HUGO_ARCHIVE" -C /usr/local/bin hugo
+          hugo version
 
       - name: Download hugo-book theme
         run: |
           mkdir -p docs/themes
-          git clone --depth 1 https://github.com/alex-shpak/hugo-book.git docs/themes/hugo-book
+          git clone --depth 1 --branch "$HUGO_BOOK_VERSION" https://github.com/alex-shpak/hugo-book.git docs/themes/hugo-book
+          ACTUAL_COMMIT=$(git -C docs/themes/hugo-book rev-parse HEAD)
+          if [ "$ACTUAL_COMMIT" != "$HUGO_BOOK_COMMIT" ]; then
+            echo "::error::hugo-book $HUGO_BOOK_VERSION is at $ACTUAL_COMMIT, expected $HUGO_BOOK_COMMIT"
+            exit 1
+          fi
 
       - name: Build
         run: hugo --minify --source docs
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/public
 
@@ -51,7 +69,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      pages: write
+      id-token: write
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -14,6 +14,21 @@ on:
         required: false
         type: boolean
         default: true
+      resume_partial_release:
+        description: "Only for re-running a release that failed part-way, on the same commit as the failed run: versions already on a registry are skipped instead of failing"
+        required: false
+        type: boolean
+        default: false
+
+# Jobs that publish or tag ask for more in their own "permissions" blocks.
+permissions:
+  contents: read
+
+# One release at a time: a second run waits for the first instead of
+# publishing alongside it.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   # Pre-flight checks: version consistency and tag validation
@@ -22,7 +37,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check version consistency
         id: version
@@ -52,15 +67,35 @@ jobs:
           echo "version=$NODE_VER" >> "$GITHUB_OUTPUT"
           echo "All packages at version: $NODE_VER (normalized: $NODE_NORM)"
 
-      - name: Check tag doesn't already exist
+      # The checkout has no tags, so the remote is asked. This runs before
+      # anything is published: a tag that cannot be pushed later would leave
+      # the packages published and the release untagged.
+      # A tag that already points at this commit is accepted, so that a
+      # release that failed part-way can be run again (see create-release).
+      # No tag does not mean nothing was published: the publish jobs check
+      # their registries and, unless "resume_partial_release" is set, fail
+      # when the version is already there.
+      - name: Check tag is available
         if: ${{ inputs.create_tag && !inputs.dry_run }}
+        env:
+          TAG: v${{ steps.version.outputs.version }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "::error::Tag $TAG already exists. Bump version before releasing."
+          # Not inside an "if": if the remote cannot be asked, the step fails.
+          REMOTE_REFS=$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          # An annotated tag is listed twice; the "^{}" line names the commit.
+          TAG_COMMIT=$(echo "$REMOTE_REFS" | awk '
+            $2 ~ /\^\{\}$/ { peeled_commit = $1 }
+            { tag_object = $1 }
+            END { if (peeled_commit != "") print peeled_commit; else if (tag_object != "") print tag_object }
+          ')
+          if [ -z "$TAG_COMMIT" ]; then
+            echo "Tag $TAG is available"
+          elif [ "$TAG_COMMIT" = "$GITHUB_SHA" ]; then
+            echo "::notice::Tag $TAG already exists and points at this commit; continuing an earlier release of it"
+          else
+            echo "::error::Tag $TAG already exists and points at $TAG_COMMIT, not at this commit ($GITHUB_SHA). Bump version before releasing."
             exit 1
           fi
-          echo "Tag $TAG is available"
 
   # Run full CI suite
   ci:
@@ -76,12 +111,13 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: true
+          version: "0.13.10"
 
       - name: Set up Python
         run: uv python install 3.12
@@ -101,16 +137,67 @@ jobs:
           EXPECTED=$(get_python_version)
           for artifact in dist/*; do
             basename="$(basename "$artifact")"
-            if ! echo "$basename" | grep -q "$EXPECTED"; then
+            if ! python_artifact_matches_version "$basename" "$EXPECTED"; then
               echo "::error::Stale artifact: $basename (expected version $EXPECTED)"
               exit 1
             fi
           done
           echo "All artifacts match version $EXPECTED"
 
+      # A version that is already on PyPI was built by an earlier run, and
+      # nothing here can tell from which commit. So it fails the job, unless
+      # the person who started the run set "resume_partial_release" and so
+      # stated that this is the commit of the run that published it. A dry
+      # run only reports which of the two a real run would do.
+      - name: Check whether this version is already on PyPI
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          RESUME_PARTIAL_RELEASE: ${{ inputs.resume_partial_release }}
+        run: |
+          source scripts/common.sh
+          # PyPI has the PEP 440 form of the version (1.2.0b1, not 1.2.0-beta.1).
+          VERSION=$(get_python_version)
+          PYPI_HTTP_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/linuxcnc-grpc/$VERSION/json")
+          if [ "$PYPI_HTTP_STATUS" = "404" ]; then
+            echo "linuxcnc-grpc $VERSION is not on PyPI yet"
+          elif [ "$PYPI_HTTP_STATUS" != "200" ]; then
+            # Neither "found" nor "not found": do not guess.
+            echo "::error::Could not find out whether linuxcnc-grpc $VERSION is on PyPI (HTTP $PYPI_HTTP_STATUS)"
+            exit 1
+          elif [ "$DRY_RUN" = "true" ]; then
+            # A dry run publishes nothing; it says what a real run would do.
+            if [ "$RESUME_PARTIAL_RELEASE" = "true" ]; then
+              WOULD_DO="would skip PyPI, because 'resume_partial_release' is set"
+            else
+              WOULD_DO="would fail here, unless it is started with the 'resume_partial_release' input set (only for repeating a release that failed part-way, on the same commit)"
+            fi
+            echo "::warning title=Already on PyPI (dry run)::linuxcnc-grpc $VERSION is already on PyPI. A real run $WOULD_DO."
+            {
+              echo "### PyPI: version already published (dry run)"
+              echo
+              echo "linuxcnc-grpc $VERSION is already on PyPI. A real run $WOULD_DO."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$RESUME_PARTIAL_RELEASE" = "true" ]; then
+            echo "::warning title=PyPI skipped (resume_partial_release)::linuxcnc-grpc $VERSION is already on PyPI; files it has are not uploaded again. The operator has asserted that this run is on the same commit ($GITHUB_SHA) as the run that published them."
+            {
+              echo "### PyPI: skipped (resume_partial_release)"
+              echo
+              echo "linuxcnc-grpc $VERSION was already on PyPI. The upload step leaves the files PyPI has alone and uploads only files of this version that are missing."
+              echo "The operator set \`resume_partial_release\`, asserting that this run is on the same commit (\`$GITHUB_SHA\`) as the run that published them. This workflow cannot check that."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error title=Already on PyPI::linuxcnc-grpc $VERSION is already on PyPI, and it may have been built from another commit than this one ($GITHUB_SHA). Bump the version. Only if this run repeats a release that failed part-way, on the same commit as the failed run, start it again with the 'resume_partial_release' input set."
+            exit 1
+          fi
+
       - name: Publish to PyPI
         if: ${{ !inputs.dry_run }}
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          # Only with "resume_partial_release" are files PyPI already has left
+          # alone; otherwise an existing file fails the upload.
+          skip-existing: ${{ inputs.resume_partial_release }}
 
       - name: Dry run summary
         if: ${{ inputs.dry_run }}
@@ -125,17 +212,20 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22.14"
           cache: 'npm'
           cache-dependency-path: 'packages/node/package-lock.json'
 
+      # Trusted publishing (OIDC) needs npm >= 11.5.1. npm 12 does not run on
+      # the Node.js version set above (it needs ^22.22.2, ^24.15.0 or >= 26),
+      # so this is the newest npm 11.
       - name: Update npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.21.3
 
       - name: Install and build
         run: cd packages/node && npm ci && npm run build
@@ -151,30 +241,107 @@ jobs:
           fi
           echo "Package version verified: $ACTUAL"
 
-      - name: Publish to npm
-        if: ${{ !inputs.dry_run }}
+      # A version that is already on npm was built by an earlier run, and
+      # nothing here can tell from which commit. So it fails the job, unless
+      # "resume_partial_release" is set: then it is skipped, so that a release
+      # that failed part-way can be run again on the same commit. A dry run
+      # only reports which of the two a real run would do.
+      - name: Check whether this version is already on npm
+        id: npm-registry
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          RESUME_PARTIAL_RELEASE: ${{ inputs.resume_partial_release }}
         run: |
+          view_exit_status=0
+          PUBLISHED_VERSION=$(npm view "linuxcnc-grpc@$VERSION" version 2>"$RUNNER_TEMP/npm-view-error.log") || view_exit_status=$?
+          if [ "$view_exit_status" -eq 0 ] && [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+              # A dry run publishes nothing; it says what a real run would do.
+              if [ "$RESUME_PARTIAL_RELEASE" = "true" ]; then
+                WOULD_DO="would skip npm, because 'resume_partial_release' is set"
+              else
+                WOULD_DO="would fail here, unless it is started with the 'resume_partial_release' input set (only for repeating a release that failed part-way, on the same commit)"
+              fi
+              echo "::warning title=Already on npm (dry run)::linuxcnc-grpc $VERSION is already on npm. A real run $WOULD_DO."
+              {
+                echo "### npm: version already published (dry run)"
+                echo
+                echo "linuxcnc-grpc $VERSION is already on npm. A real run $WOULD_DO."
+              } >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$RESUME_PARTIAL_RELEASE" != "true" ]; then
+              echo "::error title=Already on npm::linuxcnc-grpc $VERSION is already on npm, and it may have been built from another commit than this one ($GITHUB_SHA). Bump the version. Only if this run repeats a release that failed part-way, on the same commit as the failed run, start it again with the 'resume_partial_release' input set."
+              exit 1
+            else
+              echo "::warning title=npm skipped (resume_partial_release)::linuxcnc-grpc $VERSION is already on npm; not publishing it again. The operator has asserted that this run is on the same commit ($GITHUB_SHA) as the run that published it."
+              {
+                echo "### npm: skipped (resume_partial_release)"
+                echo
+                echo "linuxcnc-grpc $VERSION was already on npm and was not published again."
+                echo "The operator set \`resume_partial_release\`, asserting that this run is on the same commit (\`$GITHUB_SHA\`) as the run that published it. This workflow cannot check that."
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          elif [ "$view_exit_status" -eq 0 ] && [ -z "$PUBLISHED_VERSION" ]; then
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          elif grep -q 'E404' "$RUNNER_TEMP/npm-view-error.log"; then
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          else
+            # Neither "found" nor "not found": do not guess.
+            cat "$RUNNER_TEMP/npm-view-error.log"
+            echo "::error::Could not find out whether linuxcnc-grpc $VERSION is on npm (npm view: status $view_exit_status, output '$PUBLISHED_VERSION')"
+            exit 1
+          fi
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run && steps.npm-registry.outputs.already_published != 'true' }}
+        run: |
+          source scripts/common.sh
           cd packages/node
           VERSION="${{ needs.preflight.outputs.version }}"
-          TAG_ARGS=""
-          if echo "$VERSION" | grep -q -- '-alpha\.\|-beta\.\|-rc\.'; then
-            TAG=$(echo "$VERSION" | sed 's/.*-\(alpha\|beta\|rc\)\..*/\1/')
-            TAG_ARGS="--tag $TAG"
+          # An array that is never empty: a stable version adds no tag.
+          NPM_PUBLISH_ARGS=(publish --access public --provenance)
+          TAG=$(npm_dist_tag_for_version "$VERSION")
+          if [ -n "$TAG" ]; then
+            NPM_PUBLISH_ARGS+=(--tag "$TAG")
             echo "Pre-release detected: publishing with --tag $TAG"
+          elif [[ "$VERSION" == *-* ]]; then
+            echo "::error::$VERSION is a pre-release, but no npm tag could be derived from it; refusing to publish it as 'latest'"
+            exit 1
           fi
-          npm publish --access public --provenance $TAG_ARGS
+          npm "${NPM_PUBLISH_ARGS[@]}"
 
+      # "npm publish --dry-run" asks the registry and fails for a version that
+      # is already there, and it refuses a pre-release without "--tag". So the
+      # tag a real run would use is passed here too, and a version the check
+      # above found on npm is validated with "npm pack --dry-run" instead (the
+      # check has already said what a real run would do with it).
       - name: Dry run validation
         if: ${{ inputs.dry_run }}
+        env:
+          ALREADY_PUBLISHED: ${{ steps.npm-registry.outputs.already_published }}
         run: |
+          source scripts/common.sh
           cd packages/node
           VERSION="${{ needs.preflight.outputs.version }}"
-          if echo "$VERSION" | grep -q -- '-alpha\.\|-beta\.\|-rc\.'; then
-            TAG=$(echo "$VERSION" | sed 's/.*-\(alpha\|beta\|rc\)\..*/\1/')
-            echo "Would publish with --tag $TAG"
+          if [ "$ALREADY_PUBLISHED" = "true" ]; then
+            echo "::warning title=npm publish not rehearsed (dry run)::linuxcnc-grpc $VERSION is already on npm, so 'npm publish --dry-run' would be rejected; validating the package contents with 'npm pack --dry-run' instead."
+            npm pack --dry-run
+            echo "Dry run - Node.js $VERSION packs cleanly; it is already on npm (see the registry check above for what a real run would do)"
+          else
+            # An array that is never empty: a stable version adds no tag.
+            NPM_PUBLISH_ARGS=(publish --dry-run --access public)
+            TAG=$(npm_dist_tag_for_version "$VERSION")
+            if [ -n "$TAG" ]; then
+              NPM_PUBLISH_ARGS+=(--tag "$TAG")
+              echo "Would publish with --tag $TAG"
+            elif [[ "$VERSION" == *-* ]]; then
+              echo "::error::$VERSION is a pre-release, but no npm tag could be derived from it; a real run would refuse to publish it as 'latest'"
+              exit 1
+            fi
+            npm "${NPM_PUBLISH_ARGS[@]}"
+            echo "Dry run - would publish Node.js $VERSION to npm"
           fi
-          npm publish --dry-run --access public
-          echo "Dry run - would publish Node.js $VERSION to npm"
 
   # Publish Rust to crates.io (uses OIDC trusted publishing)
   publish-rust:
@@ -186,24 +353,29 @@ jobs:
       id-token: write
     env:
       PROTOC_VERSION: "32.1"
+      # SHA-256 of protoc-<PROTOC_VERSION>-linux-x86_64.zip; keep in step with ci.yml.
+      PROTOC_SHA256: "e9c129c176bb7df02546c4cd6185126ca53c89e7d2f09511e209319704b5dd7e"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
 
       - name: Cache protoc binary
         id: cache-protoc
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/protoc
-          key: protoc-${{ env.PROTOC_VERSION }}-linux
+          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64-sha256-${{ env.PROTOC_SHA256 }}
 
       - name: Download protoc
         if: steps.cache-protoc.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/protoc
-          curl -L "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o ~/protoc/protoc.zip
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o ~/protoc/protoc.zip
+          echo "${PROTOC_SHA256}  $HOME/protoc/protoc.zip" | sha256sum --check --strict -
           unzip ~/protoc/protoc.zip -d ~/protoc
 
       - name: Install protoc
@@ -212,7 +384,7 @@ jobs:
           sudo cp -r ~/protoc/include/* /usr/local/include/
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: packages/rust -> target
 
@@ -227,13 +399,65 @@ jobs:
           fi
           echo "Crate version verified: $ACTUAL"
 
+      # A version that is already on crates.io was built by an earlier run,
+      # and nothing here can tell from which commit. So it fails the job,
+      # unless "resume_partial_release" is set: then it is skipped, so that a
+      # release that failed part-way can be run again on the same commit. A
+      # dry run only reports which of the two a real run would do. The
+      # registry index lists every version of the crate, one JSON line each.
+      - name: Check whether this version is already on crates.io
+        id: crates-registry
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          RESUME_PARTIAL_RELEASE: ${{ inputs.resume_partial_release }}
+        run: |
+          INDEX_HTTP_STATUS=$(curl -sS -o "$RUNNER_TEMP/crate-index.jsonl" -w '%{http_code}' \
+            "https://index.crates.io/li/nu/linuxcnc-grpc")
+          if [ "$INDEX_HTTP_STATUS" = "404" ]; then
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          elif [ "$INDEX_HTTP_STATUS" != "200" ]; then
+            # Neither "found" nor "not found": do not guess.
+            echo "::error::Could not find out whether linuxcnc-grpc $VERSION is on crates.io (index answered HTTP $INDEX_HTTP_STATUS)"
+            exit 1
+          elif grep -qF -- "\"vers\":\"$VERSION\"" "$RUNNER_TEMP/crate-index.jsonl"; then
+            if [ "$DRY_RUN" = "true" ]; then
+              # A dry run publishes nothing; it says what a real run would do.
+              if [ "$RESUME_PARTIAL_RELEASE" = "true" ]; then
+                WOULD_DO="would skip crates.io, because 'resume_partial_release' is set"
+              else
+                WOULD_DO="would fail here, unless it is started with the 'resume_partial_release' input set (only for repeating a release that failed part-way, on the same commit)"
+              fi
+              echo "::warning title=Already on crates.io (dry run)::linuxcnc-grpc $VERSION is already on crates.io. A real run $WOULD_DO."
+              {
+                echo "### crates.io: version already published (dry run)"
+                echo
+                echo "linuxcnc-grpc $VERSION is already on crates.io. A real run $WOULD_DO."
+              } >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$RESUME_PARTIAL_RELEASE" != "true" ]; then
+              echo "::error title=Already on crates.io::linuxcnc-grpc $VERSION is already on crates.io, and it may have been built from another commit than this one ($GITHUB_SHA). Bump the version. Only if this run repeats a release that failed part-way, on the same commit as the failed run, start it again with the 'resume_partial_release' input set."
+              exit 1
+            else
+              echo "::warning title=crates.io skipped (resume_partial_release)::linuxcnc-grpc $VERSION is already on crates.io; not publishing it again. The operator has asserted that this run is on the same commit ($GITHUB_SHA) as the run that published it."
+              {
+                echo "### crates.io: skipped (resume_partial_release)"
+                echo
+                echo "linuxcnc-grpc $VERSION was already on crates.io and was not published again."
+                echo "The operator set \`resume_partial_release\`, asserting that this run is on the same commit (\`$GITHUB_SHA\`) as the run that published it. This workflow cannot check that."
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Authenticate with crates.io
-        if: ${{ !inputs.dry_run }}
-        uses: rust-lang/crates-io-auth-action@v1
+        if: ${{ !inputs.dry_run && steps.crates-registry.outputs.already_published != 'true' }}
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: crates-auth
 
       - name: Publish to crates.io
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.crates-registry.outputs.already_published != 'true' }}
         run: cd packages/rust && cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
@@ -252,27 +476,70 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The release body is this version's section of CHANGELOG.md (heading
+      # "## <version>", up to the next "## " heading) followed by the package
+      # links. Without such a section, GitHub's generated notes are used.
+      - name: Write release notes
+        id: notes
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          awk -v heading="## $VERSION" '
+            in_section && /^## / { exit }
+            in_section { print }
+            $0 == heading { in_section = 1 }
+          ' CHANGELOG.md > changelog-section.md
+
+          if grep -q '[^[:space:]]' changelog-section.md; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            cat changelog-section.md > release-body.md
+            echo >> release-body.md
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CHANGELOG.md has no '## $VERSION' section; using generated release notes"
+            : > release-body.md
+          fi
+
+          cat >> release-body.md <<EOF
+          ## Packages Published
+
+          - **PyPI**: [linuxcnc-grpc $VERSION](https://pypi.org/project/linuxcnc-grpc/$VERSION/)
+          - **npm**: [linuxcnc-grpc $VERSION](https://www.npmjs.com/package/linuxcnc-grpc/v/$VERSION)
+          - **crates.io**: [linuxcnc-grpc $VERSION](https://crates.io/crates/linuxcnc-grpc/$VERSION)
+          - **Go**: \`go get github.com/dougcalobrisi/linuxcnc-grpc@v$VERSION\`
+          EOF
 
       - name: Create and push tag
         run: |
           TAG="v${{ needs.preflight.outputs.version }}"
+          # An earlier run of this release may have pushed the tag already
+          # (preflight made sure that any existing tag points at this commit;
+          # it is checked again here because time has passed).
+          REMOTE_REFS=$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          TAG_COMMIT=$(echo "$REMOTE_REFS" | awk '
+            $2 ~ /\^\{\}$/ { peeled_commit = $1 }
+            { tag_object = $1 }
+            END { if (peeled_commit != "") print peeled_commit; else if (tag_object != "") print tag_object }
+          ')
+          if [ "$TAG_COMMIT" = "$GITHUB_SHA" ]; then
+            echo "Tag $TAG already exists and points at this commit"
+            exit 0
+          elif [ -n "$TAG_COMMIT" ]; then
+            echo "::error::Tag $TAG exists and points at $TAG_COMMIT, not at this commit ($GITHUB_SHA)"
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: "v${{ needs.preflight.outputs.version }}"
           name: "Release v${{ needs.preflight.outputs.version }}"
           prerelease: ${{ contains(needs.preflight.outputs.version, '-') }}
-          body: |
-            ## Packages Published
-
-            - **PyPI**: [linuxcnc-grpc ${{ needs.preflight.outputs.version }}](https://pypi.org/project/linuxcnc-grpc/${{ needs.preflight.outputs.version }}/)
-            - **npm**: [linuxcnc-grpc ${{ needs.preflight.outputs.version }}](https://www.npmjs.com/package/linuxcnc-grpc/v/${{ needs.preflight.outputs.version }})
-            - **crates.io**: [linuxcnc-grpc ${{ needs.preflight.outputs.version }}](https://crates.io/crates/linuxcnc-grpc/${{ needs.preflight.outputs.version }})
-            - **Go**: `go get github.com/dougcalobrisi/linuxcnc-grpc@v${{ needs.preflight.outputs.version }}`
-          generate_release_notes: true
+          body_path: release-body.md
+          generate_release_notes: ${{ steps.notes.outputs.found != 'true' }}
