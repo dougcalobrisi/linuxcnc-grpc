@@ -162,6 +162,13 @@ Commands follow a consistent pattern across all languages:
 3. Call `SendCommand`
 4. Optionally call `WaitComplete` to wait for execution
 
+Two things to know before you rely on the responses:
+
+- `RCS_DONE` from `SendCommand` means the command was *dispatched*, not that
+  it finished. The response's `linuxcnc_serial` identifies the command to
+  LinuxCNC; pass it to `WaitComplete` to wait for that exact command.
+- The server does not switch modes for you.
+
 ### Example: MDI Command (Python)
 
 ```python
@@ -181,8 +188,10 @@ def send_mdi(stub, gcode):
         print(f"Error: {response.error_message}")
         return False
 
-    # Wait for completion
-    wait_req = linuxcnc_pb2.WaitCompleteRequest(serial=1, timeout=30.0)
+    # Wait for this exact command to complete
+    wait_req = linuxcnc_pb2.WaitCompleteRequest(timeout=30.0)
+    if response.HasField("linuxcnc_serial"):
+        wait_req.linuxcnc_serial = response.linuxcnc_serial
     response = stub.WaitComplete(wait_req)
 
     return response.status == linuxcnc_pb2.RCS_DONE

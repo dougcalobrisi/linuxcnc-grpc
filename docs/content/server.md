@@ -297,6 +297,32 @@ bookkeeping: the server does not use it to identify a command later, and
 `WaitComplete` ignores it. The server's counter wraps to 1 after 2147483647
 (the field is an int32); the HAL service's counter does the same.
 
+### `linuxcnc_serial` identifies the command to LinuxCNC
+
+`CommandResponse.linuxcnc_serial` is LinuxCNC's own serial number for the
+command. It is set whenever the command was dispatched:
+
+- **It identifies the command; it does not prove the task received it.**
+  LinuxCNC's send call normally returns once the task has echoed the command,
+  so `task.echo_serial_number` is normally at or past this value by the time
+  you get the response. But if the task does not answer, the send gives up
+  after about 5 seconds without an error and the serial is returned all the
+  same.
+  The server does not check the echo itself. To confirm that the command was
+  received, call `WaitComplete` with the value or compare it with
+  `task.echo_serial_number` in the status.
+- **It says nothing about the outcome.** LinuxCNC can still refuse the command
+  (an MDI line in the wrong mode, for example) or fail part-way. Pass the
+  value to `WaitComplete` to get `RCS_DONE` or `RCS_ERROR` for it.
+- **For a command sent as several LinuxCNC messages** (see the table
+  [above](#rcs_error-from-sendcommand)) it is the serial of the last message.
+- **It is unset** whenever the answer is `RCS_ERROR`, also when part of the
+  command was sent (see [`RCS_ERROR` from `SendCommand`](#rcs_error-from-sendcommand)),
+  and when the LinuxCNC Python bindings don't expose `command.serial`.
+  LinuxCNC 2.8, 2.9 and master do.
+- Serials are only meaningful for one run of LinuxCNC. Don't keep them across
+  a restart of LinuxCNC.
+
 ### `WaitComplete`
 
 `WaitComplete` waits until **the most recent command sent through this
@@ -305,8 +331,29 @@ has been, and is only echoed back in the response. After sending A and then B,
 `WaitComplete` reports on B whichever serial you pass.
 
 With several clients on one server, "most recent" means the most recent from
-any of them, so `WaitComplete` cannot tell you about your own command if
-another client has sent one since. Watch the status in that case.
+any of them, so a plain `WaitComplete` cannot tell you about your own command
+if another client has sent one since.
+
+**To wait for one exact command, set `linuxcnc_serial`** in the request to the
+value `SendCommand` returned for it. The wait then follows that command and
+nothing else:
+
+- If LinuxCNC has already moved on to a later command, the result is
+  `RCS_DONE` at once.
+- If the task is on that command, the result is `RCS_DONE` or `RCS_ERROR` when
+  it stops executing.
+- If the value is not a serial this server returned from `SendCommand` on its
+  current connection to LinuxCNC, the result is `RCS_ERROR` at once with a
+  message saying so. That covers a made-up serial, one from before the server
+  last reconnected (unless the new connection has by chance issued the same
+  number), an explicit 0, and one older than the last 4096 commands.
+  Copy the field only when the response has it set (`HasField` in Python),
+  because an unset field reads as 0.
+- If the server reconnects to LinuxCNC during the wait, the result is
+  `RCS_ERROR` with a message saying the outcome is unknown: LinuxCNC may have
+  restarted and begun counting serials again.
+
+The rest of this section describes the wait without `linuxcnc_serial`.
 
 | Status | Meaning |
 |--------|---------|

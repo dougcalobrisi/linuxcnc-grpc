@@ -109,6 +109,11 @@ it before `sleep` and `yield` to avoid blocking other threads.
 **Command Dispatch**: `SendCommand` uses an explicit `_command_handlers` dict mapping
 command type strings to handler methods (no dynamic `getattr` dispatch).
 
+**Deprecated `AutoCommand`**: the `AutoCommand` message and `AutoCommandType` enum carry
+`option deprecated = true`. They are not in the `LinuxCNCCommand` oneof and never were;
+program control goes through `ProgramCommand`. Keep them until 2.0 (removing a message is
+a breaking change) and do not wire them in.
+
 **Command Response Semantics**: `SendCommand` returns `RCS_DONE` as soon as the handler
 has dispatched the command; that means "dispatched", not "finished". `CommandResponse.serial`
 is `request.serial` or, when that is 0, the servicer's own counter (`_next_serial`). It is
@@ -117,6 +122,17 @@ of these is a breaking change. The counter wraps to 1 after `MAX_RESPONSE_SERIAL
 (2147483647, the field is an int32). `HalServiceServicer._next_serial` does the same with its
 own `MAX_RESPONSE_SERIAL` (defined in `hal_service.py`, because importing
 `linuxcnc_service` needs the `linuxcnc` module) and its own small lock.
+
+**Command Identification (`linuxcnc_serial`)**: `CommandResponse.linuxcnc_serial`
+(`optional int32`, field 4) carries LinuxCNC's real serial for the command, the value
+`_record_dispatch` returns. It is set only on a successful dispatch with bindings that expose
+`command.serial`; rejected commands and the fallback path leave it unset (check with
+`HasField`). It identifies the command LinuxCNC was given; it does not prove the task received
+it. `command.serial` is read after the handler returns and the echo is not checked. LinuxCNC's
+send normally blocks until the task echoes the serial, but if the task does not answer it gives
+up after about 5 seconds without raising, and the serial is still returned. Receipt and outcome
+are confirmed with WaitComplete or the status. Multi-message handlers (coolant, set_limit,
+override_config, program_options) report the last message's serial.
 
 **Latest Dispatch Tracking**: after a handler succeeds, and inside the same lock hold,
 `SendCommand` calls `_record_dispatch`, which stores a `DispatchRecord` in
@@ -170,6 +186,19 @@ server means there is nothing of ours to wait for.
 difference, in rules 2 to 5. LinuxCNC's serial is a C `int` and LinuxCNC compares with
 `int serial_diff = echo_serial_number - serial`, so the order stays right across the wrap
 from 2147483647 to -2147483648. Do not compare two LinuxCNC serials with `<` or `>`.
+
+**Targeted wait**: if `request.linuxcnc_serial` is set (`HasField`, so 0 counts), the wait
+uses a `DispatchRecord` built from that value instead of `_latest_dispatch_record`, and rules
+2-4 apply to it. The value must be in `_issued_linuxcnc_serials` (a deque of the last
+`ISSUED_SERIALS_REMEMBERED` = 4096 serials `_record_dispatch` returned, emptied by every
+`_connect()`); otherwise the wait returns `RCS_ERROR` at once. That is what stops a serial
+from before a reconnect being compared with a restarted LinuxCNC's counter. It is a check on
+the number only: if the new connection has itself issued the same number, an old request
+passes and follows the new command. A hard guarantee would need a connection token in the
+response and the request (additive; not done). A generation change during a targeted wait returns `RCS_ERROR` ("Reconnected
+to LinuxCNC during the wait…") instead of re-targeting, because a restarted LinuxCNC counts
+serials from the start again. This is the additive way to wait on one exact command; the
+untargeted wait keeps the legacy semantics above.
 
 Other behaviour:
 - Each poll compares `_connection_generation` with the value seen when the record was

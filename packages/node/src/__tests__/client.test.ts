@@ -168,6 +168,8 @@ describe('LinuxCNCService', () => {
     const response = await sendCommand(command);
     expect(response.serial).toBe(101);
     expect(response.status).toBe(RcsStatus.RCS_DONE);
+    expect(response.linuxcncSerial).toBeDefined();
+    expect(response.linuxcncSerial).not.toBe(response.serial);
   });
 
   it('SendCommand with jog command succeeds', async () => {

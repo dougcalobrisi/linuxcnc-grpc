@@ -181,6 +181,25 @@ class TestLinuxCNCServiceIntegration:
         assert response.serial == 102
         assert response.status == linuxcnc_pb2.RCS_DONE
 
+    def test_send_command_returns_linuxcnc_serial(self, linuxcnc_client):
+        """SendCommand carries LinuxCNC's serial separately from the server's."""
+        command = linuxcnc_pb2.LinuxCNCCommand(
+            serial=103,
+            mdi=linuxcnc_pb2.MdiCommand(command="G0 X1"),
+        )
+        response = linuxcnc_client.SendCommand(command)
+
+        assert response.serial == 103
+        assert response.HasField("linuxcnc_serial")
+        assert response.linuxcnc_serial != response.serial
+
+        wait_response = linuxcnc_client.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(
+                linuxcnc_serial=response.linuxcnc_serial, timeout=5.0
+            )
+        )
+        assert wait_response.status == linuxcnc_pb2.RCS_DONE
+
     def test_wait_complete(self, linuxcnc_client):
         """Test WaitComplete returns immediately in mock."""
         request = linuxcnc_pb2.WaitCompleteRequest(serial=50, timeout=5.0)
@@ -188,6 +207,38 @@ class TestLinuxCNCServiceIntegration:
 
         assert response.serial == 50
         assert response.status == linuxcnc_pb2.RCS_DONE
+        assert response.error_message == ""
+
+    def test_wait_complete_rejects_unissued_linuxcnc_serial(self, linuxcnc_client):
+        """A linuxcnc_serial that SendCommand never returned gets RCS_ERROR."""
+        issued_response = linuxcnc_client.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(mdi=linuxcnc_pb2.MdiCommand(command="G0 X2"))
+        )
+        unissued_serial = issued_response.linuxcnc_serial + 100000
+
+        response = linuxcnc_client.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(
+                serial=51, linuxcnc_serial=unissued_serial, timeout=5.0
+            )
+        )
+
+        assert response.serial == 51
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert str(unissued_serial) in response.error_message
+
+    def test_wait_complete_rejects_explicit_zero_linuxcnc_serial(self, linuxcnc_client):
+        """An explicit linuxcnc_serial of 0 is a set field, not "no target"."""
+        linuxcnc_client.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(mdi=linuxcnc_pb2.MdiCommand(command="G0 X3"))
+        )
+        request = linuxcnc_pb2.WaitCompleteRequest(serial=52, linuxcnc_serial=0, timeout=5.0)
+        assert request.HasField("linuxcnc_serial")
+
+        response = linuxcnc_client.WaitComplete(request)
+
+        assert response.serial == 52
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message
 
     def test_stream_status(self, linuxcnc_client):
         """Test StreamStatus returns multiple updates."""

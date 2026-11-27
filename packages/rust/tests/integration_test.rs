@@ -171,6 +171,8 @@ async fn test_send_command_mdi() {
 
     assert_eq!(resp.serial, 101);
     assert_eq!(resp.status, RcsStatus::RcsDone as i32);
+    let linuxcnc_serial = resp.linuxcnc_serial.expect("linuxcnc_serial should be set");
+    assert_ne!(linuxcnc_serial, resp.serial);
 }
 
 #[tokio::test]
@@ -221,6 +223,7 @@ async fn test_wait_complete() {
         .wait_complete(WaitCompleteRequest {
             serial: 50,
             timeout: 5.0,
+            ..Default::default()
         })
         .await
         .expect("WaitComplete failed");

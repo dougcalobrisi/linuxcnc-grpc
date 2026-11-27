@@ -542,6 +542,59 @@ class TestE2EWaitComplete:
         status = linuxcnc_stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
         assert abs(status.position.actual_position.x - 5.0) < 0.01
 
+    def test_send_command_returns_linuxcnc_serial(self, linuxcnc_stub):
+        """SendCommand's linuxcnc_serial is the serial LinuxCNC's task echoes."""
+        resp = send_mode_command(linuxcnc_stub, linuxcnc_pb2.MODE_MDI)
+        assert resp.HasField("linuxcnc_serial")
+
+        # LinuxCNC's send returns once the task has echoed the command, so the
+        # echo serial has already reached it.
+        status = linuxcnc_stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
+        assert status.task.echo_serial_number >= resp.linuxcnc_serial
+
+        next_resp = send_mode_command(linuxcnc_stub, linuxcnc_pb2.MODE_MANUAL)
+        assert next_resp.linuxcnc_serial > resp.linuxcnc_serial
+        wait_complete(linuxcnc_stub)
+
+    def test_wait_complete_on_linuxcnc_serial_ignores_later_command(self, linuxcnc_stub):
+        """A wait on an earlier command's linuxcnc_serial is done while a later one runs."""
+        home_all(linuxcnc_stub)
+
+        mode_resp = send_mode_command(linuxcnc_stub, linuxcnc_pb2.MODE_MDI)
+        wait_for_condition(
+            linuxcnc_stub,
+            lambda s: s.task.task_mode == linuxcnc_pb2.MODE_MDI,
+            description="MDI mode",
+        )
+
+        # A dwell that is still executing when we wait.
+        move_resp = linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+            mdi=linuxcnc_pb2.MdiCommand(command="G4 P3")
+        ))
+        assert move_resp.linuxcnc_serial > mode_resp.linuxcnc_serial
+
+        earlier = linuxcnc_stub.WaitComplete(linuxcnc_pb2.WaitCompleteRequest(
+            linuxcnc_serial=mode_resp.linuxcnc_serial, timeout=0.5
+        ))
+        assert earlier.status == linuxcnc_pb2.RCS_DONE
+
+        current = linuxcnc_stub.WaitComplete(linuxcnc_pb2.WaitCompleteRequest(
+            linuxcnc_serial=move_resp.linuxcnc_serial, timeout=0.3
+        ))
+        assert current.status == linuxcnc_pb2.RCS_EXEC
+
+        # Abort and restore
+        linuxcnc_stub.SendCommand(linuxcnc_pb2.LinuxCNCCommand(
+            program=linuxcnc_pb2.ProgramCommand(abort=True)
+        ))
+        wait_for_condition(
+            linuxcnc_stub,
+            lambda s: s.task.interp_state == linuxcnc_pb2.INTERP_IDLE,
+            description="interpreter idle after abort",
+        )
+        send_mode_command(linuxcnc_stub, linuxcnc_pb2.MODE_MANUAL)
+        wait_complete(linuxcnc_stub)
+
     def test_wait_complete_timeout(self, linuxcnc_stub):
         """WaitComplete with a very short timeout returns before motion completes."""
         home_all(linuxcnc_stub)

@@ -232,6 +232,11 @@ func TestSendCommandMdi(t *testing.T) {
 	if resp.Serial != 101 {
 		t.Errorf("expected serial 101, got %d", resp.Serial)
 	}
+	if resp.LinuxcncSerial == nil {
+		t.Errorf("expected linuxcnc_serial to be set")
+	} else if resp.GetLinuxcncSerial() == resp.Serial {
+		t.Errorf("linuxcnc_serial should differ from the server serial, both are %d", resp.Serial)
+	}
 	if resp.Status != RcsStatus_RCS_DONE {
 		t.Errorf("expected RCS_DONE, got %v", resp.Status)
 	}
@@ -284,6 +289,79 @@ func TestWaitComplete(t *testing.T) {
 	}
 	if resp.Status != RcsStatus_RCS_DONE {
 		t.Errorf("expected RCS_DONE, got %v", resp.Status)
+	}
+}
+
+func TestWaitCompleteAcceptsIssuedLinuxcncSerial(t *testing.T) {
+	client, conn := newLinuxCNCClient(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sendResponse, err := client.SendCommand(ctx, &LinuxCNCCommand{
+		Command: &LinuxCNCCommand_Mdi{Mdi: &MdiCommand{Command: "G0 X2"}},
+	})
+	if err != nil {
+		t.Fatalf("SendCommand failed: %v", err)
+	}
+	if sendResponse.LinuxcncSerial == nil {
+		t.Fatalf("expected SendCommand to return linuxcnc_serial")
+	}
+
+	waitResponse, err := client.WaitComplete(ctx, &WaitCompleteRequest{
+		Serial:         53,
+		LinuxcncSerial: sendResponse.LinuxcncSerial,
+		Timeout:        5.0,
+	})
+	if err != nil {
+		t.Fatalf("WaitComplete failed: %v", err)
+	}
+	if waitResponse.Status != RcsStatus_RCS_DONE {
+		t.Errorf("expected RCS_DONE for an issued serial, got %v (%s)", waitResponse.Status, waitResponse.ErrorMessage)
+	}
+}
+
+func TestWaitCompleteRejectsUnissuedLinuxcncSerial(t *testing.T) {
+	client, conn := newLinuxCNCClient(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sendResponse, err := client.SendCommand(ctx, &LinuxCNCCommand{
+		Command: &LinuxCNCCommand_Mdi{Mdi: &MdiCommand{Command: "G0 X3"}},
+	})
+	if err != nil {
+		t.Fatalf("SendCommand failed: %v", err)
+	}
+
+	unissuedSerial := sendResponse.GetLinuxcncSerial() + 100000
+	explicitZeroSerial := int32(0)
+	rejectedSerials := map[string]*int32{
+		"unissued serial": &unissuedSerial,
+		"explicit zero":   &explicitZeroSerial,
+	}
+	for caseName, rejectedSerial := range rejectedSerials {
+		t.Run(caseName, func(t *testing.T) {
+			waitResponse, err := client.WaitComplete(ctx, &WaitCompleteRequest{
+				Serial:         54,
+				LinuxcncSerial: rejectedSerial,
+				Timeout:        5.0,
+			})
+			if err != nil {
+				t.Fatalf("WaitComplete failed: %v", err)
+			}
+			if waitResponse.Serial != 54 {
+				t.Errorf("expected serial 54, got %d", waitResponse.Serial)
+			}
+			if waitResponse.Status != RcsStatus_RCS_ERROR {
+				t.Errorf("expected RCS_ERROR, got %v", waitResponse.Status)
+			}
+			if waitResponse.ErrorMessage == "" {
+				t.Errorf("expected an error message")
+			}
+		})
 	}
 }
 

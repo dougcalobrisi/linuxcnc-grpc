@@ -14,7 +14,7 @@ The suite has ~50 tests organized into these areas:
 - **Status** — version, joints, INI filename, positions, task state
 - **State transitions** — estop/recovery, on/off, mode changes
 - **Commands** — homing, MDI G-code, feedrate/spindle overrides
-- **WaitComplete** — blocking until commands finish, timeout behavior
+- **WaitComplete** — blocking until commands finish, timeout behavior, waiting on one command by its `linuxcnc_serial`
 - **G-code execution** — upload/open/run, pause/resume, abort, single-step
 - **Jogging** — incremental and continuous jog with stop
 - **Coolant** — mist and flood on/off

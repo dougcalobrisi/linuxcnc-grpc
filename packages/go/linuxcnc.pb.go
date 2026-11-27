@@ -784,7 +784,10 @@ func (JogType) EnumDescriptor() ([]byte, []int) {
 	return file_linuxcnc_proto_rawDescGZIP(), []int{13}
 }
 
-// Auto command type
+// Auto command type.
+// Deprecated together with AutoCommand: SendCommand has never accepted it.
+//
+// Deprecated: Marked as deprecated in linuxcnc.proto.
 type AutoCommandType int32
 
 const (
@@ -3658,7 +3661,13 @@ func (*ProgramCommand_Step) isProgramCommand_Command() {}
 
 func (*ProgramCommand_Abort) isProgramCommand_Command() {}
 
-// Auto mode command
+// Auto mode command.
+// Deprecated: LinuxCNCCommand has no field for this message, so SendCommand
+// has never been able to carry it. Use ProgramCommand to run, pause, resume,
+// step or abort a program. The message stays in the 1.x protos only so that
+// code referring to it keeps compiling; it will be removed in 2.0.
+//
+// Deprecated: Marked as deprecated in linuxcnc.proto.
 type AutoCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Command       AutoCommandType        `protobuf:"varint,1,opt,name=command,proto3,enum=linuxcnc.AutoCommandType" json:"command,omitempty"`
@@ -4859,12 +4868,29 @@ func (*LinuxCNCCommand_Debug) isLinuxCNCCommand_Command() {}
 func (*LinuxCNCCommand_OperatorMessage) isLinuxCNCCommand_Command() {}
 
 type CommandResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Serial        int32                  `protobuf:"varint,1,opt,name=serial,proto3" json:"serial,omitempty"`                                // Echo of command serial
-	Status        RcsStatus              `protobuf:"varint,2,opt,name=status,proto3,enum=linuxcnc.RcsStatus" json:"status,omitempty"`        // Command status
-	ErrorMessage  string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"` // Error message if status is RCS_ERROR
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The request's serial, or one from the server's own counter if the request
+	// left it at 0. A label only: it is NOT LinuxCNC's serial.
+	Serial int32 `protobuf:"varint,1,opt,name=serial,proto3" json:"serial,omitempty"`
+	// From SendCommand: RCS_DONE means the command was dispatched to LinuxCNC,
+	// not that it finished. From WaitComplete: the outcome of the wait.
+	Status       RcsStatus `protobuf:"varint,2,opt,name=status,proto3,enum=linuxcnc.RcsStatus" json:"status,omitempty"`
+	ErrorMessage string    `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"` // Error message if status is RCS_ERROR
+	// LinuxCNC's own serial number for the command the server handed to
+	// LinuxCNC, set by SendCommand when the command was dispatched. It
+	// identifies the command; it does not prove the task received it.
+	// LinuxCNC's send normally returns once the task has echoed the serial
+	// (TaskStatus.echo_serial_number), but it gives up after about 5 seconds
+	// without an error if the task does not answer. Use WaitComplete, or the
+	// status, to confirm receipt and completion: compare this value with
+	// echo_serial_number, or pass it to WaitComplete, to follow this exact
+	// command. For a command the server sends as several LinuxCNC messages
+	// (coolant, set_limit, override_config, program_options) it is the serial
+	// of the last one. Unset when the command was not dispatched, or when the
+	// LinuxCNC bindings on the server do not expose the serial.
+	LinuxcncSerial *int32 `protobuf:"varint,4,opt,name=linuxcnc_serial,json=linuxcncSerial,proto3,oneof" json:"linuxcnc_serial,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CommandResponse) Reset() {
@@ -4918,6 +4944,13 @@ func (x *CommandResponse) GetErrorMessage() string {
 	return ""
 }
 
+func (x *CommandResponse) GetLinuxcncSerial() int32 {
+	if x != nil && x.LinuxcncSerial != nil {
+		return *x.LinuxcncSerial
+	}
+	return 0
+}
+
 type GetStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -4955,11 +4988,17 @@ func (*GetStatusRequest) Descriptor() ([]byte, []int) {
 }
 
 type WaitCompleteRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Serial        int32                  `protobuf:"varint,1,opt,name=serial,proto3" json:"serial,omitempty"`    // Command serial to wait for
-	Timeout       float64                `protobuf:"fixed64,2,opt,name=timeout,proto3" json:"timeout,omitempty"` // Timeout in seconds
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Ignored by the server and only echoed back in the response. Without
+	// linuxcnc_serial, the wait is on the latest command sent through the server.
+	Serial  int32   `protobuf:"varint,1,opt,name=serial,proto3" json:"serial,omitempty"`
+	Timeout float64 `protobuf:"fixed64,2,opt,name=timeout,proto3" json:"timeout,omitempty"` // Timeout in seconds (default 5)
+	// Wait for this exact command: the linuxcnc_serial that SendCommand returned
+	// for it. When unset, the wait is on the latest command sent through the
+	// server, as it always was.
+	LinuxcncSerial *int32 `protobuf:"varint,3,opt,name=linuxcnc_serial,json=linuxcncSerial,proto3,oneof" json:"linuxcnc_serial,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WaitCompleteRequest) Reset() {
@@ -5002,6 +5041,13 @@ func (x *WaitCompleteRequest) GetSerial() int32 {
 func (x *WaitCompleteRequest) GetTimeout() float64 {
 	if x != nil {
 		return x.Timeout
+	}
+	return 0
+}
+
+func (x *WaitCompleteRequest) GetLinuxcncSerial() int32 {
+	if x != nil && x.LinuxcncSerial != nil {
+		return *x.LinuxcncSerial
 	}
 	return 0
 }
@@ -5739,10 +5785,10 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\x06resume\x18\x04 \x01(\bH\x00R\x06resume\x12\x14\n" +
 	"\x04step\x18\x05 \x01(\bH\x00R\x04step\x12\x16\n" +
 	"\x05abort\x18\x06 \x01(\bH\x00R\x05abortB\t\n" +
-	"\acommand\"V\n" +
+	"\acommand\"Z\n" +
 	"\vAutoCommand\x123\n" +
 	"\acommand\x18\x01 \x01(\x0e2\x19.linuxcnc.AutoCommandTypeR\acommand\x12\x12\n" +
-	"\x04line\x18\x02 \x01(\x05R\x04line\"B\n" +
+	"\x04line\x18\x02 \x01(\x05R\x04line:\x02\x18\x01\"B\n" +
 	"\x14DigitalOutputCommand\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\x05R\x05index\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\bR\x05value\"A\n" +
@@ -5812,15 +5858,19 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\x0etask_plan_sync\x18# \x01(\v2\x1d.linuxcnc.TaskPlanSyncCommandH\x00R\ftaskPlanSync\x12.\n" +
 	"\x05debug\x18$ \x01(\v2\x16.linuxcnc.DebugCommandH\x00R\x05debug\x12M\n" +
 	"\x10operator_message\x18% \x01(\v2 .linuxcnc.OperatorMessageCommandH\x00R\x0foperatorMessageB\t\n" +
-	"\acommand\"{\n" +
+	"\acommand\"\xbd\x01\n" +
 	"\x0fCommandResponse\x12\x16\n" +
 	"\x06serial\x18\x01 \x01(\x05R\x06serial\x12+\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x13.linuxcnc.RcsStatusR\x06status\x12#\n" +
-	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\"\x12\n" +
-	"\x10GetStatusRequest\"G\n" +
+	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12,\n" +
+	"\x0flinuxcnc_serial\x18\x04 \x01(\x05H\x00R\x0elinuxcncSerial\x88\x01\x01B\x12\n" +
+	"\x10_linuxcnc_serial\"\x12\n" +
+	"\x10GetStatusRequest\"\x89\x01\n" +
 	"\x13WaitCompleteRequest\x12\x16\n" +
 	"\x06serial\x18\x01 \x01(\x05R\x06serial\x12\x18\n" +
-	"\atimeout\x18\x02 \x01(\x01R\atimeout\"6\n" +
+	"\atimeout\x18\x02 \x01(\x01R\atimeout\x12,\n" +
+	"\x0flinuxcnc_serial\x18\x03 \x01(\x05H\x00R\x0elinuxcncSerial\x88\x01\x01B\x12\n" +
+	"\x10_linuxcnc_serial\"6\n" +
 	"\x13StreamStatusRequest\x12\x1f\n" +
 	"\vinterval_ms\x18\x01 \x01(\x05R\n" +
 	"intervalMs\"\x15\n" +
@@ -5928,7 +5978,7 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\aJogType\x12\f\n" +
 	"\bJOG_STOP\x10\x00\x12\x12\n" +
 	"\x0eJOG_CONTINUOUS\x10\x01\x12\x11\n" +
-	"\rJOG_INCREMENT\x10\x02*s\n" +
+	"\rJOG_INCREMENT\x10\x02*w\n" +
 	"\x0fAutoCommandType\x12\f\n" +
 	"\bAUTO_RUN\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -5936,7 +5986,7 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\vAUTO_RESUME\x10\x02\x12\r\n" +
 	"\tAUTO_STEP\x10\x03\x12\x10\n" +
 	"\fAUTO_REVERSE\x10\x04\x12\x10\n" +
-	"\fAUTO_FORWARD\x10\x052\xcf\x04\n" +
+	"\fAUTO_FORWARD\x10\x05\x1a\x02\x18\x012\xcf\x04\n" +
 	"\x0fLinuxCNCService\x12A\n" +
 	"\tGetStatus\x12\x1a.linuxcnc.GetStatusRequest\x1a\x18.linuxcnc.LinuxCNCStatus\x12C\n" +
 	"\vSendCommand\x12\x19.linuxcnc.LinuxCNCCommand\x1a\x19.linuxcnc.CommandResponse\x12H\n" +
@@ -6174,6 +6224,8 @@ func file_linuxcnc_proto_init() {
 		(*LinuxCNCCommand_Debug)(nil),
 		(*LinuxCNCCommand_OperatorMessage)(nil),
 	}
+	file_linuxcnc_proto_msgTypes[44].OneofWrappers = []any{}
+	file_linuxcnc_proto_msgTypes[46].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

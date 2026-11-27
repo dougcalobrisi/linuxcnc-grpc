@@ -4,6 +4,16 @@ All notable changes to linuxcnc-grpc (the server and the Python, Go, Node.js and
 
 ## Unreleased
 
+### Added
+- **`CommandResponse.linuxcnc_serial`.** `SendCommand` now also returns LinuxCNC's own serial for the command. It identifies the command LinuxCNC was given, and can be compared with `task.echo_serial_number` or passed to `WaitComplete`. LinuxCNC's send normally returns once the task has echoed the serial, but it gives up after about 5 seconds without an error if the task does not answer, so a set value is not proof the command was received: confirm that, and the outcome, with `WaitComplete` or the status. `CommandResponse.serial` and `RCS_DONE` ("dispatched") keep their 1.0 meaning.
+- **`WaitCompleteRequest.linuxcnc_serial`.** Set it to the value `SendCommand` returned to wait for that exact command instead of the latest one sent through the server. The serial has to be one this server issued on its current connection to LinuxCNC; anything else gets `RCS_ERROR`. Left unset, `WaitComplete` behaves as before.
+
+### Upgrade notes
+- **Rust:** the new fields are added to the generated structs (`WaitCompleteRequest`, `CommandResponse`), so code that builds one of these messages with a struct literal needs `..Default::default()`, for example `WaitCompleteRequest { serial, timeout, ..Default::default() }`.
+
+### Deprecated
+- **`AutoCommand` and `AutoCommandType`** are marked deprecated in the proto. `SendCommand` has never been able to carry `AutoCommand`; run, pause, resume, step and abort go through `ProgramCommand`. Both stay in 1.x so existing code compiles, and will be removed in 2.0.
+
 ### Fixed
 - **`WaitComplete` no longer blocks other RPCs.** It used to hold the server's global lock for the whole wait (5 s by default), so every other call, including an estop, queued behind it. It now polls status and releases the lock between polls, and its own waits for the lock end at the request's timeout: if another RPC holds the lock past the deadline, the answer is `RCS_EXEC`, as for any timeout. A wait whose client cancels ends within about a tenth of a second, also while another RPC holds the lock. It still ignores `request.serial` and waits on the latest command sent through the server, which it now picks once, when the wait starts. So a command another client sends during a wait is not followed: the wait reports `RCS_DONE` once LinuxCNC has moved past the command it started with, even if the newer one is still running. In 1.0 that could not happen, because the second command queued behind the wait.
 - **`WaitComplete` follows LinuxCNC's own `wait_complete()` rule.** It returns `RCS_DONE` at once when a later command has already been echoed, and it compares serials with a signed 32-bit difference as LinuxCNC does, so the answer stays right when LinuxCNC's serial counter wraps. By a rule of the server's own it also returns `RCS_DONE` at once when nothing has been sent through the server since it connected. It keeps working if the server reconnects to LinuxCNC during the wait.

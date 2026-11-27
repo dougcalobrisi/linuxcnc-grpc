@@ -1546,6 +1546,224 @@ class TestWaitComplete:
         assert response.error_message == ""
         service_sleep.assert_not_called()
 
+    def test_send_command_returns_linuxcnc_serial(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """SendCommand reports LinuxCNC's own serial next to the server's."""
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=700)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        first_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        second_response = service.SendCommand(
+            self._mdi_request("G0 X2", serial=42), mock_grpc_context
+        )
+
+        assert first_response.HasField("linuxcnc_serial")
+        assert first_response.linuxcnc_serial == 700
+        assert second_response.linuxcnc_serial == 701
+        # The server-side serial is unchanged by the new field.
+        assert first_response.serial == 1
+        assert second_response.serial == 42
+
+    def test_send_command_leaves_linuxcnc_serial_unset_without_bindings_support(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """No linuxcnc_serial when the bindings don't expose command.serial."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, exposes_serial=False)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert not response.HasField("linuxcnc_serial")
+
+    def test_send_command_leaves_linuxcnc_serial_unset_when_rejected(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A command the server refused was never dispatched, so it has no serial."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+
+        response = service.SendCommand(self._mdi_request("   "), mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert not response.HasField("linuxcnc_serial")
+
+    def test_requested_linuxcnc_serial_is_waited_on_instead_of_the_latest(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """With linuxcnc_serial set, an earlier command is reported, not the latest."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        first_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        service.SendCommand(self._mdi_request("G0 X2"), mock_grpc_context)
+        # The second command is still executing; the first is long finished.
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(
+                linuxcnc_serial=first_response.linuxcnc_serial, timeout=0.2
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+
+    def test_requested_linuxcnc_serial_reports_that_commands_error(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """With linuxcnc_serial set to the command the task failed on, RCS_ERROR."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_ERROR
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(
+                linuxcnc_serial=send_response.linuxcnc_serial, timeout=0.2
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == "Command failed"
+
+    def test_requested_linuxcnc_serial_still_executing_times_out(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A wait on the command the task is still executing returns RCS_EXEC at the timeout."""
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        with patch.object(time, "sleep"):
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(
+                    linuxcnc_serial=send_response.linuxcnc_serial, timeout=0.05
+                ),
+                mock_grpc_context,
+            )
+
+        assert response.status == linuxcnc_pb2.RCS_EXEC
+
+    @pytest.mark.parametrize("serial_offset", [5, -50])
+    def test_linuxcnc_serial_this_server_never_issued_is_refused(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, serial_offset
+    ):
+        """A serial that SendCommand did not return gets RCS_ERROR, not a guess."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+        unknown_serial = send_response.linuxcnc_serial + serial_offset
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(serial=4, linuxcnc_serial=unknown_serial, timeout=0.2),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "was not issued by this server" in response.error_message
+        assert str(unknown_serial) in response.error_message
+        assert response.serial == 4
+
+    def test_explicit_zero_linuxcnc_serial_is_not_treated_as_unset(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """linuxcnc_serial=0 is a named target (and an unknown one), not "the latest command"."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(linuxcnc_serial=0, timeout=0.2),
+            mock_grpc_context,
+        )
+
+        # An untargeted wait would answer RCS_DONE here.
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "was not issued by this server" in response.error_message
+
+    def test_linuxcnc_serial_from_before_a_reconnect_is_refused(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A serial issued on the previous connection is not compared with the new one."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+
+        # The server reconnects (LinuxCNC restarted) before the wait starts.
+        # The new instance has already counted past 500 for other commands.
+        service._connect()
+        mock_linuxcnc_stat.echo_serial_number = 600
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+
+        response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(
+                linuxcnc_serial=send_response.linuxcnc_serial, timeout=0.2
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "was not issued by this server" in response.error_message
+
+    def test_reconnect_during_wait_on_requested_serial_reports_unknown_outcome(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A wait on a named serial ends with RCS_ERROR if the server reconnects."""
+        import time
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=500)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        send_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+
+        sleep_calls = []
+
+        def sleep_that_reconnects(duration):
+            sleep_calls.append(duration)
+            if len(sleep_calls) == 1:
+                service._connect()
+                # A restarted LinuxCNC counts from the start again; without
+                # the generation check the wait would see 600 > 500 as "done".
+                mock_linuxcnc_stat.echo_serial_number = 600
+                mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_DONE
+
+        with patch.object(time, "sleep", side_effect=sleep_that_reconnects):
+            response = service.WaitComplete(
+                linuxcnc_pb2.WaitCompleteRequest(
+                    serial=9, linuxcnc_serial=send_response.linuxcnc_serial, timeout=2.0
+                ),
+                mock_grpc_context,
+            )
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert "Reconnected to LinuxCNC" in response.error_message
+        assert "500" in response.error_message
+        assert response.serial == 9
+
     @staticmethod
     def _coolant_request():
         from linuxcnc_pb import linuxcnc_pb2

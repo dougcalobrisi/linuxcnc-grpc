@@ -113,6 +113,8 @@ finally:
 
 #### 5a. Send commands (MDI G-code)
 
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed").
+
 Create `mdi.py`:
 
 ```python
@@ -138,15 +140,19 @@ def set_mode(mode):
     cmd.mode.mode = mode
     return stub.SendCommand(cmd)
 
-# Power on and switch to MDI mode
-set_state(linuxcnc_pb2.STATE_ESTOP_RESET)
-time.sleep(0.1)
-set_state(linuxcnc_pb2.STATE_ON)
-time.sleep(0.1)
-set_mode(linuxcnc_pb2.MODE_MDI)
-time.sleep(0.1)
+def wait_for(sent, timeout=5.0):
+    """Wait for the command that SendCommand answered with `sent`."""
+    request = linuxcnc_pb2.WaitCompleteRequest(timeout=timeout)
+    if sent.HasField("linuxcnc_serial"):
+        request.linuxcnc_serial = sent.linuxcnc_serial
+    return stub.WaitComplete(request)
 
-# Send a G-code command
+# Power on and switch to MDI mode, waiting for each step
+wait_for(set_state(linuxcnc_pb2.STATE_ESTOP_RESET))
+wait_for(set_state(linuxcnc_pb2.STATE_ON))
+wait_for(set_mode(linuxcnc_pb2.MODE_MDI))
+
+# Send a G-code command (the machine must be homed)
 cmd = linuxcnc_pb2.LinuxCNCCommand()
 cmd.serial = 3
 cmd.timestamp = int(time.time() * 1e9)
@@ -156,9 +162,8 @@ response = stub.SendCommand(cmd)
 if response.status == linuxcnc_pb2.RCS_ERROR:
     print(f"Error: {response.error_message}")
 else:
-    # Wait for completion
-    wait_req = linuxcnc_pb2.WaitCompleteRequest(serial=3, timeout=30.0)
-    result = stub.WaitComplete(wait_req)
+    # Wait for this command to complete
+    result = wait_for(response, timeout=30.0)
     print(f"Command completed: {linuxcnc_pb2.RcsStatus.Name(result.status)}")
 
 channel.close()
@@ -267,6 +272,8 @@ process.on("SIGINT", () => {
 
 #### 5b. Send commands (MDI G-code)
 
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed").
+
 Create `mdi.ts`:
 
 ```typescript
@@ -298,8 +305,9 @@ function sendCommand(cmd: LinuxCNCCommand): Promise<any> {
   });
 }
 
-function waitComplete(serial: number, timeout: number): Promise<any> {
-  const request = WaitCompleteRequest.create({ serial, timeout });
+// Wait for the command that sendCommand answered with `sent`.
+function waitComplete(sent: any, timeout: number): Promise<any> {
+  const request = WaitCompleteRequest.create({ timeout, linuxcncSerial: sent.linuxcncSerial });
   const deadline = new Date(Date.now() + (timeout * 1000) + 5000);
   return new Promise((resolve, reject) => {
     client.waitComplete(request, new Metadata(), { deadline }, (err, resp) => {
@@ -310,17 +318,17 @@ function waitComplete(serial: number, timeout: number): Promise<any> {
 }
 
 async function main() {
-  // Power on and switch to MDI mode
+  // Power on and switch to MDI mode, waiting for each step
   let cmd = LinuxCNCCommand.create({ serial: 1, state: { state: TaskState.STATE_ESTOP_RESET } });
-  await sendCommand(cmd);
+  await waitComplete(await sendCommand(cmd), 5.0);
 
   cmd = LinuxCNCCommand.create({ serial: 2, state: { state: TaskState.STATE_ON } });
-  await sendCommand(cmd);
+  await waitComplete(await sendCommand(cmd), 5.0);
 
   cmd = LinuxCNCCommand.create({ serial: 3, mode: { mode: TaskMode.MODE_MDI } });
-  await sendCommand(cmd);
+  await waitComplete(await sendCommand(cmd), 5.0);
 
-  // Send G-code
+  // Send G-code (the machine must be homed)
   cmd = LinuxCNCCommand.create({ serial: 4, mdi: { command: "G0 X10 Y10" } });
   const response = await sendCommand(cmd);
 
@@ -328,7 +336,7 @@ async function main() {
     console.error(`Error: ${response.errorMessage}`);
   } else {
     console.log("Waiting for completion...");
-    const result = await waitComplete(4, 30.0);
+    const result = await waitComplete(response, 30.0);
     console.log(`Command completed: ${RcsStatus[result.status]}`);
   }
 
@@ -481,6 +489,8 @@ func main() {
 
 #### 5c. Send commands (MDI G-code)
 
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed").
+
 Create `mdi.go`:
 
 ```go
@@ -507,7 +517,7 @@ func main() {
     defer conn.Close()
 
     client := pb.NewLinuxCNCServiceClient(conn)
-    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
 
     serial := int32(0)
@@ -526,23 +536,32 @@ func main() {
         return resp
     }
 
-    // Power on and switch to MDI mode
-    sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_State{
+    // Wait for the command that SendCommand answered with sent.
+    waitFor := func(sent *pb.CommandResponse, timeout float64) *pb.CommandResponse {
+        resp, err := client.WaitComplete(ctx, &pb.WaitCompleteRequest{
+            Timeout:        timeout,
+            LinuxcncSerial: sent.LinuxcncSerial,
+        })
+        if err != nil {
+            log.Fatalf("WaitComplete failed: %v", err)
+        }
+        return resp
+    }
+
+    // Power on and switch to MDI mode, waiting for each step
+    waitFor(sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_State{
         State: &pb.StateCommand{State: pb.TaskState_STATE_ESTOP_RESET},
-    }})
-    time.Sleep(100 * time.Millisecond)
+    }}), 5.0)
 
-    sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_State{
+    waitFor(sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_State{
         State: &pb.StateCommand{State: pb.TaskState_STATE_ON},
-    }})
-    time.Sleep(100 * time.Millisecond)
+    }}), 5.0)
 
-    sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_Mode{
+    waitFor(sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_Mode{
         Mode: &pb.ModeCommand{Mode: pb.TaskMode_MODE_MDI},
-    }})
-    time.Sleep(100 * time.Millisecond)
+    }}), 5.0)
 
-    // Send G-code
+    // Send G-code (the machine must be homed)
     mdiCmd := &pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_Mdi{
         Mdi: &pb.MdiCommand{Command: "G0 X10 Y10"},
     }}
@@ -554,13 +573,7 @@ func main() {
 
     // Wait for completion
     fmt.Println("Waiting for completion...")
-    waitResp, err := client.WaitComplete(ctx, &pb.WaitCompleteRequest{
-        Serial:  mdiCmd.Serial,
-        Timeout: 30.0,
-    })
-    if err != nil {
-        log.Fatalf("WaitComplete failed: %v", err)
-    }
+    waitResp := waitFor(resp, 30.0)
     fmt.Printf("Command completed: %s\n", waitResp.Status.String())
 }
 ```
@@ -679,21 +692,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 5d. Send commands (MDI G-code)
 
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed").
+
 Replace `src/main.rs`:
 
 ```rust
 use linuxcnc_grpc::linuxcnc::linux_cnc_service_client::LinuxCncServiceClient;
 use linuxcnc_grpc::linuxcnc::{
-    linux_cnc_command::Command, LinuxCncCommand, MdiCommand, ModeCommand, StateCommand,
-    TaskMode, TaskState, WaitCompleteRequest,
+    linux_cnc_command::Command, CommandResponse, LinuxCncCommand, MdiCommand, ModeCommand,
+    StateCommand, TaskMode, TaskState, WaitCompleteRequest,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
+use tonic::transport::Channel;
 
 fn timestamp_ns() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos() as i64
+}
+
+// Wait for the command that send_command answered with `sent`.
+async fn wait_for(
+    client: &mut LinuxCncServiceClient<Channel>,
+    sent: &CommandResponse,
+    timeout: f64,
+) -> Result<CommandResponse, tonic::Status> {
+    let request = WaitCompleteRequest {
+        timeout,
+        linuxcnc_serial: sent.linuxcnc_serial,
+        ..Default::default()
+    };
+    Ok(client
+        .wait_complete(tonic::Request::new(request))
+        .await?
+        .into_inner())
 }
 
 #[tokio::main]
@@ -706,9 +739,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         serial
     };
 
-    // Power on and switch to MDI mode
+    // Power on and switch to MDI mode, waiting for each step
     let s = next_serial();
-    client
+    let sent = client
         .send_command(tonic::Request::new(LinuxCncCommand {
             serial: s,
             timestamp: timestamp_ns(),
@@ -716,11 +749,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state: TaskState::StateEstopReset.into(),
             })),
         }))
-        .await?;
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        .await?
+        .into_inner();
+    wait_for(&mut client, &sent, 5.0).await?;
 
     let s = next_serial();
-    client
+    let sent = client
         .send_command(tonic::Request::new(LinuxCncCommand {
             serial: s,
             timestamp: timestamp_ns(),
@@ -728,11 +762,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state: TaskState::StateOn.into(),
             })),
         }))
-        .await?;
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        .await?
+        .into_inner();
+    wait_for(&mut client, &sent, 5.0).await?;
 
     let s = next_serial();
-    client
+    let sent = client
         .send_command(tonic::Request::new(LinuxCncCommand {
             serial: s,
             timestamp: timestamp_ns(),
@@ -740,10 +775,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mode: TaskMode::ModeMdi.into(),
             })),
         }))
-        .await?;
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        .await?
+        .into_inner();
+    wait_for(&mut client, &sent, 5.0).await?;
 
-    // Send G-code
+    // Send G-code (the machine must be homed)
     let mdi_serial = next_serial();
     let response = client
         .send_command(tonic::Request::new(LinuxCncCommand {
@@ -764,13 +800,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wait for completion
     println!("Waiting for completion...");
-    let result = client
-        .wait_complete(tonic::Request::new(WaitCompleteRequest {
-            serial: mdi_serial,
-            timeout: 30.0,
-        }))
-        .await?
-        .into_inner();
+    let result = wait_for(&mut client, &response, 30.0).await?;
 
     println!("Command completed: status={}", result.status);
     Ok(())
