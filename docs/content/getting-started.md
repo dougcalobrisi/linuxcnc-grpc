@@ -281,9 +281,20 @@ All gRPC calls can raise `grpc.RpcError`. Common status codes:
 | Code | Meaning |
 |------|---------|
 | `UNAVAILABLE` | Server not reachable or LinuxCNC disconnected |
-| `INVALID_ARGUMENT` | Invalid command parameters |
+| `INVALID_ARGUMENT` | A file RPC was given a bad argument: a file name outside the NC files directory, an empty name, empty or too large upload content |
+| `NOT_FOUND` | A file that does not exist |
 | `FAILED_PRECONDITION` | Machine not in correct state for command |
 | `INTERNAL` | Server-side error |
+
+A rejected command is not a gRPC error. If the server rejects it before
+sending (a joint or spindle index out of range, an empty MDI command, an
+unknown command), `SendCommand` returns a normal `CommandResponse` with
+`RCS_ERROR` and the reason in `error_message`. `RCS_ERROR` can also follow a
+command that was partly sent (see
+[`RCS_ERROR` from `SendCommand`](server.md#rcs_error-from-sendcommand)).
+If LinuxCNC rejects it afterwards, `WaitComplete` returns `RCS_ERROR` or
+LinuxCNC reports the problem as an error message (see [StreamErrors](api-reference.md#streamerrors)). So
+check `response.status` as well as catching `grpc.RpcError`.
 
 ```python
 try:

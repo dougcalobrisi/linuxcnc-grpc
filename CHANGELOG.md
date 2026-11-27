@@ -15,6 +15,13 @@ All notable changes to linuxcnc-grpc (the server and the Python, Go, Node.js and
 - **`WaitComplete` with a very large or infinite timeout waits** instead of failing with `UNKNOWN`. A NaN timeout means the default.
 - **Uploads just over the cap get a clear error.** `UploadFile` refuses content longer than 10 MiB (10,485,760 characters) with `INVALID_ARGUMENT`, but the gRPC receive limit was 10 MiB too, so the transport rejected such a request with `RESOURCE_EXHAUSTED` first. The receive limit is now 11 MiB. A request larger than that (possible below the character cap with non-ASCII text, which takes more than one byte per character) still gets `RESOURCE_EXHAUSTED`.
 
+### Documentation
+- **New page: Using with Claude (MCP).** It introduces [linuxcnc-mcp](https://github.com/dougcalobrisi/linuxcnc-mcp), an MCP server and Claude Code plugin built on this API, and describes how it uses the API.
+- **Security warning.** The README and the server page now say plainly that the server has no authentication and no TLS, and show how to bind to `127.0.0.1` and connect through an SSH tunnel.
+- **Command semantics.** `RCS_DONE` from `SendCommand` means the command was dispatched, not that it finished. `CommandResponse.serial` is the server's own serial, not LinuxCNC's, and must not be compared with `echo_serial_number`. The `WaitComplete` rules are written out.
+- **Error delivery.** How error messages reach clients, and why reading them takes them from the machine's GUI.
+- **Requirements:** the server page and the setup page say LinuxCNC 2.9 or newer.
+
 ### Maintainer tooling
 These do not affect users of the packages.
 - **Publishing:** `publish-node.sh` applies the npm dist-tag of a pre-release and refuses a pre-release it cannot derive a tag for; the artifact version checks match the version exactly; `publish-all.sh` refuses a tree with uncommitted changes unless given `--allow-dirty`, creates the tag only after every package was published, and checks an existing local or remote tag first.

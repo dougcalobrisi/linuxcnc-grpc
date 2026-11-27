@@ -7,8 +7,8 @@ How to install and run the linuxcnc-grpc server on your LinuxCNC machine.
 
 ## Prerequisites
 
-- A Linux machine with **LinuxCNC** installed (physical or simulation)
-- **Python 3.9+** (included with most LinuxCNC installations)
+- A Linux machine with **LinuxCNC 2.9 or newer** installed (physical or simulation)
+- **Python 3.10+** (included with most LinuxCNC installations)
 - Network access if you want to connect from a remote machine
 
 ## Install
@@ -68,20 +68,37 @@ channel.close()
 
 ### From a remote machine
 
-If you have [grpcurl](https://github.com/fullstorydev/grpcurl) installed:
+Install the client (`pip install linuxcnc-grpc`) and run the check above with
+`LINUXCNC_IP:50051` in place of `localhost:50051`.
+
+The server also answers the standard gRPC health service for its two
+services, `linuxcnc.LinuxCNCService` and `hal.HalService`:
 
 ```bash
-grpcurl -plaintext LINUXCNC_IP:50051 list
+python3 -c "
+import grpc
+from grpc_health.v1 import health_pb2, health_pb2_grpc
+
+channel = grpc.insecure_channel('LINUXCNC_IP:50051')
+health = health_pb2_grpc.HealthStub(channel)
+for service in ('linuxcnc.LinuxCNCService', 'hal.HalService'):
+    reply = health.Check(health_pb2.HealthCheckRequest(service=service), timeout=5)
+    print(service, health_pb2.HealthCheckResponse.ServingStatus.Name(reply.status))
+channel.close()
+"
 ```
 
-This should return:
+This should print:
 
 ```
-linuxcnc.HalService
-linuxcnc.LinuxCNCService
+linuxcnc.LinuxCNCService SERVING
+hal.HalService SERVING
 ```
 
-Or test network connectivity:
+The server does not offer gRPC reflection, so `grpcurl ... list` does not
+work.
+
+Or just test network connectivity:
 
 ```bash
 nc -zv LINUXCNC_IP 50051

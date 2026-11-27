@@ -38,7 +38,9 @@ use linuxcnc_grpc::linuxcnc::GetStatusRequest;
 
 let mut client = LinuxCncServiceClient::connect("http://localhost:50051").await?;
 let status = client.get_status(GetStatusRequest {}).await?.into_inner();
-println!("Position: X={:.3} Y={:.3}", status.position.unwrap().x, status.position.unwrap().y);
+if let Some(pos) = status.position.as_ref().and_then(|p| p.actual_position.as_ref()) {
+    println!("Position: X={:.3} Y={:.3} Z={:.3}", pos.x, pos.y, pos.z);
+}
 ```
 
 ## Examples
