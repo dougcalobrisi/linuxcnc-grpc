@@ -86,7 +86,31 @@ def _ini_flag(ini_lookup: IniLookup, section: str, key: str) -> bool:
     return _ini_string(ini_lookup, section, key).lower() in ("1", "true", "yes")
 
 
-def joint_axis_letters(kinematics: str, joint_count: int) -> list[str] | None:
+def extra_joint_count(stat, joint_count: int) -> int:
+    """
+    How many of the machine's last joints are extra joints.
+
+    motmod's num_extrajoints= parameter takes the last joints out of the
+    kinematics: they are homed like any joint but drive no axis. LinuxCNC 2.8
+    has no stat.num_extrajoints, so a missing value means none, and so does
+    one that cannot be right (not an int, negative, more than the joints).
+
+    Args:
+        stat: A polled linuxcnc.stat() object.
+        joint_count: Number of joints the machine has.
+    """
+    reported_count = getattr(stat, "num_extrajoints", 0)
+    count_is_plain_int = (
+        isinstance(reported_count, int) and not isinstance(reported_count, bool)
+    )
+    if count_is_plain_int and 0 <= reported_count <= joint_count:
+        return reported_count
+    return 0
+
+
+def joint_axis_letters(
+    kinematics: str, joint_count: int, trailing_extra_joints: int = 0
+) -> list[str] | None:
     """
     Work out which axis letter each joint drives.
 
@@ -94,14 +118,18 @@ def joint_axis_letters(kinematics: str, joint_count: int) -> list[str] | None:
     coordinates= parameter (XYZABCUVW when the parameter is absent). A letter
     may repeat, as in the gantry "XYYZ" where joints 1 and 2 both drive Y.
 
+    Only the first joint_count - trailing_extra_joints joints take part in the
+    kinematics. The extra joints after them drive no axis and get no letter.
+
     Args:
         kinematics: The [KINS]KINEMATICS value, e.g. "trivkins coordinates=XZ".
-        joint_count: Number of joints the machine has.
+        joint_count: Number of joints the machine has, extra joints included.
+        trailing_extra_joints: How many of the last joints are extra joints.
 
     Returns:
-        One letter per joint ('' for a joint beyond the letters given), or
-        None when the kinematics module has no fixed joint-to-axis relation
-        or the value is empty.
+        One letter per joint ('' for an extra joint and for a joint beyond
+        the letters given), or None when the kinematics module has no fixed
+        joint-to-axis relation or the value is empty.
     """
     kinematics_words = kinematics.split()
     if not kinematics_words or kinematics_words[0] != "trivkins":
@@ -117,8 +145,12 @@ def joint_axis_letters(kinematics: str, joint_count: int) -> list[str] | None:
         logger.warning(f"Unrecognised trivkins coordinates in {kinematics!r}")
         return None
 
+    # Letters are dealt out to the kinematics joints only, so an extra joint
+    # never takes the letter that follows them in the coordinates.
+    kinematics_joint_count = max(joint_count - trailing_extra_joints, 0)
+    lettered_joint_count = min(kinematics_joint_count, len(coordinate_letters))
     return [
-        coordinate_letters[joint_number] if joint_number < len(coordinate_letters) else ""
+        coordinate_letters[joint_number] if joint_number < lettered_joint_count else ""
         for joint_number in range(joint_count)
     ]
 
@@ -147,7 +179,9 @@ def build_machine_config(
     joint_count = min(stat.joints, len(stat.joint))
     kinematics = _ini_string(ini_lookup, "KINS", "KINEMATICS")
     kinematics_words = kinematics.split()
-    letters_by_joint = joint_axis_letters(kinematics, joint_count)
+    letters_by_joint = joint_axis_letters(
+        kinematics, joint_count, extra_joint_count(stat, joint_count)
+    )
 
     joint_type_names = {
         linuxcnc.LINEAR: linuxcnc_pb2.JOINT_LINEAR,

@@ -5840,16 +5840,19 @@ func (*GetMachineConfigRequest) Descriptor() ([]byte, []int) {
 // Limits come from live status; velocity, acceleration and home sequence come
 // from the [JOINT_n] section of the INI file.
 type JointConfig struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	JointNumber     int32                  `protobuf:"varint,1,opt,name=joint_number,json=jointNumber,proto3" json:"joint_number,omitempty"`
-	JointType       JointType              `protobuf:"varint,2,opt,name=joint_type,json=jointType,proto3,enum=linuxcnc.JointType" json:"joint_type,omitempty"` // Linear or angular
-	AxisLetter      string                 `protobuf:"bytes,3,opt,name=axis_letter,json=axisLetter,proto3" json:"axis_letter,omitempty"`                       // Axis this joint drives ("X", "Y", ...); empty if the mapping is not known
-	MinLimit        float64                `protobuf:"fixed64,4,opt,name=min_limit,json=minLimit,proto3" json:"min_limit,omitempty"`                           // Soft limit, machine units
-	MaxLimit        float64                `protobuf:"fixed64,5,opt,name=max_limit,json=maxLimit,proto3" json:"max_limit,omitempty"`                           // Soft limit, machine units
-	MaxVelocity     float64                `protobuf:"fixed64,6,opt,name=max_velocity,json=maxVelocity,proto3" json:"max_velocity,omitempty"`                  // [JOINT_n]MAX_VELOCITY, machine units per second; 0 if not set or the INI is unreadable
-	MaxAcceleration float64                `protobuf:"fixed64,7,opt,name=max_acceleration,json=maxAcceleration,proto3" json:"max_acceleration,omitempty"`      // [JOINT_n]MAX_ACCELERATION, machine units per second squared; 0 if not set
-	HomeSequence    *int32                 `protobuf:"varint,8,opt,name=home_sequence,json=homeSequence,proto3,oneof" json:"home_sequence,omitempty"`          // [JOINT_n]HOME_SEQUENCE; unset if the INI has none
-	Units           float64                `protobuf:"fixed64,9,opt,name=units,proto3" json:"units,omitempty"`                                                 // Joint units per mm (linear) or per degree (angular)
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	JointNumber int32                  `protobuf:"varint,1,opt,name=joint_number,json=jointNumber,proto3" json:"joint_number,omitempty"`
+	JointType   JointType              `protobuf:"varint,2,opt,name=joint_type,json=jointType,proto3,enum=linuxcnc.JointType" json:"joint_type,omitempty"` // Linear or angular
+	// Axis this joint drives ("X", "Y", ...). Empty if the mapping is not known
+	// (joint_axis_mapping_known is false), and empty with the mapping known if
+	// the joint drives no axis, which is the case for an extra joint.
+	AxisLetter      string  `protobuf:"bytes,3,opt,name=axis_letter,json=axisLetter,proto3" json:"axis_letter,omitempty"`
+	MinLimit        float64 `protobuf:"fixed64,4,opt,name=min_limit,json=minLimit,proto3" json:"min_limit,omitempty"`                      // Soft limit, machine units
+	MaxLimit        float64 `protobuf:"fixed64,5,opt,name=max_limit,json=maxLimit,proto3" json:"max_limit,omitempty"`                      // Soft limit, machine units
+	MaxVelocity     float64 `protobuf:"fixed64,6,opt,name=max_velocity,json=maxVelocity,proto3" json:"max_velocity,omitempty"`             // [JOINT_n]MAX_VELOCITY, machine units per second; 0 if not set or the INI is unreadable
+	MaxAcceleration float64 `protobuf:"fixed64,7,opt,name=max_acceleration,json=maxAcceleration,proto3" json:"max_acceleration,omitempty"` // [JOINT_n]MAX_ACCELERATION, machine units per second squared; 0 if not set
+	HomeSequence    *int32  `protobuf:"varint,8,opt,name=home_sequence,json=homeSequence,proto3,oneof" json:"home_sequence,omitempty"`     // [JOINT_n]HOME_SEQUENCE; unset if the INI has none
+	Units           float64 `protobuf:"fixed64,9,opt,name=units,proto3" json:"units,omitempty"`                                            // Joint units per mm (linear) or per degree (angular)
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -5958,7 +5961,7 @@ type AxisConfig struct {
 	MaxLimit        float64                `protobuf:"fixed64,4,opt,name=max_limit,json=maxLimit,proto3" json:"max_limit,omitempty"`                      // Soft limit, machine units
 	MaxVelocity     float64                `protobuf:"fixed64,5,opt,name=max_velocity,json=maxVelocity,proto3" json:"max_velocity,omitempty"`             // [AXIS_<letter>]MAX_VELOCITY; 0 if not set or the INI is unreadable
 	MaxAcceleration float64                `protobuf:"fixed64,6,opt,name=max_acceleration,json=maxAcceleration,proto3" json:"max_acceleration,omitempty"` // [AXIS_<letter>]MAX_ACCELERATION; 0 if not set
-	Joints          []int32                `protobuf:"varint,7,rep,packed,name=joints,proto3" json:"joints,omitempty"`                                    // Joints that drive this axis (two for a gantry); empty if the mapping is not known
+	Joints          []int32                `protobuf:"varint,7,rep,packed,name=joints,proto3" json:"joints,omitempty"`                                    // Joints that drive this axis (two for a gantry); empty if the mapping is not known or no joint drives it
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -6059,6 +6062,12 @@ type MachineConfig struct {
 	// is the case for trivkins, where joints follow the coordinates= letters in
 	// order. For other kinematics modules there is no fixed joint-to-axis
 	// relation, so JointConfig.axis_letter and AxisConfig.joints stay empty.
+	//
+	// Extra joints (motmod's num_extrajoints, the machine's last joints) are
+	// not part of the kinematics. They are listed in joints like any other
+	// joint, but with an empty axis_letter even when this is true, and they are
+	// in no AxisConfig.joints. TrajectoryStatus.num_extrajoints says how many
+	// of the last joints they are.
 	JointAxisMappingKnown bool `protobuf:"varint,11,opt,name=joint_axis_mapping_known,json=jointAxisMappingKnown,proto3" json:"joint_axis_mapping_known,omitempty"`
 	// Units
 	LinearUnits      float64 `protobuf:"fixed64,12,opt,name=linear_units,json=linearUnits,proto3" json:"linear_units,omitempty"`                // Machine units per mm (1.0 for mm, about 0.03937 for inch), from status

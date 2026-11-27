@@ -75,7 +75,7 @@ class TestJointAxisLetters:
             ("trivkins kinstype=both coordinates=xyzy", 4, ["X", "Y", "Z", "Y"]),
             ("trivkins COORDINATES=XYZA", 4, ["X", "Y", "Z", "A"]),
             ("  trivkins   coordinates=XYZ ", 3, ["X", "Y", "Z"]),
-            # More joints than letters: the extra joint drives no axis.
+            # More joints than letters: the joint past the letters drives no axis.
             ("trivkins coordinates=XZ", 3, ["X", "Z", ""]),
             # Fewer joints than letters: only the joints that exist are listed.
             ("trivkins coordinates=XYZ", 2, ["X", "Y"]),
@@ -83,6 +83,34 @@ class TestJointAxisLetters:
     )
     def test_trivkins(self, machine_config_module, kinematics, joint_count, expected_letters):
         assert machine_config_module.joint_axis_letters(kinematics, joint_count) == expected_letters
+
+    @pytest.mark.parametrize(
+        "kinematics, joint_count, extra_joint_count, expected_letters",
+        [
+            # Default coordinates: the extra joint must not take the next letter, A.
+            ("trivkins", 4, 1, ["X", "Y", "Z", ""]),
+            ("trivkins coordinates=xyz", 5, 2, ["X", "Y", "Z", "", ""]),
+            # LinuxCNC's 1extrajoint sample: a gantry plus one extra joint.
+            ("trivkins coordinates=XYYZ kinstype=both", 5, 1, ["X", "Y", "Y", "Z", ""]),
+            ("trivkins coordinates=XYYZ kinstype=both", 6, 2, ["X", "Y", "Y", "Z", "", ""]),
+            # More letters than kinematics joints: the letters left over go to no joint.
+            ("trivkins coordinates=XYZA", 4, 2, ["X", "Y", "", ""]),
+            ("trivkins", 3, 3, ["", "", ""]),
+            ("trivkins coordinates=XYZ", 3, 0, ["X", "Y", "Z"]),
+        ],
+    )
+    def test_extra_joints_get_no_letter(
+        self, machine_config_module, kinematics, joint_count, extra_joint_count, expected_letters
+    ):
+        """The last extra_joint_count joints are outside the kinematics."""
+        letters = machine_config_module.joint_axis_letters(
+            kinematics, joint_count, extra_joint_count
+        )
+
+        assert letters == expected_letters
+
+    def test_extra_joints_do_not_make_other_kinematics_known(self, machine_config_module):
+        assert machine_config_module.joint_axis_letters("genserkins", 6, 1) is None
 
     @pytest.mark.parametrize(
         "kinematics",
@@ -220,6 +248,143 @@ class TestBuildMachineConfig:
         assert config.coordinates == "XYYZ"
         assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Y", "Z"]
         assert [list(axis.joints) for axis in config.axes] == [[0], [1, 2], [3]]
+
+    @staticmethod
+    def _give_joints(stat, joint_count):
+        """Make the machine have joint_count joints, each with its own lower limit."""
+        stat.joints = joint_count
+        stat.joint = [
+            dict(stat.joint[0], min_position_limit=-100.0 - joint_number)
+            for joint_number in range(joint_count)
+        ]
+
+    def test_extra_joint_is_listed_without_an_axis_letter(
+        self, machine_config_module, mock_linuxcnc_stat
+    ):
+        """Default coordinates, four joints, one extra: joint 3 does not drive A."""
+        self._give_joints(mock_linuxcnc_stat, 4)
+        mock_linuxcnc_stat.num_extrajoints = 1
+        mock_linuxcnc_stat.axis_mask = 0b1111
+        mock_linuxcnc_stat.axis = [dict(mock_linuxcnc_stat.axis[0]) for _ in range(9)]
+        ini_values = dict(MILL_INI_VALUES)
+        ini_values[("JOINT_3", "MAX_VELOCITY")] = "7"
+        ini_values[("JOINT_3", "HOME_SEQUENCE")] = "3"
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, ini_values)
+
+        assert config.joint_axis_mapping_known is True
+        assert config.joint_count == 4
+        assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Z", ""]
+        assert [axis.letter for axis in config.axes] == ["X", "Y", "Z", "A"]
+        assert [list(axis.joints) for axis in config.axes] == [[0], [1], [2], []]
+        # The extra joint keeps the rest of its configuration.
+        extra_joint = config.joints[3]
+        assert extra_joint.joint_number == 3
+        assert extra_joint.min_limit == -103.0
+        assert extra_joint.max_velocity == 7.0
+        assert extra_joint.home_sequence == 3
+
+    def test_extra_joints_are_the_last_configured_joints_not_the_last_listed(
+        self, machine_config_module, mock_linuxcnc_stat
+    ):
+        """stat.joint always has 16 entries; the extra joint is the last of stat.joints."""
+        self._give_joints(mock_linuxcnc_stat, 16)
+        mock_linuxcnc_stat.joints = 4
+        mock_linuxcnc_stat.num_extrajoints = 1
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, MILL_INI_VALUES)
+
+        assert config.joint_count == 4
+        assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Z", ""]
+        assert [list(axis.joints) for axis in config.axes] == [[0], [1], [2]]
+
+    def test_gantry_with_extra_joints(self, machine_config_module, mock_linuxcnc_stat):
+        """Repeated letters and extra joints together, as in LinuxCNC's extrajoints samples."""
+        self._give_joints(mock_linuxcnc_stat, 6)
+        mock_linuxcnc_stat.num_extrajoints = 2
+        ini_values = {
+            ("KINS", "KINEMATICS"): "trivkins coordinates=XYYZ kinstype=BOTH",
+            ("TRAJ", "COORDINATES"): "XYYZ",
+        }
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, ini_values)
+
+        assert config.joint_axis_mapping_known is True
+        assert [joint.joint_number for joint in config.joints] == [0, 1, 2, 3, 4, 5]
+        assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Y", "Z", "", ""]
+        assert [list(axis.joints) for axis in config.axes] == [[0], [1, 2], [3]]
+
+    def test_extra_joint_does_not_take_a_coordinate_letter(
+        self, machine_config_module, mock_linuxcnc_stat
+    ):
+        """With XYYZ and four joints of which one is extra, no joint drives Z."""
+        self._give_joints(mock_linuxcnc_stat, 4)
+        mock_linuxcnc_stat.num_extrajoints = 1
+        ini_values = {("KINS", "KINEMATICS"): "trivkins coordinates=XYYZ kinstype=BOTH"}
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, ini_values)
+
+        assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Y", ""]
+        assert [list(axis.joints) for axis in config.axes] == [[0], [1, 2], []]
+
+    def test_no_extra_joints_maps_every_joint(self, machine_config_module, mock_linuxcnc_stat):
+        self._give_joints(mock_linuxcnc_stat, 4)
+        mock_linuxcnc_stat.num_extrajoints = 0
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, MILL_INI_VALUES)
+
+        assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Z", "A"]
+
+    def test_status_without_num_extrajoints_means_no_extra_joints(
+        self, machine_config_module, mock_linuxcnc_stat
+    ):
+        """LinuxCNC 2.8's status has no num_extrajoints."""
+        self._give_joints(mock_linuxcnc_stat, 4)
+        # Deleting an attribute of a MagicMock makes reading it raise AttributeError.
+        del mock_linuxcnc_stat.num_extrajoints
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, MILL_INI_VALUES)
+
+        assert config.joint_axis_mapping_known is True
+        assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Z", "A"]
+
+    @pytest.mark.parametrize(
+        "unusable_count",
+        [-1, 5, None, "1", 1.0, True],
+        ids=["negative", "above-the-joint-count", "none", "text", "float", "bool"],
+    )
+    def test_unusable_num_extrajoints_means_no_extra_joints(
+        self, machine_config_module, mock_linuxcnc_stat, unusable_count
+    ):
+        self._give_joints(mock_linuxcnc_stat, 4)
+        mock_linuxcnc_stat.num_extrajoints = unusable_count
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, MILL_INI_VALUES)
+
+        assert len(config.joints) == 4
+        assert [joint.axis_letter for joint in config.joints] == ["X", "Y", "Z", "A"]
+
+    def test_every_joint_an_extra_joint(self, machine_config_module, mock_linuxcnc_stat):
+        """num_extrajoints may equal the joint count: no joint drives an axis."""
+        mock_linuxcnc_stat.num_extrajoints = 3
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, MILL_INI_VALUES)
+
+        assert config.joint_axis_mapping_known is True
+        assert [joint.axis_letter for joint in config.joints] == ["", "", ""]
+        assert [list(axis.joints) for axis in config.axes] == [[], [], []]
+
+    def test_extra_joints_leave_other_kinematics_unknown(
+        self, machine_config_module, mock_linuxcnc_stat
+    ):
+        self._give_joints(mock_linuxcnc_stat, 4)
+        mock_linuxcnc_stat.num_extrajoints = 1
+        ini_values = {("KINS", "KINEMATICS"): "genserkins"}
+
+        config = _build(machine_config_module, mock_linuxcnc_stat, ini_values)
+
+        assert config.joint_axis_mapping_known is False
+        assert [joint.axis_letter for joint in config.joints] == ["", "", "", ""]
 
     def test_non_trivial_kinematics_leaves_mapping_unknown(
         self, machine_config_module, mock_linuxcnc_stat

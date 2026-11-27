@@ -1577,7 +1577,11 @@ export interface JointConfig {
   jointNumber: number;
   /** Linear or angular */
   jointType: JointType;
-  /** Axis this joint drives ("X", "Y", ...); empty if the mapping is not known */
+  /**
+   * Axis this joint drives ("X", "Y", ...). Empty if the mapping is not known
+   * (joint_axis_mapping_known is false), and empty with the mapping known if
+   * the joint drives no axis, which is the case for an extra joint.
+   */
   axisLetter: string;
   /** Soft limit, machine units */
   minLimit: number;
@@ -1613,7 +1617,7 @@ export interface AxisConfig {
   maxVelocity: number;
   /** [AXIS_<letter>]MAX_ACCELERATION; 0 if not set */
   maxAcceleration: number;
-  /** Joints that drive this axis (two for a gantry); empty if the mapping is not known */
+  /** Joints that drive this axis (two for a gantry); empty if the mapping is not known or no joint drives it */
   joints: number[];
 }
 
@@ -1641,6 +1645,12 @@ export interface MachineConfig {
    * is the case for trivkins, where joints follow the coordinates= letters in
    * order. For other kinematics modules there is no fixed joint-to-axis
    * relation, so JointConfig.axis_letter and AxisConfig.joints stay empty.
+   *
+   * Extra joints (motmod's num_extrajoints, the machine's last joints) are
+   * not part of the kinematics. They are listed in joints like any other
+   * joint, but with an empty axis_letter even when this is true, and they are
+   * in no AxisConfig.joints. TrajectoryStatus.num_extrajoints says how many
+   * of the last joints they are.
    */
   jointAxisMappingKnown: boolean;
   /** Units */

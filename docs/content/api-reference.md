@@ -650,7 +650,7 @@ rpc GetMachineConfig(GetMachineConfigRequest) returns (MachineConfig)
 |-------|------|--------|-------------|
 | `joint_number` | int32 | | |
 | `joint_type` | JointType | status | Linear or angular |
-| `axis_letter` | string | INI | Axis this joint drives; empty if the mapping is not known |
+| `axis_letter` | string | INI | Axis this joint drives; empty if the mapping is not known, or if the joint drives no axis (an extra joint) |
 | `min_limit`, `max_limit` | double | status | Soft limits, machine units |
 | `max_velocity`, `max_acceleration` | double | INI | `[JOINT_n]` |
 | `home_sequence` | optional int32 | INI | `[JOINT_n]HOME_SEQUENCE`; unset if the INI has none |
@@ -664,7 +664,7 @@ rpc GetMachineConfig(GetMachineConfigRequest) returns (MachineConfig)
 | `letter` | string | | `X`, `Y`, … |
 | `min_limit`, `max_limit` | double | status | Soft limits, machine units |
 | `max_velocity`, `max_acceleration` | double | INI | `[AXIS_<letter>]` |
-| `joints` | repeated int32 | INI | Joints that drive this axis; empty if the mapping is not known |
+| `joints` | repeated int32 | INI | Joints that drive this axis; empty if the mapping is not known or no joint drives it |
 
 Notes:
 
@@ -675,6 +675,18 @@ Notes:
   module (scara, delta, 5-axis and so on) a joint does not correspond to one
   axis: `joint_axis_mapping_known` is false, and `axis_letter` and `joints`
   are empty.
+- **Extra joints have no axis letter.** A machine can have extra joints
+  (`num_extrajoints=` on the `[EMCMOT]EMCMOT` line): they are the last joints,
+  LinuxCNC homes them like any joint, but they are not part of the kinematics
+  and drive no axis. They are listed in `joints` with their limits, type,
+  velocities and home sequence, with an empty `axis_letter`, and they appear
+  in no axis's `joints`. With `trivkins`, five joints, `coordinates=XYZ` and
+  two extra joints, joints 0 to 2 are X, Y and Z and joints 3 and 4 have no
+  letter. So with `joint_axis_mapping_known` true, an empty `axis_letter`
+  means "this joint drives no axis", not "unknown"; the number of extra
+  joints is `trajectory.num_extrajoints` in the status. Do not jog such a
+  joint to move an axis: jogging an axis never moves it, and after homing
+  LinuxCNC drives it from the HAL pin `joint.N.posthome-cmd`.
 - **INI values are read on every call** from the file named in status. They
   are the configured values: a limit changed at run time with `set_limit`
   shows in the status-based limits, but a velocity changed in HAL does not
@@ -703,7 +715,8 @@ Notes:
 config = stub.GetMachineConfig(linuxcnc_pb2.GetMachineConfigRequest())
 print(f"{config.machine_name}: {config.kinematics} in {config.linear_units_name}")
 for joint in config.joints:
-    print(f"joint {joint.joint_number} -> {joint.axis_letter or '?'} "
+    # No letter: an extra joint if the mapping is known, otherwise unknown
+    print(f"joint {joint.joint_number} -> {joint.axis_letter or '-'} "
           f"[{joint.min_limit}, {joint.max_limit}]")
 
 # Find the joints to jog for the Y axis on an unhomed machine

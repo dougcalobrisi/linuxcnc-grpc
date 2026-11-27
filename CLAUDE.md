@@ -329,6 +329,16 @@ INI lookup (`linuxcnc.ini(stat.ini_filename).find`, opened on every call, inside
 - Joint-to-axis mapping (`joint_axis_letters`) is only derived for `trivkins`: joint N drives
   letter N of `coordinates=` (default `XYZABCUVW`), letters may repeat (gantry). Any other
   module gives `joint_axis_mapping_known = false`. Do not guess a mapping for other kinematics.
+- Extra joints get no letter. motmod's `num_extrajoints=` makes the **last** N joints extra
+  joints: homed like any joint, not used by the kinematics, driven after homing by
+  `joint.N.posthome-cmd` (motion(9); LinuxCNC's `sim/axis/extrajoints` samples). So only the
+  first `joint_count - extra_joint_count(stat, joint_count)` joints are dealt letters; the
+  extra joints keep their `JointConfig` with `axis_letter` empty and are in no
+  `AxisConfig.joints`, while `joint_axis_mapping_known` stays true. Without this, default
+  coordinates with four joints and one extra joint reported joint 3 as A. `extra_joint_count`
+  reads `stat.num_extrajoints` with `getattr` (LinuxCNC 2.8 has none) and uses 0 unless it is a
+  plain int from 0 to the joint count. No proto field was added: known mapping plus empty
+  letter already says "drives no axis", and `TrajectoryStatus.num_extrajoints` has the count.
 - A missing INI value is 0/empty (`home_sequence` is `optional`, since 0 is a real sequence).
   An INI file that can't be opened is not an error: `ini_readable = false`.
 - INI values the proto cannot carry are treated like unparsable ones, with a warning in the
