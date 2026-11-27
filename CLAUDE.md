@@ -316,8 +316,9 @@ The CI workflow uses aggressive caching to minimize build times:
 The protoc download is checked against `PROTOC_SHA256`, which is also part of the cache key.
 `PROTOC_SHA256` must change together with `PROTOC_VERSION`, in both `ci.yml` and `release.yml`.
 
-The stream examples run under `timeout 5`; exit status 124 (stopped by the timeout) is the
-expected result and any other non-zero status fails the job.
+The stream examples run under `timeout 5` and never end by themselves, so exit status 124
+(stopped by the timeout) is the only result that passes. Any other status fails the job,
+including 0: an example that stops early without an error has still lost its stream.
 
 ### Changelog
 

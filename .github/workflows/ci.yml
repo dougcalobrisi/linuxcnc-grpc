@@ -355,11 +355,12 @@ jobs:
         run: |
           uv run python examples/python/get_status.py --port 50051
           # The stream never ends by itself, so the timeout stopping it (exit 124)
-          # is the expected result. Any other failure is a real one.
+          # is the only good result. Any other status, 0 included, means the
+          # stream ended early.
           stream_exit_status=0
           timeout 5 uv run python examples/python/stream_status.py --port 50051 || stream_exit_status=$?
-          if [ "$stream_exit_status" -ne 0 ] && [ "$stream_exit_status" -ne 124 ]; then
-            echo "::error::stream_status example failed with exit status $stream_exit_status"
+          if [ "$stream_exit_status" -ne 124 ]; then
+            echo "::error::stream_status example ended early with exit status $stream_exit_status"
             exit 1
           fi
           uv run python examples/python/hal_query.py --port 50051 status
@@ -418,11 +419,12 @@ jobs:
           # Built first, so the 5 seconds are spent streaming, not compiling.
           go build -o "$RUNNER_TEMP/stream_status" ./cmd/stream_status
           # The stream never ends by itself, so the timeout stopping it (exit 124)
-          # is the expected result. Any other failure is a real one.
+          # is the only good result. Any other status, 0 included, means the
+          # stream ended early.
           stream_exit_status=0
           timeout 5 "$RUNNER_TEMP/stream_status" --port 50051 || stream_exit_status=$?
-          if [ "$stream_exit_status" -ne 0 ] && [ "$stream_exit_status" -ne 124 ]; then
-            echo "::error::stream_status example failed with exit status $stream_exit_status"
+          if [ "$stream_exit_status" -ne 124 ]; then
+            echo "::error::stream_status example ended early with exit status $stream_exit_status"
             exit 1
           fi
           go run ./cmd/hal_query --port 50051 status
@@ -488,11 +490,12 @@ jobs:
           cd examples/node
           npx tsx get_status.ts --port 50051
           # The stream never ends by itself, so the timeout stopping it (exit 124)
-          # is the expected result. Any other failure is a real one.
+          # is the only good result. Any other status, 0 included, means the
+          # stream ended early.
           stream_exit_status=0
           timeout 5 npx tsx stream_status.ts --port 50051 || stream_exit_status=$?
-          if [ "$stream_exit_status" -ne 0 ] && [ "$stream_exit_status" -ne 124 ]; then
-            echo "::error::stream_status example failed with exit status $stream_exit_status"
+          if [ "$stream_exit_status" -ne 124 ]; then
+            echo "::error::stream_status example ended early with exit status $stream_exit_status"
             exit 1
           fi
           npx tsx hal_query.ts --port 50051 status
@@ -580,11 +583,12 @@ jobs:
           cd examples/rust
           ./target/release/get_status --port 50051
           # The stream never ends by itself, so the timeout stopping it (exit 124)
-          # is the expected result. Any other failure is a real one.
+          # is the only good result. Any other status, 0 included, means the
+          # stream ended early.
           stream_exit_status=0
           timeout 5 ./target/release/stream_status --port 50051 || stream_exit_status=$?
-          if [ "$stream_exit_status" -ne 0 ] && [ "$stream_exit_status" -ne 124 ]; then
-            echo "::error::stream_status example failed with exit status $stream_exit_status"
+          if [ "$stream_exit_status" -ne 124 ]; then
+            echo "::error::stream_status example ended early with exit status $stream_exit_status"
             exit 1
           fi
           ./target/release/hal_query --port 50051 status
