@@ -311,7 +311,12 @@ of this without re-measuring):
   GetMachineConfig abort with `INTERNAL` ("<RPC> failed: <type>: <text>", from
   `_unexpected_failure_details`, which also logs the traceback); WaitComplete returns
   `RCS_ERROR` with the same text; SendCommand already answered `RCS_ERROR` for any exception.
-  None of these reconnects: only `linuxcnc.error` does. With real gRPC `context.abort` raises
+  None of these reconnects: only `linuxcnc.error` does. GetStatus polls a second time after a
+  successful reconnect, and that poll follows the same rule: an unexpected exception from it
+  is `INTERNAL` with its own type and text (recorded in the inner `try`, aborted after it),
+  and only a second `linuxcnc.error` is `UNAVAILABLE` with the first error's text.
+  StreamStatus has no second poll: after a reconnect its loop polls again in the same inner
+  `try`. With real gRPC `context.abort` raises
   a bare `Exception`, so an `except Exception` may only sit on a `try` whose body contains no
   abort (direct or through `_abort_if_disconnected`): GetStatus, WaitComplete and
   GetMachineConfig have it on their one `try`; ResolveFile has it on the inner `try` around

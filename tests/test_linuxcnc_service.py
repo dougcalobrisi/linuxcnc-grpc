@@ -4282,6 +4282,70 @@ class TestUnexpectedPollErrors:
 
         assert abort_codes(context) == [grpc.StatusCode.UNAVAILABLE]
 
+    @pytest.mark.parametrize(
+        "unexpected_retry_error",
+        [SystemError(NULL_WITHOUT_EXCEPTION), ValueError("unknown task mode 99")],
+    )
+    def test_get_status_unexpected_error_from_the_poll_after_a_reconnect_is_internal(
+        self, service, mock_linuxcnc_module, mock_linuxcnc_stat, unexpected_retry_error
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        service._reconnect.return_value = True
+        mock_linuxcnc_stat.poll.side_effect = [
+            mock_linuxcnc_module.error("NML gone"),
+            unexpected_retry_error,
+        ]
+
+        with pytest.raises(Exception) as raised:
+            service.GetStatus(linuxcnc_pb2.GetStatusRequest(), context)
+
+        assert raised.value is context.abort.side_effect
+        # The second poll's failure is reported, not the first one's.
+        self._assert_single_internal_abort(
+            context,
+            "GetStatus",
+            type(unexpected_retry_error).__name__,
+            str(unexpected_retry_error),
+        )
+        service._reconnect.assert_called_once()
+
+    def test_get_status_linuxcnc_error_from_the_poll_after_a_reconnect_is_unavailable(
+        self, service, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        service._reconnect.return_value = True
+        mock_linuxcnc_stat.poll.side_effect = [
+            mock_linuxcnc_module.error("NML gone"),
+            mock_linuxcnc_module.error("NML still gone"),
+        ]
+
+        with pytest.raises(Exception) as raised:
+            service.GetStatus(linuxcnc_pb2.GetStatusRequest(), context)
+
+        assert raised.value is context.abort.side_effect
+        assert context.abort.call_args_list == [
+            call(grpc.StatusCode.UNAVAILABLE, "LinuxCNC unavailable: NML gone")
+        ]
+        service._reconnect.assert_called_once()
+
+    def test_get_status_returns_the_status_polled_after_a_reconnect(
+        self, service, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        service._reconnect.return_value = True
+        mock_linuxcnc_stat.poll.side_effect = [mock_linuxcnc_module.error("NML gone"), None]
+
+        status = service.GetStatus(linuxcnc_pb2.GetStatusRequest(), context)
+
+        assert status.timestamp > 0
+        context.abort.assert_not_called()
+
     # ---- WaitComplete ----------------------------------------------------
 
     def test_wait_complete_is_rcs_error(self, service, mock_linuxcnc_stat):
@@ -4349,6 +4413,29 @@ class TestUnexpectedPollErrors:
             next(stream)
 
         assert abort_codes(context) == [grpc.StatusCode.UNAVAILABLE]
+        assert service._stream_wake_events == set()
+
+    def test_stream_status_unexpected_error_from_the_poll_after_a_reconnect_is_internal(
+        self, service, mock_linuxcnc_module, mock_linuxcnc_stat
+    ):
+        from linuxcnc_pb import linuxcnc_pb2
+
+        context = context_whose_abort_raises()
+        service._reconnect.return_value = True
+        mock_linuxcnc_stat.poll.side_effect = [
+            mock_linuxcnc_module.error("NML gone"),
+            SystemError(NULL_WITHOUT_EXCEPTION),
+        ]
+        stream = service.StreamStatus(linuxcnc_pb2.StreamStatusRequest(interval_ms=1), context)
+
+        with pytest.raises(Exception) as raised:
+            next(stream)
+
+        assert raised.value is context.abort.side_effect
+        self._assert_single_internal_abort(
+            context, "StreamStatus", "SystemError", NULL_WITHOUT_EXCEPTION
+        )
+        service._reconnect.assert_called_once()
         assert service._stream_wake_events == set()
 
     def test_stream_status_os_error_keeps_its_message(self, service, mock_linuxcnc_stat):

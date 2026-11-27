@@ -1011,13 +1011,23 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 return self._poll_and_map_status()
         except linuxcnc.error as e:
             logger.error(f"LinuxCNC error in GetStatus: {e}")
+            retry_failure_details = None
             if self._reconnect(connection_polled):
                 try:
                     with self._lock:
                         return self._poll_and_map_status()
-                except Exception as retry_error:
+                except linuxcnc.error as retry_error:
                     logger.error(f"GetStatus failed after reconnect: {retry_error}")
-            context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
+                except Exception as retry_error:
+                    # Recorded here and aborted below: the abort raises, and
+                    # this clause would catch it.
+                    retry_failure_details = self._unexpected_failure_details(
+                        "GetStatus", retry_error
+                    )
+            if retry_failure_details is not None:
+                context.abort(grpc.StatusCode.INTERNAL, retry_failure_details)
+            else:
+                context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
         except Exception as e:
             # Nothing in the try block aborts, so this cannot catch an abort.
             context.abort(
