@@ -4883,11 +4883,12 @@ type CommandResponse struct {
 	// (TaskStatus.echo_serial_number), but it gives up after about 5 seconds
 	// without an error if the task does not answer. Use WaitComplete, or the
 	// status, to confirm receipt and completion: compare this value with
-	// echo_serial_number, or pass it to WaitComplete, to follow this exact
-	// command. For a command the server sends as several LinuxCNC messages
-	// (coolant, set_limit, override_config, program_options) it is the serial
-	// of the last one. Unset when the command was not dispatched, or when the
-	// LinuxCNC bindings on the server do not expose the serial.
+	// echo_serial_number, or pass it to WaitComplete. For a command the server
+	// sends as several LinuxCNC messages (coolant, set_limit, override_config,
+	// program_options) it is the serial of the last one LinuxCNC took. Unset
+	// when the command was not dispatched, which includes a command LinuxCNC
+	// did not take, or when the LinuxCNC bindings on the server do not expose
+	// the serial.
 	LinuxcncSerial *int32 `protobuf:"varint,4,opt,name=linuxcnc_serial,json=linuxcncSerial,proto3,oneof" json:"linuxcnc_serial,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -4993,9 +4994,16 @@ type WaitCompleteRequest struct {
 	// linuxcnc_serial, the wait is on the latest command sent through the server.
 	Serial  int32   `protobuf:"varint,1,opt,name=serial,proto3" json:"serial,omitempty"`
 	Timeout float64 `protobuf:"fixed64,2,opt,name=timeout,proto3" json:"timeout,omitempty"` // Timeout in seconds (default 5)
-	// Wait for this exact command: the linuxcnc_serial that SendCommand returned
-	// for it. When unset, the wait is on the latest command sent through the
-	// server, as it always was.
+	// Wait on this serial: the linuxcnc_serial that SendCommand returned for a
+	// command. The wait follows LinuxCNC's own serial rule. While the task's
+	// echo serial equals this value, the answer is that command's outcome. Once
+	// a later command has been echoed, sent through this server or by any other
+	// client of the same LinuxCNC, the answer is RCS_DONE and does not say how
+	// the earlier command ended. So the wait is exact only as long as nothing
+	// else is sent to LinuxCNC meanwhile; read the status as well to know that
+	// a motion has finished. A value this server did not issue on its current
+	// connection to LinuxCNC gets RCS_ERROR. When unset, the wait is on the
+	// latest command sent through the server, as it always was.
 	LinuxcncSerial *int32 `protobuf:"varint,3,opt,name=linuxcnc_serial,json=linuxcncSerial,proto3,oneof" json:"linuxcnc_serial,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache

@@ -51,6 +51,14 @@ MAX_RESPONSE_SERIAL = 2**31 - 1
 DEFAULT_NC_FILES_DIR = "/home/linuxcnc/linuxcnc/nc_files"
 
 
+# SendCommand's error_message when LinuxCNC's command serial did not change
+# across a dispatch, which means the write to its command channel failed.
+COMMAND_NOT_ACCEPTED_MESSAGE = (
+    "The command was not accepted by LinuxCNC: the write to its command "
+    "channel failed, so nothing was sent"
+)
+
+
 class DispatchRecord(NamedTuple):
     """
     What WaitComplete needs to know about one dispatched command.
@@ -317,10 +325,11 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 echo_serial_number, dispatch_record.linuxcnc_serial
             )
             if serials_ahead > 0:
-                # A later command has been echoed, so ours is finished.
-                # Whatever the task is doing now (executing, or in error)
-                # belongs to that later command. Same rule as linuxcnc's
-                # own wait_complete().
+                # A later command has been echoed. The task state now
+                # belongs to that later command, so nothing more can be
+                # learned about ours here; ours may even still be running
+                # (a move, with an override sent after it). Same rule as
+                # linuxcnc's own wait_complete().
                 return linuxcnc.RCS_DONE
             if serials_ahead == 0 and task_is_idle:
                 return task_rcs_state
@@ -437,8 +446,22 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         does not prove the task received it. LinuxCNC's send normally returns
         once the task has echoed the serial, but it gives up after about 5
         seconds without an error if the task does not answer. WaitComplete
-        (which can be given that value to wait for this exact command) or
+        (which can be given that value to wait on this command's serial) or
         the status confirms receipt and completion.
+
+        A command LinuxCNC did not take is refused. When the write to
+        LinuxCNC's command channel fails, the bindings return normally and
+        leave command.serial at the previous command's value. So the serial
+        is read before and after the handler, and if it did not change the
+        answer is RCS_ERROR with no linuxcnc_serial, and nothing is recorded
+        as dispatched. This needs bindings that expose command.serial.
+
+        The comparison sees only "no message was taken at all". A handler
+        that sends several messages (coolant, set_limit, override_config,
+        program_options, and program open, which LinuxCNC sends as a close
+        followed by the open) is answered RCS_DONE if at least one message
+        was taken, and linuxcnc_serial is then the serial of the last
+        message LinuxCNC took, which need not be the last one sent.
         """
         serial = request.serial or self._next_serial()
         command_type = request.WhichOneof("command")
@@ -465,6 +488,24 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                         ):
                             self._record_dispatch(None)
                         raise
+                    linuxcnc_serial_after_dispatch = self._read_linuxcnc_command_serial()
+                    if (
+                        linuxcnc_serial_after_dispatch is not None
+                        and linuxcnc_serial_after_dispatch == linuxcnc_serial_before_dispatch
+                    ):
+                        # LinuxCNC's send returns without raising when its
+                        # write fails, and command.serial is then still the
+                        # previous command's. Publishing or recording it
+                        # would make a wait report on that other command.
+                        logger.error(
+                            f"Command not accepted by LinuxCNC: {command_type} "
+                            f"(command serial stayed at {linuxcnc_serial_after_dispatch})"
+                        )
+                        return linuxcnc_pb2.CommandResponse(
+                            serial=serial,
+                            status=linuxcnc_pb2.RCS_ERROR,
+                            error_message=COMMAND_NOT_ACCEPTED_MESSAGE,
+                        )
                     linuxcnc_serial = self._record_dispatch(echo_serial_before_dispatch)
                 response = linuxcnc_pb2.CommandResponse(
                     serial=serial,
@@ -778,10 +819,17 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         moved past the awaited one, the answer is RCS_DONE.
 
         If request.linuxcnc_serial is set (the value SendCommand returned),
-        the wait is on that exact command instead. The serial must be one
-        this server issued on its current connection to LinuxCNC; any other
-        gets RCS_ERROR, and so does a reconnect during such a wait, because
-        serials from before a restart of LinuxCNC mean nothing afterwards.
+        the wait applies the same serial rule to that serial instead. The
+        serial must be one this server issued on its current connection to
+        LinuxCNC; any other gets RCS_ERROR, and so does a reconnect during
+        such a wait, because serials from before a restart of LinuxCNC mean
+        nothing afterwards.
+
+        Either way the rule is LinuxCNC's own (see _completion_state): once
+        the echo serial is past the awaited one the answer is RCS_DONE,
+        whatever became of the awaited command. The wait is exact only while
+        nothing else is sent to LinuxCNC, by this server or any other client.
+        A reconnect between the last poll and the response is not noticed.
 
         Returns RCS_DONE or RCS_ERROR ("Command failed") on completion, and
         RCS_EXEC with an empty error_message on timeout.

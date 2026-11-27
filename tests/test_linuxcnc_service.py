@@ -1080,10 +1080,15 @@ class FakeLinuxCNCCommand:
         # Set to an exception to make flood() fail, as the second message of
         # a coolant command.
         self.flood_error = None
+        # Names of the calls whose write LinuxCNC refuses. The real bindings
+        # then return normally and leave ``serial`` and the echo untouched.
+        self.calls_whose_write_fails = set()
         if exposes_serial:
             self.serial = 0
 
     def _send(self, name, *args):
+        if name in self.calls_whose_write_fails:
+            return
         linuxcnc_serial = self._next_linuxcnc_serial
         self._next_linuxcnc_serial += 1
         if hasattr(self, "serial"):
@@ -1814,6 +1819,132 @@ class TestWaitComplete:
 
         assert rejected_response.status == linuxcnc_pb2.RCS_ERROR
         assert service._latest_dispatch_record == record_before_rejection
+
+    def test_command_linuxcnc_did_not_take_is_refused(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A send that returns normally with command.serial unchanged is RCS_ERROR."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=700)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        first_response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        record_before_failed_write = service._latest_dispatch_record
+        issued_before_failed_write = list(service._issued_linuxcnc_serials)
+
+        command.calls_whose_write_fails = {"mdi"}
+        refused_response = service.SendCommand(
+            self._mdi_request("G0 X2", serial=9), mock_grpc_context
+        )
+
+        assert refused_response.status == linuxcnc_pb2.RCS_ERROR
+        assert "not accepted by LinuxCNC" in refused_response.error_message
+        assert refused_response.serial == 9
+        # The previous command's serial (still in command.serial) is not
+        # handed out as this command's.
+        assert command.serial == first_response.linuxcnc_serial
+        assert not refused_response.HasField("linuxcnc_serial")
+        assert service._latest_dispatch_record == record_before_failed_write
+        assert list(service._issued_linuxcnc_serials) == issued_before_failed_write
+
+    def test_wait_after_a_command_linuxcnc_did_not_take_follows_the_previous_one(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """The refused command leaves the legacy wait on the command before it."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        command.calls_whose_write_fails = {"mdi"}
+        service.SendCommand(self._mdi_request("G0 X2"), mock_grpc_context)
+
+        # The first move is still executing.
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_EXEC
+        executing_response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(timeout=0.1), mock_grpc_context
+        )
+        # The task then fails it.
+        mock_linuxcnc_stat.state = mock_linuxcnc_module.RCS_ERROR
+        failed_response = service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(timeout=0.2), mock_grpc_context
+        )
+
+        assert executing_response.status == linuxcnc_pb2.RCS_EXEC
+        assert failed_response.status == linuxcnc_pb2.RCS_ERROR
+
+    def test_first_command_linuxcnc_did_not_take_is_refused(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """A new command channel's serial is 0 and stays 0 when the first write fails."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        command.calls_whose_write_fails = {"mdi"}
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert not response.HasField("linuxcnc_serial")
+        assert service._latest_dispatch_record is None
+        assert list(service._issued_linuxcnc_serials) == []
+
+    def test_multi_message_command_with_no_message_taken_is_refused(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Coolant whose mist and flood writes both fail sent nothing: RCS_ERROR."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+        record_before_failed_writes = service._latest_dispatch_record
+
+        command.calls_whose_write_fails = {"mist", "flood"}
+        response = service.SendCommand(self._coolant_request(), mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert not response.HasField("linuxcnc_serial")
+        assert service._latest_dispatch_record == record_before_failed_writes
+
+    @pytest.mark.parametrize("call_whose_write_fails", ["mist", "flood"])
+    def test_multi_message_command_with_one_message_taken_is_not_refused(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context, call_whose_write_fails
+    ):
+        """
+        One coolant message LinuxCNC did not take goes unnoticed if the other was taken.
+
+        Only the serial before and after the whole handler is compared, so
+        the answer is RCS_DONE with the serial of the message that was taken.
+        """
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, first_serial=300)
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+        service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+
+        command.calls_whose_write_fails = {call_whose_write_fails}
+        response = service.SendCommand(self._coolant_request(), mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert response.linuxcnc_serial == 301
+        assert list(service._issued_linuxcnc_serials) == [300, 301]
+
+    def test_fallback_cannot_tell_a_command_linuxcnc_did_not_take(
+        self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context
+    ):
+        """Without command.serial there is nothing to compare, so the answer stays RCS_DONE."""
+        from linuxcnc_pb import linuxcnc_pb2
+
+        command = FakeLinuxCNCCommand(mock_linuxcnc_stat, exposes_serial=False)
+        command.calls_whose_write_fails = {"mdi"}
+        service = self._make_service(mock_linuxcnc_module, mock_linuxcnc_stat, command)
+
+        response = service.SendCommand(self._mdi_request("G0 X1"), mock_grpc_context)
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert not response.HasField("linuxcnc_serial")
 
     def test_fallback_refuses_to_dispatch_when_the_baseline_cannot_be_sampled(
         self, mock_linuxcnc_module, mock_linuxcnc_stat, mock_grpc_context

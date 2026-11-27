@@ -166,7 +166,11 @@ Two things to know before you rely on the responses:
 
 - `RCS_DONE` from `SendCommand` means the command was *dispatched*, not that
   it finished. The response's `linuxcnc_serial` identifies the command to
-  LinuxCNC; pass it to `WaitComplete` to wait for that exact command.
+  LinuxCNC; pass it to `WaitComplete` to wait on that command's serial. The
+  answer is exact as long as nothing else is sent to LinuxCNC meanwhile: once
+  a later command has been echoed, from any client, it is `RCS_DONE` and does
+  not say how the earlier command ended (see
+  [Command and Error Semantics](server.md#waitcomplete)).
 - The server does not switch modes for you.
 
 ### Example: MDI Command (Python)
@@ -184,16 +188,19 @@ def send_mdi(stub, gcode):
 
     response = stub.SendCommand(cmd)
 
-    if response.status == linuxcnc_pb2.RCS_ERROR:
+    if response.status != linuxcnc_pb2.RCS_DONE:
         print(f"Error: {response.error_message}")
         return False
 
-    # Wait for this exact command to complete
+    # Wait on this command's serial
     wait_req = linuxcnc_pb2.WaitCompleteRequest(timeout=30.0)
     if response.HasField("linuxcnc_serial"):
         wait_req.linuxcnc_serial = response.linuxcnc_serial
+    else:
+        print("Note: no linuxcnc_serial; waiting on the latest command sent by any client")
     response = stub.WaitComplete(wait_req)
 
+    # RCS_EXEC here means the wait timed out and the command is still running
     return response.status == linuxcnc_pb2.RCS_DONE
 
 # Usage

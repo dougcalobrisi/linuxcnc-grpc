@@ -140,31 +140,33 @@ def set_mode(mode):
     cmd.mode.mode = mode
     return stub.SendCommand(cmd)
 
-def wait_for(sent, timeout=5.0):
-    """Wait for the command that SendCommand answered with `sent`."""
+def wait_for(sent, step, timeout=5.0):
+    """Stop unless `sent` (a SendCommand answer) was dispatched and then finishes."""
+    if sent.status != linuxcnc_pb2.RCS_DONE:
+        raise SystemExit(f"{step} was not sent: {sent.error_message}")
     request = linuxcnc_pb2.WaitCompleteRequest(timeout=timeout)
     if sent.HasField("linuxcnc_serial"):
         request.linuxcnc_serial = sent.linuxcnc_serial
-    return stub.WaitComplete(request)
+    else:
+        print("Note: no linuxcnc_serial; waiting on the latest command sent by any client")
+    result = stub.WaitComplete(request)
+    if result.status != linuxcnc_pb2.RCS_DONE:
+        # RCS_EXEC: the wait timed out. RCS_ERROR: the command failed.
+        status_name = linuxcnc_pb2.RcsStatus.Name(result.status)
+        raise SystemExit(f"{step} did not finish: {status_name} {result.error_message}")
 
 # Power on and switch to MDI mode, waiting for each step
-wait_for(set_state(linuxcnc_pb2.STATE_ESTOP_RESET))
-wait_for(set_state(linuxcnc_pb2.STATE_ON))
-wait_for(set_mode(linuxcnc_pb2.MODE_MDI))
+wait_for(set_state(linuxcnc_pb2.STATE_ESTOP_RESET), "E-stop reset")
+wait_for(set_state(linuxcnc_pb2.STATE_ON), "Machine on")
+wait_for(set_mode(linuxcnc_pb2.MODE_MDI), "MDI mode")
 
 # Send a G-code command (the machine must be homed)
 cmd = linuxcnc_pb2.LinuxCNCCommand()
 cmd.serial = 3
 cmd.timestamp = int(time.time() * 1e9)
 cmd.mdi.command = "G0 X10 Y10"
-response = stub.SendCommand(cmd)
-
-if response.status == linuxcnc_pb2.RCS_ERROR:
-    print(f"Error: {response.error_message}")
-else:
-    # Wait for this command to complete
-    result = wait_for(response, timeout=30.0)
-    print(f"Command completed: {linuxcnc_pb2.RcsStatus.Name(result.status)}")
+wait_for(stub.SendCommand(cmd), "G0 X10 Y10", timeout=30.0)
+print("Command completed")
 
 channel.close()
 ```
@@ -281,6 +283,7 @@ import { Metadata } from "@grpc/grpc-js";
 import {
   LinuxCNCServiceClient,
   LinuxCNCCommand,
+  CommandResponse,
   WaitCompleteRequest,
   TaskMode,
   TaskState,
@@ -295,7 +298,7 @@ const client = new LinuxCNCServiceClient(
 
 const RPC_DEADLINE = 5000;
 
-function sendCommand(cmd: LinuxCNCCommand): Promise<any> {
+function sendCommand(cmd: LinuxCNCCommand): Promise<CommandResponse> {
   cmd.timestamp = Date.now() * 1000000;
   return new Promise((resolve, reject) => {
     client.sendCommand(cmd, new Metadata(), { deadline: new Date(Date.now() + RPC_DEADLINE) }, (err, resp) => {
@@ -305,40 +308,43 @@ function sendCommand(cmd: LinuxCNCCommand): Promise<any> {
   });
 }
 
-// Wait for the command that sendCommand answered with `sent`.
-function waitComplete(sent: any, timeout: number): Promise<any> {
+// Throw unless `sent` (a sendCommand answer) was dispatched and then finishes.
+async function waitFor(sent: CommandResponse, step: string, timeout: number): Promise<void> {
+  if (sent.status !== RcsStatus.RCS_DONE) {
+    throw new Error(`${step} was not sent: ${sent.errorMessage}`);
+  }
+  if (sent.linuxcncSerial === undefined) {
+    console.log("Note: no linuxcncSerial; waiting on the latest command sent by any client");
+  }
   const request = WaitCompleteRequest.create({ timeout, linuxcncSerial: sent.linuxcncSerial });
   const deadline = new Date(Date.now() + (timeout * 1000) + 5000);
-  return new Promise((resolve, reject) => {
+  const result = await new Promise<CommandResponse>((resolve, reject) => {
     client.waitComplete(request, new Metadata(), { deadline }, (err, resp) => {
       if (err) reject(err);
       else resolve(resp);
     });
   });
+  if (result.status !== RcsStatus.RCS_DONE) {
+    // RCS_EXEC: the wait timed out. RCS_ERROR: the command failed.
+    throw new Error(`${step} did not finish: ${RcsStatus[result.status]} ${result.errorMessage}`);
+  }
 }
 
 async function main() {
   // Power on and switch to MDI mode, waiting for each step
   let cmd = LinuxCNCCommand.create({ serial: 1, state: { state: TaskState.STATE_ESTOP_RESET } });
-  await waitComplete(await sendCommand(cmd), 5.0);
+  await waitFor(await sendCommand(cmd), "E-stop reset", 5.0);
 
   cmd = LinuxCNCCommand.create({ serial: 2, state: { state: TaskState.STATE_ON } });
-  await waitComplete(await sendCommand(cmd), 5.0);
+  await waitFor(await sendCommand(cmd), "Machine on", 5.0);
 
   cmd = LinuxCNCCommand.create({ serial: 3, mode: { mode: TaskMode.MODE_MDI } });
-  await waitComplete(await sendCommand(cmd), 5.0);
+  await waitFor(await sendCommand(cmd), "MDI mode", 5.0);
 
   // Send G-code (the machine must be homed)
   cmd = LinuxCNCCommand.create({ serial: 4, mdi: { command: "G0 X10 Y10" } });
-  const response = await sendCommand(cmd);
-
-  if (response.status === RcsStatus.RCS_ERROR) {
-    console.error(`Error: ${response.errorMessage}`);
-  } else {
-    console.log("Waiting for completion...");
-    const result = await waitComplete(response, 30.0);
-    console.log(`Command completed: ${RcsStatus[result.status]}`);
-  }
+  await waitFor(await sendCommand(cmd), "G0 X10 Y10", 30.0);
+  console.log("Command completed");
 
   client.close();
 }
@@ -536,45 +542,45 @@ func main() {
         return resp
     }
 
-    // Wait for the command that SendCommand answered with sent.
-    waitFor := func(sent *pb.CommandResponse, timeout float64) *pb.CommandResponse {
-        resp, err := client.WaitComplete(ctx, &pb.WaitCompleteRequest{
+    // Stop unless sent (a SendCommand answer) was dispatched and then finishes.
+    waitFor := func(sent *pb.CommandResponse, step string, timeout float64) {
+        if sent.GetStatus() != pb.RcsStatus_RCS_DONE {
+            log.Fatalf("%s was not sent: %s", step, sent.GetErrorMessage())
+        }
+        if sent.LinuxcncSerial == nil {
+            fmt.Println("Note: no LinuxcncSerial; waiting on the latest command sent by any client")
+        }
+        result, err := client.WaitComplete(ctx, &pb.WaitCompleteRequest{
             Timeout:        timeout,
             LinuxcncSerial: sent.LinuxcncSerial,
         })
         if err != nil {
             log.Fatalf("WaitComplete failed: %v", err)
         }
-        return resp
+        if result.GetStatus() != pb.RcsStatus_RCS_DONE {
+            // RCS_EXEC: the wait timed out. RCS_ERROR: the command failed.
+            log.Fatalf("%s did not finish: %s %s", step, result.GetStatus(), result.GetErrorMessage())
+        }
     }
 
     // Power on and switch to MDI mode, waiting for each step
     waitFor(sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_State{
         State: &pb.StateCommand{State: pb.TaskState_STATE_ESTOP_RESET},
-    }}), 5.0)
+    }}), "E-stop reset", 5.0)
 
     waitFor(sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_State{
         State: &pb.StateCommand{State: pb.TaskState_STATE_ON},
-    }}), 5.0)
+    }}), "Machine on", 5.0)
 
     waitFor(sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_Mode{
         Mode: &pb.ModeCommand{Mode: pb.TaskMode_MODE_MDI},
-    }}), 5.0)
+    }}), "MDI mode", 5.0)
 
     // Send G-code (the machine must be homed)
-    mdiCmd := &pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_Mdi{
+    waitFor(sendCmd(&pb.LinuxCNCCommand{Command: &pb.LinuxCNCCommand_Mdi{
         Mdi: &pb.MdiCommand{Command: "G0 X10 Y10"},
-    }}
-    resp := sendCmd(mdiCmd)
-
-    if resp.Status == pb.RcsStatus_RCS_ERROR {
-        log.Fatalf("Error: %s", resp.ErrorMessage)
-    }
-
-    // Wait for completion
-    fmt.Println("Waiting for completion...")
-    waitResp := waitFor(resp, 30.0)
-    fmt.Printf("Command completed: %s\n", waitResp.Status.String())
+    }}), "G0 X10 Y10", 30.0)
+    fmt.Println("Command completed")
 }
 ```
 
@@ -700,7 +706,7 @@ Replace `src/main.rs`:
 use linuxcnc_grpc::linuxcnc::linux_cnc_service_client::LinuxCncServiceClient;
 use linuxcnc_grpc::linuxcnc::{
     linux_cnc_command::Command, CommandResponse, LinuxCncCommand, MdiCommand, ModeCommand,
-    StateCommand, TaskMode, TaskState, WaitCompleteRequest,
+    RcsStatus, StateCommand, TaskMode, TaskState, WaitCompleteRequest,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::transport::Channel;
@@ -712,21 +718,34 @@ fn timestamp_ns() -> i64 {
         .as_nanos() as i64
 }
 
-// Wait for the command that send_command answered with `sent`.
+// Fail unless `sent` (a send_command answer) was dispatched and then finishes.
 async fn wait_for(
     client: &mut LinuxCncServiceClient<Channel>,
     sent: &CommandResponse,
+    step: &str,
     timeout: f64,
-) -> Result<CommandResponse, tonic::Status> {
+) -> Result<(), Box<dyn std::error::Error>> {
+    if sent.status() != RcsStatus::RcsDone {
+        return Err(format!("{step} was not sent: {}", sent.error_message).into());
+    }
+    if sent.linuxcnc_serial.is_none() {
+        println!("Note: no linuxcnc_serial; waiting on the latest command sent by any client");
+    }
     let request = WaitCompleteRequest {
         timeout,
         linuxcnc_serial: sent.linuxcnc_serial,
         ..Default::default()
     };
-    Ok(client
+    let result = client
         .wait_complete(tonic::Request::new(request))
         .await?
-        .into_inner())
+        .into_inner();
+    if result.status() != RcsStatus::RcsDone {
+        // RCS_EXEC: the wait timed out. RCS_ERROR: the command failed.
+        let status_name = result.status().as_str_name();
+        return Err(format!("{step} did not finish: {status_name} {}", result.error_message).into());
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -751,7 +770,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .await?
         .into_inner();
-    wait_for(&mut client, &sent, 5.0).await?;
+    wait_for(&mut client, &sent, "E-stop reset", 5.0).await?;
 
     let s = next_serial();
     let sent = client
@@ -764,7 +783,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .await?
         .into_inner();
-    wait_for(&mut client, &sent, 5.0).await?;
+    wait_for(&mut client, &sent, "Machine on", 5.0).await?;
 
     let s = next_serial();
     let sent = client
@@ -777,7 +796,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .await?
         .into_inner();
-    wait_for(&mut client, &sent, 5.0).await?;
+    wait_for(&mut client, &sent, "MDI mode", 5.0).await?;
 
     // Send G-code (the machine must be homed)
     let mdi_serial = next_serial();
@@ -792,17 +811,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .into_inner();
 
-    if response.status == 3 {
-        // RCS_ERROR
-        eprintln!("Error: {}", response.error_message);
-        return Ok(());
-    }
-
-    // Wait for completion
-    println!("Waiting for completion...");
-    let result = wait_for(&mut client, &response, 30.0).await?;
-
-    println!("Command completed: status={}", result.status);
+    wait_for(&mut client, &response, "G0 X10 Y10", 30.0).await?;
+    println!("Command completed");
     Ok(())
 }
 ```
