@@ -68,10 +68,12 @@ HAL (Hardware Abstraction Layer) introspection:
 
 ## Quick Links
 
-- [Installation](getting-started.md#installation)
-- [Python Quickstart](getting-started.md#python)
-- [Go Quickstart](getting-started.md#go)
-- [Node.js Quickstart](getting-started.md#nodejs--typescript)
-- [Rust Quickstart](getting-started.md#rust)
+- [Installation](getting-started.md#client-installation)
+- [Quick start examples (Python, Go, Node.js, Rust)](getting-started.md#quick-start-examples)
+- [Python tutorial](tutorial.md#python)
+- [Go tutorial](tutorial.md#go)
+- [Node.js tutorial](tutorial.md#nodejs--typescript)
+- [Rust tutorial](tutorial.md#rust)
 - [LinuxCNCService API](api-reference.md#linuxcncservice)
 - [HalService API](api-reference.md#halservice)
+- [Using with Claude (MCP)](using-with-claude.md)

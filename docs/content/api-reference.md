@@ -60,7 +60,7 @@ rpc GetStatus(GetStatusRequest) returns (LinuxCNCStatus)
 | `io` | IOStatus | Digital/analog I/O state |
 | `gcode` | GCodeStatus | Active G-codes and M-codes |
 | `limits` | LimitStatus | Limit switch states |
-| `errors` | ErrorMessage[] | Pending error messages |
+| `errors` | ErrorMessage[] | Always empty. Error messages are delivered only by [StreamErrors](#streamerrors) |
 
 **Example (Python):**
 
@@ -106,8 +106,8 @@ rpc SendCommand(LinuxCNCCommand) returns (CommandResponse)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `serial` | int32 | Echo of command serial |
-| `status` | RcsStatus | RCS_DONE, RCS_EXEC, or RCS_ERROR |
+| `serial` | int32 | The request's `serial`, or one from the server's own counter if the request left it at 0 (the counter wraps to 1 after 2147483647). A label only: it is not LinuxCNC's serial (don't compare it with `echo_serial_number`) and `WaitComplete` ignores it |
+| `status` | RcsStatus | `RCS_DONE` if the command was dispatched, `RCS_ERROR` if it was rejected |
 | `error_message` | string | Error details if status is RCS_ERROR |
 
 **Example (Python):**
@@ -123,6 +123,11 @@ if response.status == linuxcnc_pb2.RCS_ERROR:
     print(f"Error: {response.error_message}")
 ```
 
+> **`RCS_DONE` from `SendCommand` means "dispatched", not "finished".** The
+> command has been handed to LinuxCNC and may still be executing. Use
+> [WaitComplete](#waitcomplete) or watch the status to find out when it is
+> done. See [Command and Error Semantics](server.md#command-and-error-semantics).
+
 ---
 
 ### WaitComplete
@@ -137,10 +142,27 @@ rpc WaitComplete(WaitCompleteRequest) returns (CommandResponse)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `serial` | int32 | Command serial to wait for |
-| `timeout` | double | Timeout in seconds |
+| `serial` | int32 | Ignored. The wait is always on the most recent command sent through this server; the value is only echoed back in the response |
+| `timeout` | double | Timeout in seconds. 0, a negative number or NaN means the default, 5 seconds. An infinite timeout waits until the command finishes or the client goes away |
 
-**Response:** `CommandResponse` (same as SendCommand)
+**Response:** `CommandResponse`
+
+| Status | Meaning |
+|--------|---------|
+| `RCS_DONE` | The command finished |
+| `RCS_ERROR` | The command failed, or LinuxCNC could not be read (`error_message` then carries the error) |
+| `RCS_EXEC` | The timeout expired and the command is still running |
+
+The server polls status while it waits and does not block other RPCs, so a
+command such as an estop can be sent while a `WaitComplete` is in progress.
+The timeout also covers the time the call itself spends waiting for the
+server's internal lock: if another RPC holds the lock past the deadline, the
+answer is `RCS_EXEC`, as for any timeout.
+
+If LinuxCNC has already moved on to a later command, or the server has no
+command to wait for (nothing sent yet, or it reconnected to LinuxCNC), the
+result is `RCS_DONE` immediately. See
+[Command and Error Semantics](server.md#waitcomplete) for the exact rules.
 
 **Example (Python):**
 
@@ -207,13 +229,18 @@ rpc StreamErrors(StreamErrorsRequest) returns (stream ErrorMessage)
 | `message` | string | Error message text |
 | `timestamp` | int64 | Unix timestamp in nanoseconds |
 
+> **`StreamErrors` consumes messages.** LinuxCNC's error channel is a single
+> queue, so each message this stream delivers is removed and will not appear
+> in the machine's GUI (AXIS, gmoccapy and so on). This is the only way to
+> receive error messages: `LinuxCNCStatus.errors` is always empty.
+
 ---
 
 ### File Management
 
 The following RPCs manage G-code files in the NC files directory (default: `/home/linuxcnc/linuxcnc/nc_files`, configurable via `--nc-files` flag or `LINUXCNC_NC_FILES` environment variable). See [Server Configuration](server.md#nc-files-directory) for details.
 
-All filenames are relative to this directory. Path traversal outside it is rejected. Maximum upload size is 10 MB.
+All filenames are relative to this directory. Path traversal outside it is rejected. An upload can hold at most 10 MiB (10,485,760) characters of text, and the whole request must fit in the server's 11 MiB receive limit (see [UploadFile](#uploadfile)).
 
 ### UploadFile
 
@@ -242,8 +269,11 @@ rpc UploadFile(UploadFileRequest) returns (UploadFileResponse)
 
 | Code | Condition |
 |------|-----------|
-| `INVALID_ARGUMENT` | Empty filename, empty content, null bytes, path traversal, or content too large (>10MB) |
+| `INVALID_ARGUMENT` | Empty filename, empty content, null bytes, path traversal, or content longer than 10,485,760 characters (10 MiB) |
 | `ALREADY_EXISTS` | File exists and `fail_if_exists` is true |
+| `RESOURCE_EXHAUSTED` | The request message is larger than the server's receive limit of 11 MiB (11,534,336 bytes). gRPC rejects it before `UploadFile` runs |
+
+The 10 MiB limit counts characters, not bytes (`content` is a string). For plain ASCII G-code the two are the same. Text with non-ASCII characters takes more than one byte per character, so it can stay under the character limit and still exceed the receive limit.
 
 **Example (Python):**
 
@@ -346,7 +376,9 @@ print(f"Deleted: {response.path}")
 
 ## HalService
 
-HAL (Hardware Abstraction Layer) introspection service.
+HAL (Hardware Abstraction Layer) introspection service. It is read-only, and
+it needs LinuxCNC 2.9 or newer (see
+[Requirements](server.md#requirements)).
 
 ### GetSystemStatus
 
@@ -479,7 +511,7 @@ rpc StreamStatus(HalStreamStatusRequest) returns (stream HalSystemStatus)
 | Field | Type | Description |
 |-------|------|-------------|
 | `interval_ms` | int32 | Update interval in milliseconds |
-| `filter` | string[] | Optional component filter |
+| `filter` | string[] | Currently ignored by the server: the stream always carries the full HAL status |
 
 ---
 

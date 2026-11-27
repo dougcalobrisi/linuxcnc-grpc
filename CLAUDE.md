@@ -10,7 +10,6 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 /                              # Go module at repo root
 ├── go.mod                     # module github.com/dougcalobrisi/linuxcnc-grpc
 ├── CHANGELOG.md               # Release notes (see Changelog below)
-├── *.pb.go                    # Generated Go code
 ├── proto/                     # Proto source files (canonical location)
 │   ├── linuxcnc.proto
 │   └── hal.proto
@@ -18,6 +17,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── _generated/            # Re-exports from linuxcnc_pb (backwards compatibility)
 │   └── *.py                   # Server implementation
 ├── packages/
+│   ├── go/                    # Generated Go code (*.pb.go, package pb)
 │   ├── python/linuxcnc_pb/    # Python generated protobuf code
 │   ├── node/                  # npm package (linuxcnc-grpc)
 │   │   ├── package.json
@@ -48,11 +48,13 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── content/               # Markdown documentation pages
 │   │   ├── _index.md          # Documentation index
 │   │   ├── getting-started.md # Installation and quickstart
+│   │   ├── server-setup.md    # Install and start the server
 │   │   ├── server.md          # Server configuration
 │   │   ├── api-reference.md   # Complete API documentation
 │   │   ├── examples.md        # Examples guide
 │   │   ├── tutorial.md        # Step-by-step tutorial
-│   │   └── e2e-testing.md     # E2E testing guide
+│   │   ├── e2e-testing.md     # E2E testing guide
+│   │   └── using-with-claude.md  # The linuxcnc-mcp server built on this API
 │   └── static/                # Static assets
 └── examples/                  # Multi-language client examples
     ├── python/                # Python examples
@@ -191,11 +193,18 @@ Other behaviour:
   overrun its timeout behind a slow lock holder. The first slice is always tried, so a free
   lock is still taken at or past the deadline and for an RPC that is already cancelled.
 
+**Errors**: `LinuxCNCStatus.errors` is always empty (`linuxcnc_mapper.py` sets `errors=[]`).
+Error messages reach clients only through `StreamErrors`, which calls `error_channel.poll()`
+and so consumes messages from the single NML error queue, taking them away from the GUI.
+
+**Security**: the server has no authentication or TLS. Docs tell users to bind to
+`127.0.0.1` and use an SSH tunnel, or to run only on a trusted LAN (`docs/content/server.md`).
+
 **Input Validation**: Handler methods validate indices before dispatching to LinuxCNC:
 - `_validate_joint_index(index, is_joint)` checks bounds against `stat.joint`/`stat.axis`; index -1 is only valid for joint operations (home/unhome all).
 - `_validate_spindle_index(index)` checks bounds against `stat.spindle`.
 - `_validate_nc_path(filename)` resolves paths relative to the NC files directory and rejects path traversal, null bytes, and empty filenames. Used by both `_handle_program_cmd` and the file management RPCs.
-- MDI commands reject empty strings and null bytes, and log the full command at WARNING level for audit.
+- MDI commands reject empty strings, null bytes and commands over `MAX_MDI_COMMAND_LENGTH` (10000 characters). The full command is logged at INFO after it is sent (and its `repr` at DEBUG on arrival).
 
 **File Management RPCs**: `UploadFile`, `ListFiles`, and `DeleteFile` provide remote file
 management for the NC files directory (`/home/linuxcnc/linuxcnc/nc_files` or `LINUXCNC_NC_FILES` env var).
@@ -249,7 +258,7 @@ cd packages/node && npm install
 All generated code is **committed** so users don't need protoc:
 
 - **Python**: `packages/python/linuxcnc_pb/` (re-exported via `src/linuxcnc_grpc/_generated/` for backwards compatibility)
-- **Go**: `*.pb.go` at repo root
+- **Go**: `packages/go/*.pb.go` (package `pb`; `go.mod` and the `client.go` wrapper, package `linuxcnc`, which re-exports these types, are at the repo root)
 - **Rust**: Generated at build time via `build.rs` (proto files in `packages/rust/proto/`)
 - **Node.js**: `packages/node/src/linuxcnc.ts`, `packages/node/src/hal.ts`
 
@@ -465,11 +474,13 @@ User-facing documentation is a Hugo static site in the `docs/` directory, deploy
 |----------|-------------|
 | [docs/content/_index.md](docs/content/_index.md) | Documentation index and overview |
 | [docs/content/getting-started.md](docs/content/getting-started.md) | Installation and quickstart |
+| [docs/content/server-setup.md](docs/content/server-setup.md) | Installing and starting the server |
 | [docs/content/server.md](docs/content/server.md) | Server configuration and setup |
 | [docs/content/api-reference.md](docs/content/api-reference.md) | Complete API documentation |
 | [docs/content/examples.md](docs/content/examples.md) | Examples guide and walkthroughs |
 | [docs/content/tutorial.md](docs/content/tutorial.md) | Step-by-step tutorial |
 | [docs/content/e2e-testing.md](docs/content/e2e-testing.md) | E2E testing with LinuxCNC simulator |
+| [docs/content/using-with-claude.md](docs/content/using-with-claude.md) | linuxcnc-mcp, an MCP server built on this API |
 
 ### Local docs development
 

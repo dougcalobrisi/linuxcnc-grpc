@@ -27,12 +27,14 @@ linuxcnc-grpc --host 0.0.0.0 --port 50051
 
 > `--host 0.0.0.0` makes the server listen on all network interfaces so remote clients can connect. See [Server Configuration](server.md) for auto-start setup, TLS, and advanced options.
 
-Verify the server is reachable from your dev machine:
+Verify the server's port is reachable from your dev machine:
 
 ```bash
 # From your dev machine
-grpcurl -plaintext LINUXCNC_IP:50051 list
+nc -zv LINUXCNC_IP 50051
 ```
+
+This only shows that the port is open. The status call in Step 3 shows that the server answers and is connected to LinuxCNC. (`grpcurl ... list` does not work: the server does not offer gRPC reflection.)
 
 ## Step 2: Set Up Your Client Project
 
@@ -791,5 +793,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `UNAVAILABLE: failed to connect` | Check that the gRPC server is running and `LINUXCNC_IP:50051` is reachable (try `telnet LINUXCNC_IP 50051`) |
 | `UNAVAILABLE: linuxcnc not running` | Start LinuxCNC on the server machine before starting the gRPC server |
 | `FAILED_PRECONDITION` on MDI commands | Machine must be powered on and in MDI mode first (see Step 5 examples) |
-| `INVALID_ARGUMENT` | Check command parameters (e.g., axis index, spindle index) |
+| `SendCommand` returns `RCS_ERROR` | The server rejected the command before sending it, for example a joint or spindle index out of range or an empty MDI command. `error_message` says why. This is a normal response, not a gRPC error |
+| `INVALID_ARGUMENT` | A file RPC was given a bad file name (outside the NC files directory, empty) or bad content |
 | Connection timeout | Ensure no firewall is blocking port 50051 between the two machines |

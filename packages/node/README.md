@@ -34,7 +34,9 @@ import { LinuxCNCServiceClient, GetStatusRequest } from "linuxcnc-grpc";
 const client = new LinuxCNCServiceClient("localhost:50051", grpc.credentials.createInsecure());
 
 client.getStatus(GetStatusRequest.create(), (err, status) => {
-  console.log(`Position: X=${status.position.x.toFixed(3)} Y=${status.position.y.toFixed(3)}`);
+  if (err) throw err;
+  const pos = status!.position!.actualPosition!;
+  console.log(`Position: X=${pos.x.toFixed(3)} Y=${pos.y.toFixed(3)} Z=${pos.z.toFixed(3)}`);
 });
 ```
 

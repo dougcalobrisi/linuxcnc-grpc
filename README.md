@@ -32,6 +32,12 @@ uv pip install linuxcnc-grpc
 linuxcnc-grpc --host 0.0.0.0 --port 50051
 ```
 
+> **Security warning:** the server has no authentication and no TLS. Anyone
+> who can reach the port can command the machine. Bind to `127.0.0.1` and
+> connect through an SSH tunnel (`ssh -N -L 50051:127.0.0.1:50051 user@cnc-machine`),
+> or use `--host 0.0.0.0` only on a trusted LAN. See
+> [Security Considerations](https://doug.sh/docs/linuxcnc-grpc/server/#security-considerations).
+
 LinuxCNC must already be running before starting the server.
 
 ### Auto-start with LinuxCNC
@@ -68,7 +74,8 @@ channel = grpc.insecure_channel("localhost:50051")
 stub = linuxcnc_pb2_grpc.LinuxCNCServiceStub(channel)
 
 status = stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
-print(f"Position: X={status.position.x:.3f} Y={status.position.y:.3f} Z={status.position.z:.3f}")
+pos = status.position.actual_position
+print(f"Position: X={pos.x:.3f} Y={pos.y:.3f} Z={pos.z:.3f}")
 ```
 
 ### Go
@@ -90,7 +97,8 @@ conn, _ := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insec
 client := pb.NewLinuxCNCServiceClient(conn)
 
 status, _ := client.GetStatus(context.Background(), &pb.GetStatusRequest{})
-fmt.Printf("Position: X=%.3f Y=%.3f Z=%.3f\n", status.Position.X, status.Position.Y, status.Position.Z)
+pos := status.GetPosition().GetActualPosition()
+fmt.Printf("Position: X=%.3f Y=%.3f Z=%.3f\n", pos.GetX(), pos.GetY(), pos.GetZ())
 ```
 
 ### Node.js / TypeScript
@@ -108,7 +116,9 @@ import { LinuxCNCServiceClient, GetStatusRequest } from "linuxcnc-grpc";
 const client = new LinuxCNCServiceClient("localhost:50051", grpc.credentials.createInsecure());
 
 client.getStatus(GetStatusRequest.create(), (err, status) => {
-  console.log(`Position: X=${status.position.x.toFixed(3)} Y=${status.position.y.toFixed(3)}`);
+  if (err) throw err;
+  const pos = status!.position!.actualPosition!;
+  console.log(`Position: X=${pos.x.toFixed(3)} Y=${pos.y.toFixed(3)} Z=${pos.z.toFixed(3)}`);
 });
 ```
 
@@ -129,8 +139,14 @@ use linuxcnc_grpc::linuxcnc::GetStatusRequest;
 
 let mut client = LinuxCncServiceClient::connect("http://localhost:50051").await?;
 let status = client.get_status(GetStatusRequest {}).await?.into_inner();
-println!("Position: X={:.3} Y={:.3}", status.position.unwrap().x, status.position.unwrap().y);
+if let Some(pos) = status.position.as_ref().and_then(|p| p.actual_position.as_ref()) {
+    println!("Position: X={:.3} Y={:.3} Z={:.3}", pos.x, pos.y, pos.z);
+}
 ```
+
+## Using with Claude (MCP)
+
+[linuxcnc-mcp](https://github.com/dougcalobrisi/linuxcnc-mcp) is an MCP server and Claude Code plugin built on this API. It is read-only by default; control tools are opt-in and, by default, ask for approval before each call. See [Using with Claude](https://doug.sh/docs/linuxcnc-grpc/using-with-claude/).
 
 ## Examples
 
@@ -164,16 +180,22 @@ linuxcnc-grpc --host 0.0.0.0 --nc-files /path/to/nc_files
 
 ## Safety Warning
 
-This server provides remote control of CNC machinery. Ensure proper safety measures:
+This server provides remote control of CNC machinery, and it has **no
+authentication and no TLS**: anyone who can reach the port can command the
+machine. Ensure proper safety measures:
 
-- Use only on trusted networks
-- Implement authentication in production (gRPC supports TLS/mTLS)
+- Bind to localhost (`--host 127.0.0.1`) and connect through an SSH tunnel:
+  `ssh -N -L 50051:127.0.0.1:50051 user@cnc-machine`
+- Otherwise use `--host 0.0.0.0` only on a trusted, isolated LAN, never on a
+  shared network or the internet
 - Never leave machines unattended during remote operation
 - Verify E-stop and safety systems are functional
 
 ## Production Deployment
 
-For production use, enable TLS authentication:
+The packaged server does not enable TLS; the SSH tunnel above is the supported
+way to secure it. If you embed the servicers in your own server, you can add
+TLS yourself:
 
 ```python
 # Server with TLS

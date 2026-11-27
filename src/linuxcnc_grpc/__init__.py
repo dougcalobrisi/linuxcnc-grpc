@@ -4,9 +4,17 @@ This package provides both the gRPC server implementation and re-exports all
 protobuf types for convenient client-side usage.
 
 Server Usage (requires LinuxCNC environment):
-    from linuxcnc_grpc import create_server, serve
-    server = create_server()
-    serve(server)
+    from linuxcnc_grpc import serve
+    serve(host="127.0.0.1", port=50051)  # runs until interrupted
+
+    # Or build the server and manage its lifetime yourself:
+    from linuxcnc_grpc import create_server
+    server = create_server(host="127.0.0.1", port=50051)
+    server.start()
+    try:
+        server.wait_for_termination()
+    finally:
+        server.stop(grace=5)
 
 Client Usage (works anywhere):
     from linuxcnc_grpc import (
