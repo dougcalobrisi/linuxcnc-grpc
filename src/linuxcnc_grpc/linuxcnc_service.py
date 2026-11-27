@@ -11,6 +11,7 @@ import stat as stat_module
 import time
 import logging
 import threading
+import secrets
 from collections import deque
 from pathlib import Path
 from typing import Iterator, NamedTuple
@@ -32,6 +33,11 @@ MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 # Most file bytes one ReadFile response carries. Well under the 4 MB that gRPC
 # clients accept by default, so a client needs no special channel options.
 MAX_READ_CHUNK_BYTES = 1024 * 1024  # 1 MiB
+# An upload is written under a private name of this form, next to its
+# destination, and only then given the destination's name. A random token
+# follows the prefix. ListFiles leaves these names out.
+UPLOAD_TEMPORARY_PREFIX = ".linuxcnc-grpc-upload-"
+UPLOAD_TEMPORARY_SUFFIX = ".tmp"
 
 # WaitComplete polling
 DEFAULT_WAIT_COMPLETE_TIMEOUT = 5.0  # seconds, used when the request gives none
@@ -434,6 +440,79 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 f"Path must be within allowed directory: {allowed_dir}"
             )
         return resolved
+
+    @staticmethod
+    def _stat_if_exists(path: Path) -> os.stat_result | None:
+        """
+        One os.stat of path (following links), or None if nothing is there.
+
+        Callers take existence and file type from this one result, so the
+        two cannot disagree when the path changes meanwhile. A path that
+        runs into a symbolic link loop names nothing either.
+        """
+        try:
+            return os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except OSError as stat_error:
+            if stat_error.errno == errno.ELOOP:
+                return None
+            raise
+
+    @staticmethod
+    def _is_upload_temporary_name(name: str) -> bool:
+        """Whether name is one UploadFile gives the file it is still writing."""
+        return name.startswith(UPLOAD_TEMPORARY_PREFIX) and name.endswith(
+            UPLOAD_TEMPORARY_SUFFIX
+        )
+
+    @staticmethod
+    def _remove_upload_temporary_file(temporary_path: Path) -> None:
+        """Remove an upload's temporary file; a failure is logged, not raised."""
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        except OSError as unlink_error:
+            logger.error(
+                f"UploadFile: could not remove temporary file {temporary_path}: {unlink_error}"
+            )
+
+    def _write_upload_temporary_file(
+        self, directory: Path, content: str, permission_bits: int | None
+    ) -> Path:
+        """
+        Write content to a new temporary file in directory and return its path.
+
+        The name holds a random token, so it cannot collide with a user's
+        file or another upload, and the file is created exclusively without
+        following a link. It is created with the mode a plain open() gives
+        (0666 less the umask); permission_bits, when given, replaces that.
+        If anything fails the temporary file is removed.
+        """
+        temporary_path = directory / (
+            f"{UPLOAD_TEMPORARY_PREFIX}{secrets.token_hex(16)}{UPLOAD_TEMPORARY_SUFFIX}"
+        )
+        file_descriptor = os.open(
+            temporary_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o666,
+        )
+        try:
+            try:
+                # Text mode with the default encoding, as write_text() used.
+                temporary_file = os.fdopen(file_descriptor, "w")
+            except BaseException:
+                os.close(file_descriptor)
+                raise
+            with temporary_file:
+                temporary_file.write(content)
+                if permission_bits is not None:
+                    os.fchmod(file_descriptor, permission_bits)
+        except BaseException:
+            self._remove_upload_temporary_file(temporary_path)
+            raise
+        return temporary_path
 
     # =========================================================================
     # GetStatus RPC
@@ -1065,7 +1144,8 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 return
 
             resolved = self._validate_nc_path(request.filename)
-            overwritten = resolved.exists()
+            existing_file_stat = self._stat_if_exists(resolved)
+            overwritten = existing_file_stat is not None
 
             if overwritten and request.fail_if_exists:
                 context.abort(
@@ -1073,35 +1153,59 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                     f"File already exists: {request.filename}"
                 )
                 return
+            if resolved == self._resolved_nc_files_dir() or (
+                overwritten and stat_module.S_ISDIR(existing_file_stat.st_mode)
+            ):
+                # Refused before anything is written: the temporary file
+                # goes next to the destination, and next to the NC files
+                # directory itself is outside it.
+                raise IsADirectoryError(errno.EISDIR, "Is a directory", str(resolved))
+            if overwritten and not os.access(resolved, os.W_OK):
+                # A rename only needs a writable directory. Writing in
+                # place needed a writable file, and a program made
+                # read-only must stay refused.
+                raise PermissionError(errno.EACCES, "Permission denied", str(resolved))
 
             resolved.parent.mkdir(parents=True, exist_ok=True)
-            if request.fail_if_exists:
-                # Exclusive create: of two uploads of the same new name that
-                # both passed the check above, only one may write.
-                try:
-                    new_file = resolved.open("x")
-                except FileExistsError:
-                    context.abort(
-                        grpc.StatusCode.ALREADY_EXISTS,
-                        f"File already exists: {request.filename}"
-                    )
-                    return
-                try:
-                    with new_file:
-                        new_file.write(request.content)
-                except BaseException:
-                    # This call created the file, so a failed write (a full
-                    # disk, say) must not leave a partial file behind: a
-                    # retry would be answered ALREADY_EXISTS.
+            # The content never appears under the destination name until it
+            # is complete, and a failure only ever removes the temporary
+            # file, so it cannot remove a file another request put there.
+            # A replaced file keeps its permission bits.
+            temporary_path = self._write_upload_temporary_file(
+                resolved.parent,
+                request.content,
+                stat_module.S_IMODE(existing_file_stat.st_mode) if overwritten else None,
+            )
+            try:
+                if request.fail_if_exists:
+                    # A hard link fails if the destination exists, whatever
+                    # is there (a dangling link included): of two uploads of
+                    # one new name only one gets it.
                     try:
-                        resolved.unlink()
-                    except OSError as unlink_error:
-                        logger.error(
-                            f"UploadFile: could not remove partial file {resolved}: {unlink_error}"
+                        os.link(temporary_path, resolved)
+                    except FileExistsError:
+                        context.abort(
+                            grpc.StatusCode.ALREADY_EXISTS,
+                            f"File already exists: {request.filename}"
                         )
-                    raise
-            else:
-                resolved.write_text(request.content)
+                        return
+                    except OSError as link_error:
+                        # No hard links here (some network and FAT mounts).
+                        # There is no other way to create a complete file
+                        # only if the name is free, so nothing is written.
+                        raise OSError(
+                            link_error.errno,
+                            "fail_if_exists needs a file system with hard links "
+                            f"({link_error.strerror}); upload without fail_if_exists",
+                            str(resolved),
+                        ) from link_error
+                else:
+                    # A rename replaces the destination in one step and does
+                    # not follow a link put there after validation.
+                    os.replace(temporary_path, resolved)
+            finally:
+                # After a rename the temporary name is already gone.
+                self._remove_upload_temporary_file(temporary_path)
             logger.info(f"UploadFile: wrote {len(request.content)} characters to {resolved}")
 
             return linuxcnc_pb2.UploadFileResponse(
@@ -1141,6 +1245,9 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
             files = []
             for entry in sorted(target_dir.iterdir()):
+                # An upload in progress, or one a crash left unfinished.
+                if self._is_upload_temporary_name(entry.name):
+                    continue
                 stat = entry.stat()
                 files.append(linuxcnc_pb2.FileInfo(
                     name=entry.name,
@@ -1249,7 +1356,13 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             file_descriptor = os.open(
                 resolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
             )
-            with os.fdopen(file_descriptor, "rb") as nc_file:
+            try:
+                nc_file = os.fdopen(file_descriptor, "rb")
+            except BaseException:
+                # fdopen did not take the descriptor over, so close it here.
+                os.close(file_descriptor)
+                raise
+            with nc_file:
                 stat_before_read = os.fstat(nc_file.fileno())
                 if not stat_module.S_ISREG(stat_before_read.st_mode):
                     context.abort(
@@ -1355,17 +1468,28 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                     # way. A path that cannot be resolved is not this file;
                     # it is returned as LinuxCNC reported it.
                     loaded_program = loaded_program_as_reported
+            # One stat answers exists, is_directory and the identity check
+            # below, so the three agree even if the file changes meanwhile.
+            resolved_file_stat = self._stat_if_exists(resolved)
             if loaded_program_path is not None:
                 loaded_program = str(loaded_program_path)
                 is_loaded_program = loaded_program_path == resolved
-                if not is_loaded_program and resolved.exists() and loaded_program_path.exists():
-                    # A hard link is the same file under another name.
-                    is_loaded_program = os.path.samefile(resolved, loaded_program_path)
+                if not is_loaded_program and resolved_file_stat is not None:
+                    # A hard link is the same file under another name. A
+                    # loaded program that is gone by now is not this file.
+                    loaded_program_stat = self._stat_if_exists(loaded_program_path)
+                    is_loaded_program = (
+                        loaded_program_stat is not None
+                        and os.path.samestat(resolved_file_stat, loaded_program_stat)
+                    )
 
             return linuxcnc_pb2.ResolveFileResponse(
                 path=str(resolved),
-                exists=resolved.exists(),
-                is_directory=resolved.is_dir(),
+                exists=resolved_file_stat is not None,
+                is_directory=(
+                    resolved_file_stat is not None
+                    and stat_module.S_ISDIR(resolved_file_stat.st_mode)
+                ),
                 is_symlink=follows_symlink,
                 is_loaded_program=is_loaded_program,
                 loaded_program=loaded_program,

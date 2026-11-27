@@ -18,6 +18,7 @@ import signal
 import sys
 import threading
 import time
+import posixpath
 from concurrent import futures
 from pathlib import Path
 
@@ -233,19 +234,43 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         while context.is_active():
             time.sleep(1.0)
 
+    @staticmethod
+    def _abort_unless_name_is_valid(filename, context):
+        """
+        Refuse the names the real server refuses, with its messages: empty,
+        containing a null byte, or leading outside the NC files directory.
+        """
+        if not filename or not filename.strip():
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Filename must not be empty")
+        if "\x00" in filename:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT, "Filename must not contain null bytes"
+            )
+        normalised_path = posixpath.normpath(posixpath.join(MOCK_NC_FILES_DIR, filename))
+        is_inside_directory = (
+            normalised_path == MOCK_NC_FILES_DIR
+            or normalised_path.startswith(MOCK_NC_FILES_DIR + "/")
+        )
+        if not is_inside_directory:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"Path must be within allowed directory: {MOCK_NC_FILES_DIR}",
+            )
+
     def ReadFile(self, request, context):
         """
         Serve the fixed files in MOCK_READABLE_FILES; other names are not found.
 
         Validation and the chunk cap follow the real server: negative offset
-        or max_bytes is INVALID_ARGUMENT, and one response carries at most
-        MOCK_MAX_READ_CHUNK_BYTES (max_bytes of 0 or above the cap means the
-        cap).
+        or max_bytes is INVALID_ARGUMENT, so is a name the real server
+        refuses, and one response carries at most MOCK_MAX_READ_CHUNK_BYTES
+        (max_bytes of 0 or above the cap means the cap).
         """
         if request.offset < 0:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "offset must not be negative")
         if request.max_bytes < 0:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "max_bytes must not be negative")
+        self._abort_unless_name_is_valid(request.filename, context)
         file_content = MOCK_READABLE_FILES.get(request.filename)
         if file_content is None:
             context.abort(grpc.StatusCode.NOT_FOUND, f"File not found: {request.filename}")
@@ -265,7 +290,12 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         )
 
     def ResolveFile(self, request, context):
-        """Resolve a name; the small fixed program is reported as the loaded one."""
+        """
+        Resolve a name; the small fixed program is reported as the loaded one.
+
+        A name the real server refuses is INVALID_ARGUMENT here too.
+        """
+        self._abort_unless_name_is_valid(request.filename, context)
         is_mock_program = request.filename == MOCK_PROGRAM_NAME
         return linuxcnc_pb2.ResolveFileResponse(
             path=f"{MOCK_NC_FILES_DIR}/{request.filename}",

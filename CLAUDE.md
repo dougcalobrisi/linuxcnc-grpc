@@ -281,13 +281,39 @@ Upload limit: `UploadFile` aborts `INVALID_ARGUMENT` when `len(request.content)`
 (the error text and the log line say "characters"). The server's receive limit is `MAX_RECEIVE_MESSAGE_BYTES`
 (`MAX_UPLOAD_SIZE` + 1 MiB); a larger request is rejected by gRPC with `RESOURCE_EXHAUSTED`
 before the handler runs.
-With `fail_if_exists`, `UploadFile` checks `exists()` first and then creates the file with
-`open("x")` (exclusive create), so of two concurrent uploads of the same new name only one
-writes; the other gets `ALREADY_EXISTS`. Without the flag it is a plain `write_text`.
-If the write after the exclusive create fails (a full disk, say), the handler unlinks the
-file it created and re-raises: a partial file left behind would answer every retry with
-`ALREADY_EXISTS`. Only the `fail_if_exists` path does this, because only there is it certain
-that this call created the file.
+`UploadFile` never writes under the destination name. `_write_upload_temporary_file` writes
+the content to `.linuxcnc-grpc-upload-<32 hex digits>.tmp` in the destination's directory
+(`O_CREAT|O_EXCL|O_NOFOLLOW`, mode 0666 less the umask, which is what `write_text` gave;
+when a file is replaced, `fchmod` to its permission bits), and the handler then publishes it:
+- with `fail_if_exists`: `os.link(temporary, destination)`, which fails with
+  `FileExistsError` if anything is there (a dangling link included), so of two concurrent
+  uploads of one new name only one succeeds and the other gets `ALREADY_EXISTS`; then the
+  temporary name is unlinked;
+- without it: `os.replace(temporary, destination)`, an atomic rename that does not follow a
+  link at the destination.
+On any failure only the temporary file is removed (`_remove_upload_temporary_file`, in a
+`finally`). The handler must never unlink the destination: by then the name may belong to
+another request. Consequences: a reader never sees a partial upload; a failed upload leaves
+the previous file intact; a replaced file is a new inode (same permission bits, but not the
+owner, and other hard links keep the old content); an existing file the server cannot write
+(`os.access(W_OK)`) is refused with `PermissionError` before writing, because a rename would
+otherwise replace a read-only program that `write_text` could not touch; `overwritten` comes from one `os.stat`
+before the write and is not atomic with the publish. If `os.link` fails with any other
+`OSError` (no hard links on some network and FAT mounts) the upload is `INTERNAL` and
+nothing is written: there is no other portable way to create a complete file only if the
+name is free (exclusive create then rename can replace a file another request put there in
+between), so do not add such a fallback. An existing directory as destination, or the NC
+files directory itself (`.`), is refused (`IsADirectoryError`, so `INTERNAL` as before)
+before the temporary file is created, since its directory would be outside the NC files
+directory. No lock serialises uploads; the link and the rename are the only arbiters.
+`ListFiles` skips names matching `_is_upload_temporary_name` before it stats them, so an
+upload in progress or a file left by a killed server is not listed; leftovers are not
+cleaned up automatically.
+What happens if the final path component is swapped for a symlink after validation:
+`ReadFile` does not follow it (`O_NOFOLLOW`); `UploadFile` does not follow it (rename
+replaces the link, link refuses it); `DeleteFile`'s `unlink` removes the link, not its
+target; `ListFiles` follows a directory swapped for a link. None of them is protected
+against a hostile local user changing ancestor directories.
 
 **ReadFile**: returns `bytes` (not `string`, so chunk boundaries can split UTF-8 and non-UTF-8
 files still read). One response carries at most `MAX_READ_CHUNK_BYTES` (1 MiB), which keeps it
@@ -295,20 +321,32 @@ under a client's default 4 MB receive limit; `max_bytes` of 0 or above the cap m
 Clients page with `offset` until `end_of_file`. The file is opened with `O_NOFOLLOW` and must
 be a regular file by `fstat` (the resolved path has no symlinks, so a link there means it was
 swapped in after validation). The open also uses `O_NONBLOCK`, so a FIFO swapped in does not
-block the open and is then refused by the regular-file check. Size and mtime come from
+block the open and is then refused by the regular-file check. If `os.fdopen` itself raises,
+the descriptor is closed by the handler. Size and mtime come from
 `os.fstat` on the open file, taken *after* the read, so `end_of_file` matches the bytes
 returned. A second `fstat` taken before the read is compared with it: if size or
 `st_mtime_ns` changed during the read, the RPC aborts `ABORTED` (the client starts again from
-offset 0) rather than pair bytes of one version with the size and mtime of another. Ancestor
-directories are not protected against a hostile local user (nor are Upload/Delete).
+offset 0) rather than pair bytes of one version with the size and mtime of another. The
+Node client delivers `modified_timestamp` in milliseconds (its decoder scales nanosecond
+values to fit a number), so a Node client comparing it between chunks misses a same-size
+rewrite within one millisecond; the server's own check is unaffected. Ancestor
+directories are not protected against a hostile local user (see File Management RPCs for
+what each RPC does and does not guard).
 No lock, no LinuxCNC access. There is no total size cap, since only one chunk is read.
 
 **ResolveFile**: resolves a name with `_validate_nc_path` and compares it with `stat.file`
-(taking the lock for one poll). `is_loaded_program` is true on equal resolved paths or
-`os.path.samefile` (hard links). `is_symlink` comes from `_name_follows_symlink`, which walks
+(taking the lock for one poll). `exists` and `is_directory` come from one `os.stat`
+(`_stat_if_exists`), so they cannot contradict each other when the path changes during
+the call. `is_loaded_program` is true on equal resolved paths or `os.path.samestat` of
+that same result and one stat of the loaded program (hard links); a loaded program that
+is gone by then, or whose path is a symlink loop (`ELOOP` from the stat on Python >= 3.13,
+where `resolve()` does not raise), is "not this file", not an error. A relative `stat.file` is resolved
+against the server's working directory, which may not be LinuxCNC's (known limit).
+`is_symlink` comes from `_name_follows_symlink`, which walks
 the name component by component (a lexical comparison misses `link/../file`). It aborts `UNAVAILABLE` on `linuxcnc.error` rather
 than report "not loaded" without knowing. `UploadFile` and `DeleteFile` act on the resolved
-path, so deleting a symlinked name deletes the link's target; that is 1.0 behaviour, now
+path, so deleting a symlinked name deletes the link's target (and uploading to it replaces
+the target, the link stays); that is 1.0 behaviour, now
 documented, and `ResolveFile` shows clients the target first. If the loaded program's path
 cannot be resolved (`RuntimeError` from `resolve()` for a symlink loop, Python <= 3.12),
 `is_loaded_program` is false and `loaded_program` is the path as LinuxCNC reported it.

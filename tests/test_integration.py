@@ -310,6 +310,40 @@ class TestLinuxCNCServiceIntegration:
         assert not other.is_loaded_program
         assert not other.exists
 
+    @pytest.mark.parametrize(
+        "invalid_filename, expected_message",
+        [
+            ("", "Filename must not be empty"),
+            ("   ", "Filename must not be empty"),
+            ("part\x00.ngc", "Filename must not contain null bytes"),
+            ("../outside.ngc", "Path must be within allowed directory: /mock/nc_files"),
+            ("jobs/../../outside.ngc", "Path must be within allowed directory: /mock/nc_files"),
+            ("/etc/passwd", "Path must be within allowed directory: /mock/nc_files"),
+        ],
+    )
+    @pytest.mark.parametrize("rpc_name", ["ReadFile", "ResolveFile"])
+    def test_file_rpcs_refuse_invalid_names(
+        self, linuxcnc_client, rpc_name, invalid_filename, expected_message
+    ):
+        """ReadFile and ResolveFile refuse the names the real server refuses."""
+        request_types = {
+            "ReadFile": linuxcnc_pb2.ReadFileRequest,
+            "ResolveFile": linuxcnc_pb2.ResolveFileRequest,
+        }
+        with pytest.raises(grpc.RpcError) as error_info:
+            getattr(linuxcnc_client, rpc_name)(
+                request_types[rpc_name](filename=invalid_filename)
+            )
+        assert error_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert error_info.value.details() == expected_message
+
+    def test_file_rpcs_accept_a_name_with_dots_that_stays_inside(self, linuxcnc_client):
+        """A ".." that does not leave the directory is not a traversal."""
+        resolved = linuxcnc_client.ResolveFile(
+            linuxcnc_pb2.ResolveFileRequest(filename="jobs/../other.ngc")
+        )
+        assert not resolved.exists
+
     def test_wait_complete(self, linuxcnc_client):
         """Test WaitComplete returns immediately in mock."""
         request = linuxcnc_pb2.WaitCompleteRequest(serial=50, timeout=5.0)

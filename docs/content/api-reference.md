@@ -283,7 +283,7 @@ rpc UploadFile(UploadFileRequest) returns (UploadFileResponse)
 |-------|------|-------------|
 | `filename` | string | Relative path within nc_files dir (e.g. `"part1.ngc"` or `"subdir/part1.ngc"`) |
 | `content` | string | G-code text content |
-| `fail_if_exists` | bool | If true, fail when file already exists (default: false = overwrite). The file is then created exclusively, so of two concurrent uploads of the same new name only one succeeds |
+| `fail_if_exists` | bool | If true, fail when file already exists (default: false = replace it). The name is then given to the upload only if it is still free when the content is complete, so of two concurrent uploads of the same new name only one succeeds |
 
 **Response:** `UploadFileResponse`
 
@@ -298,9 +298,33 @@ rpc UploadFile(UploadFileRequest) returns (UploadFileResponse)
 |------|-----------|
 | `INVALID_ARGUMENT` | Empty filename, empty content, null bytes, path traversal, a symbolic link loop in the name, or content longer than 10,485,760 characters (10 MiB) |
 | `ALREADY_EXISTS` | File exists and `fail_if_exists` is true |
+| `INTERNAL` | The file could not be written (the message names the error). Also `fail_if_exists` on a file system without hard links |
 | `RESOURCE_EXHAUSTED` | The request message is larger than the server's receive limit of 11 MiB (11,534,336 bytes). gRPC rejects it before `UploadFile` runs |
 
 The 10 MiB limit counts characters, not bytes (`content` is a string). For plain ASCII G-code the two are the same. Text with non-ASCII characters takes more than one byte per character, so it can stay under the character limit and still exceed the receive limit.
+
+The server writes the content to a temporary file in the destination's
+directory and gives it the destination's name in one step once it is
+complete. So:
+
+- A reader never sees part of an upload, and an upload that fails (a full
+  disk, for example) leaves the previous file as it was, or no file if there
+  was none.
+- Replacing a file puts a new file under the name. It keeps the old file's
+  permission bits, but another hard link to the old file keeps the old
+  content, and so does a program that has the old file open. A file the
+  server has no permission to write is not replaced (`INTERNAL`).
+- `overwritten` is what the server saw just before it wrote; a file that
+  another client creates in between is replaced and still reported as
+  `overwritten: false`. With `fail_if_exists` it is always false.
+- With `fail_if_exists` the name is claimed with a hard link, which the file
+  system must support. Where it does not (some network and FAT mounts) the
+  upload fails with `INTERNAL` and writes nothing; upload without
+  `fail_if_exists` there.
+- The temporary file is named `.linuxcnc-grpc-upload-<random>.tmp`. It is
+  removed whether the upload succeeds or fails; only a server that is killed
+  during an upload leaves one behind, which can be deleted. `ListFiles` does
+  not show names of this form.
 
 **Example (Python):**
 
@@ -345,6 +369,9 @@ rpc ListFiles(ListFilesRequest) returns (ListFilesResponse)
 | `size_bytes` | int64 | File size in bytes |
 | `modified_timestamp` | int64 | Last modified time (unix nanos) |
 | `is_directory` | bool | True if directory |
+
+Names of the form `.linuxcnc-grpc-upload-<random>.tmp` are left out: they are
+the temporary files of uploads (see [UploadFile](#uploadfile)).
 
 **Error codes:**
 
@@ -401,7 +428,7 @@ print(f"Deleted: {response.path}")
 
 > `DeleteFile` and `UploadFile` act on the file a name resolves to. If the
 > name is a symbolic link to another file in the directory, the link's target
-> is deleted or overwritten. Use [ResolveFile](#resolvefile) to see what a
+> is deleted or replaced, and the link stays. Use [ResolveFile](#resolvefile) to see what a
 > name resolves to.
 
 ### ReadFile
@@ -450,13 +477,30 @@ but the directory may hold larger files put there by other means).
   may mix two versions. Start again from offset 0.
 - An `offset` at or past the end of the file is not an error: `content` is
   empty and `end_of_file` is true.
+- Node.js/TypeScript: the client gives `modified_timestamp` in milliseconds,
+  not nanoseconds, as it does every timestamp field (a nanosecond value does
+  not fit a JavaScript number). Compared between chunks, it cannot show a
+  rewrite that keeps the size and falls in the same millisecond as the
+  previous one. The server's own check while it reads one chunk uses the
+  nanosecond value and is not affected.
 - The path rules are the same as for `UploadFile` and `DeleteFile`. A symbolic
   link is followed only if its target is inside the nc_files directory.
-- The file RPCs check the path and then act on it. A program running on the
+- The file RPCs check a name and then act on it. A program running on the
   machine with write access to the nc_files directory could change the
-  directory between those two steps; the server guards the file itself against
-  being swapped for a link, but it does not defend against a hostile local
-  user rearranging the directory tree.
+  directory between those two steps. If the last component of the checked
+  path is replaced by a symbolic link in that gap:
+  - `ReadFile` opens the file without following a link there, so the call
+    fails instead of reading the link's target.
+  - `UploadFile` puts the finished file in place without following a link
+    there: without `fail_if_exists` the link itself is replaced, with it the
+    upload is refused with `ALREADY_EXISTS`.
+  - `DeleteFile` removes the link itself, not the file it points to.
+  - `ListFiles` is not protected: it follows a link put in place of the
+    directory and lists the directory the link points to.
+
+  None of them is protected against a change higher up the path: the server
+  does not defend against a hostile local user rearranging the directory
+  tree.
 
 **Error codes:**
 
