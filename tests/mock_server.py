@@ -142,6 +142,11 @@ MOCK_HAL_COMPONENTS = [
 MOCK_LINUXCNC_SERIAL_BASE = 1000
 
 
+# What GetServerInfo reports. The server version is deliberately not a real
+# release number, so nothing mistakes the mock for a released server.
+MOCK_SERVER_VERSION = "0.0.0-mock"
+MOCK_LINUXCNC_VERSION = "2.9.0-mock"
+
 # The small program the mock's ReadFile and ResolveFile know about.
 MOCK_NC_FILES_DIR = "/mock/nc_files"
 MOCK_PROGRAM_NAME = "mock_program.ngc"
@@ -527,6 +532,14 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
             interp_state=linuxcnc_pb2.INTERP_IDLE,
         )
 
+    def GetServerInfo(self, request, context):
+        """Return the mock's fixed version, connected to its mock LinuxCNC."""
+        return linuxcnc_pb2.ServerInfo(
+            server_version=MOCK_SERVER_VERSION,
+            linuxcnc_connected=True,
+            linuxcnc_version=MOCK_LINUXCNC_VERSION,
+        )
+
     def GetMachineConfig(self, request, context):
         """Return a fixed three-axis trivkins mill in mm."""
         axis_letters = "XYZ"
@@ -581,7 +594,7 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         # Use milliseconds for timestamp (nanoseconds exceeds JavaScript's MAX_SAFE_INTEGER)
         status = linuxcnc_pb2.LinuxCNCStatus(
             timestamp=int(time.time() * 1000),
-            version="2.9.0-mock",
+            version=MOCK_LINUXCNC_VERSION,
             debug=0,
         )
 

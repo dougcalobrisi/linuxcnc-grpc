@@ -21,6 +21,10 @@ from typing import Callable, Iterator, NamedTuple
 
 import grpc
 import linuxcnc
+# The package itself, for __version__ (read when GetServerInfo is called).
+# __init__.py sets it before it imports anything and loads this module only
+# on demand, so this import cannot form a cycle.
+import linuxcnc_grpc
 from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 from .linuxcnc_mapper import LinuxCNCMapper
 from .machine_config import build_machine_config
@@ -49,6 +53,11 @@ MAX_CONNECT_ATTEMPTS_AFTER_GOOD_PROBE = 3
 CLOSE_LOCK_TIMEOUT = 1.0  # seconds
 # Longest close() waits for the waiting thread to end.
 CLOSE_JOIN_TIMEOUT = 2.0  # seconds
+
+# What the servicer keeps as LinuxCNC's version when the linuxcnc module does
+# not give one. LinuxCNCStatus.version reports it as it is (1.0 behaviour);
+# GetServerInfo reports an empty string instead.
+UNKNOWN_LINUXCNC_VERSION = "unknown"
 
 LINUXCNC_UNAVAILABLE_MESSAGE = (
     "LinuxCNC is not running, or the server has not connected to it yet"
@@ -315,7 +324,7 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         }
 
         # Cache version from module attribute
-        self._version = getattr(linuxcnc, 'version', 'unknown')
+        self._version = getattr(linuxcnc, 'version', UNKNOWN_LINUXCNC_VERSION)
 
         # The single reader of LinuxCNC's error channel. Created before the
         # first connect and started after it, so it never polls a channel
@@ -2196,6 +2205,44 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 grpc.StatusCode.INTERNAL,
                 self._unexpected_failure_details("GetMachineConfig", e),
             )
+
+    # =========================================================================
+    # GetServerInfo RPC
+    # =========================================================================
+
+    def GetServerInfo(
+        self,
+        request: linuxcnc_pb2.GetServerInfoRequest,
+        context: grpc.ServicerContext
+    ) -> linuxcnc_pb2.ServerInfo:
+        """
+        Get the server's version, whether it is connected to LinuxCNC, and
+        LinuxCNC's version.
+
+        Always answers, also while the server is waiting for LinuxCNC. It
+        takes no lock and does not call into LinuxCNC: SendCommand can hold
+        the lock for seconds when LinuxCNC's task is not answering, and a
+        client asking which server it is talking to must not wait behind that.
+        """
+        logger.debug("GetServerInfo called")
+        # Read without the lock: it is a single attribute read, and an answer
+        # that is out of date for a moment harms nobody.
+        linuxcnc_connected = self._connected
+        # The version is a constant of the linuxcnc module, cached when the
+        # servicer was built, so it is known before LinuxCNC is connected.
+        # Anything that is not a real version string is reported as empty.
+        cached_version = self._version
+        if isinstance(cached_version, str) and cached_version != UNKNOWN_LINUXCNC_VERSION:
+            linuxcnc_version = cached_version
+        else:
+            linuxcnc_version = ""
+        return linuxcnc_pb2.ServerInfo(
+            # Read on every call from the package, the one place the release
+            # script writes the version.
+            server_version=linuxcnc_grpc.__version__,
+            linuxcnc_connected=linuxcnc_connected,
+            linuxcnc_version=linuxcnc_version,
+        )
 
     # =========================================================================
     # StreamErrors RPC

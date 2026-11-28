@@ -56,6 +56,7 @@ Main service for machine control:
 - **StreamStatus** - Subscribe to real-time status updates
 - **StreamErrors** - Subscribe to error messages (each message the server reads goes to every subscribed client)
 - **GetMachineConfig** - Kinematics, joint-to-axis mapping, limits, velocities and units
+- **GetServerInfo** - Server version and whether LinuxCNC is connected; works while LinuxCNC is down
 - **UploadFile / ListFiles / ReadFile / DeleteFile** - Manage G-code files
 - **ResolveFile** - Check whether a file is the loaded program before changing it
 

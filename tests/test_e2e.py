@@ -806,6 +806,22 @@ class TestE2EFiles:
 
 
 @pytest.mark.e2e
+class TestE2EServerInfo:
+    """Verify GetServerInfo against the running server and simulator."""
+
+    def test_server_info_reports_the_package_version_and_linuxcnc(self, linuxcnc_stub):
+        import linuxcnc_grpc
+
+        server_info = linuxcnc_stub.GetServerInfo(linuxcnc_pb2.GetServerInfoRequest())
+        status = linuxcnc_stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
+
+        assert server_info.server_version == linuxcnc_grpc.__version__
+        assert server_info.linuxcnc_connected
+        assert server_info.linuxcnc_version != ""
+        assert server_info.linuxcnc_version == status.version
+
+
+@pytest.mark.e2e
 class TestE2EMachineConfig:
     """Verify GetMachineConfig against the sim's real INI file and status."""
 

@@ -93,6 +93,11 @@ class LinuxCNCServiceStub(object):
                 request_serializer=linuxcnc__pb2.GetMachineConfigRequest.SerializeToString,
                 response_deserializer=linuxcnc__pb2.MachineConfig.FromString,
                 _registered_method=True)
+        self.GetServerInfo = channel.unary_unary(
+                '/linuxcnc.LinuxCNCService/GetServerInfo',
+                request_serializer=linuxcnc__pb2.GetServerInfoRequest.SerializeToString,
+                response_deserializer=linuxcnc__pb2.ServerInfo.FromString,
+                _registered_method=True)
 
 
 class LinuxCNCServiceServicer(object):
@@ -185,6 +190,16 @@ class LinuxCNCServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetServerInfo(self, request, context):
+        """Get the server's version and whether it is connected to LinuxCNC.
+        Answers also while the server is waiting for LinuxCNC, and never waits
+        behind a command. A 1.0 server does not have this RPC and answers
+        UNIMPLEMENTED, which is how a client tells a 1.0 server from a later one.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LinuxCNCServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -242,6 +257,11 @@ def add_LinuxCNCServiceServicer_to_server(servicer, server):
                     servicer.GetMachineConfig,
                     request_deserializer=linuxcnc__pb2.GetMachineConfigRequest.FromString,
                     response_serializer=linuxcnc__pb2.MachineConfig.SerializeToString,
+            ),
+            'GetServerInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetServerInfo,
+                    request_deserializer=linuxcnc__pb2.GetServerInfoRequest.FromString,
+                    response_serializer=linuxcnc__pb2.ServerInfo.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -545,6 +565,33 @@ class LinuxCNCService(object):
             '/linuxcnc.LinuxCNCService/GetMachineConfig',
             linuxcnc__pb2.GetMachineConfigRequest.SerializeToString,
             linuxcnc__pb2.MachineConfig.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetServerInfo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/linuxcnc.LinuxCNCService/GetServerInfo',
+            linuxcnc__pb2.GetServerInfoRequest.SerializeToString,
+            linuxcnc__pb2.ServerInfo.FromString,
             options,
             channel_credentials,
             insecure,

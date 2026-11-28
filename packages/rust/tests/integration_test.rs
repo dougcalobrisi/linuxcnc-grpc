@@ -9,6 +9,7 @@ use std::time::Duration;
 use linuxcnc_grpc::linuxcnc::{
     linux_cnc_service_client::LinuxCncServiceClient,
     GetStatusRequest, LinuxCncCommand, WaitCompleteRequest, StreamStatusRequest,
+    GetServerInfoRequest,
     StateCommand, MdiCommand, JogCommand,
     TaskMode, TaskState, ExecState, RcsStatus, JogType,
 };
@@ -231,6 +232,27 @@ async fn test_wait_complete() {
 
     assert_eq!(resp.serial, 50);
     assert_eq!(resp.status, RcsStatus::RcsDone as i32);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_get_server_info() {
+    let server = MockServer::start().expect("Failed to start mock server");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut client = LinuxCncServiceClient::connect(server.address())
+        .await
+        .expect("Failed to connect");
+
+    let response = client
+        .get_server_info(GetServerInfoRequest {})
+        .await
+        .expect("GetServerInfo failed");
+    let server_info = response.into_inner();
+
+    assert_eq!(server_info.server_version, "0.0.0-mock");
+    assert!(server_info.linuxcnc_connected);
+    assert_eq!(server_info.linuxcnc_version, "2.9.0-mock");
 }
 
 #[tokio::test]

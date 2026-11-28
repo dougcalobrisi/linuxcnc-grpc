@@ -785,3 +785,28 @@ func TestClientGetMachineConfig(t *testing.T) {
 		t.Errorf("expected mm, got %q", config.LinearUnitsName)
 	}
 }
+
+func TestClientGetServerInfo(t *testing.T) {
+	client, err := NewClient(serverAddr)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	serverInfo, err := client.GetServerInfo(ctx)
+	if err != nil {
+		t.Fatalf("GetServerInfo failed: %v", err)
+	}
+	if serverInfo.ServerVersion != "0.0.0-mock" {
+		t.Errorf("expected server version 0.0.0-mock, got %q", serverInfo.ServerVersion)
+	}
+	if !serverInfo.LinuxcncConnected {
+		t.Errorf("expected the mock to report LinuxCNC as connected")
+	}
+	if serverInfo.LinuxcncVersion != "2.9.0-mock" {
+		t.Errorf("expected LinuxCNC version 2.9.0-mock, got %q", serverInfo.LinuxcncVersion)
+	}
+}

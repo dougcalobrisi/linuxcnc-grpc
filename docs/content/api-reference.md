@@ -19,6 +19,7 @@ Complete API documentation for LinuxCNC gRPC services.
   - [ReadFile](#readfile)
   - [ResolveFile](#resolvefile)
   - [GetMachineConfig](#getmachineconfig)
+  - [GetServerInfo](#getserverinfo)
 - [HalService](#halservice)
   - [GetSystemStatus](#getsystemstatus)
   - [SendCommand](#sendcommand-hal)
@@ -904,6 +905,71 @@ for joint in config.joints:
 
 # Find the joints to jog for the Y axis on an unhomed machine
 y_joints = [j.joint_number for j in config.joints if j.axis_letter == "Y"]
+```
+
+### GetServerInfo
+
+Get the server's version, whether it is connected to LinuxCNC, and LinuxCNC's
+version.
+
+```protobuf
+rpc GetServerInfo(GetServerInfoRequest) returns (ServerInfo)
+```
+
+**Request:** `GetServerInfoRequest` (empty)
+
+**Response:** `ServerInfo`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `server_version` | string | Version of the linuxcnc-grpc package the server runs, for example `1.1.0`. The package version is the API version |
+| `linuxcnc_connected` | bool | True once the server has connected to LinuxCNC; false while it is waiting for LinuxCNC to start |
+| `linuxcnc_version` | string | LinuxCNC's version as its Python module on the server's machine reports it, for example `2.9.4`; empty if the module does not say |
+
+**Behavior:**
+
+- **It works while LinuxCNC is down.** A server that is
+  [waiting for LinuxCNC](server.md#starting-before-linuxcnc) answers with
+  `linuxcnc_connected = false`; this RPC never fails with `UNAVAILABLE`
+  because of LinuxCNC.
+- **It is cheap and never waits behind a command.** The server answers from
+  values it already holds: it does not ask LinuxCNC anything and does not
+  wait for a `SendCommand` that is in progress, so it is safe to call often
+  and with a short deadline.
+- **A 1.0 server answers `UNIMPLEMENTED`.** This RPC was added in 1.1. A
+  client that gets `UNIMPLEMENTED` is talking to a 1.0 server and should not
+  use the other RPCs and fields added since (`ReadFile`, `ResolveFile`,
+  `GetMachineConfig`, `linuxcnc_serial` and so on). Any answer means 1.1 or
+  later, and `server_version` says which.
+- `linuxcnc_version` comes from the LinuxCNC installed on the server's
+  machine, so it is filled in while `linuxcnc_connected` is false too. Only
+  `linuxcnc_connected` says whether LinuxCNC is running. While connected it
+  is the same string as `LinuxCNCStatus.version`, except that a version the
+  server does not know is empty here and `"unknown"` there.
+- `linuxcnc_connected` is what the server holds, not a check of LinuxCNC made
+  for this call. It is the same state the gRPC health service reports, and
+  like it does not show a crashed LinuxCNC (see
+  [What happens when LinuxCNC stops](server.md#what-happens-when-linuxcnc-stops)).
+
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `UNIMPLEMENTED` | The server is version 1.0, which does not have this RPC |
+
+**Example (Python):**
+
+```python
+try:
+    server_info = stub.GetServerInfo(linuxcnc_pb2.GetServerInfoRequest())
+except grpc.RpcError as error:
+    if error.code() != grpc.StatusCode.UNIMPLEMENTED:
+        raise
+    print("linuxcnc-grpc 1.0 server")
+else:
+    print(f"linuxcnc-grpc {server_info.server_version}, "
+          f"LinuxCNC {server_info.linuxcnc_version or 'version unknown'}, "
+          f"{'connected' if server_info.linuxcnc_connected else 'waiting for LinuxCNC'}")
 ```
 
 ---
