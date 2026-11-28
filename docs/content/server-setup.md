@@ -96,7 +96,8 @@ hal.HalService SERVING
 ```
 
 `linuxcnc.LinuxCNCService` is `NOT_SERVING` while the server is waiting for
-LinuxCNC. The server does not offer gRPC reflection, so `grpcurl ... list`
+LinuxCNC. Use `Check` for probes; `Watch` is limited to a few clients
+at a time (see [Health service](server.md#health-service)). The server does not offer gRPC reflection, so `grpcurl ... list`
 does not work.
 
 Or just test network connectivity:

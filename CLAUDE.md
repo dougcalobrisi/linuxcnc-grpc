@@ -20,6 +20,7 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── linuxcnc_mapper.py     # linuxcnc.stat() -> LinuxCNCStatus
 │   ├── machine_config.py      # GetMachineConfig builder (status + INI)
 │   ├── error_broker.py        # Single reader and fan-out of the error channel
+│   ├── health_service.py      # grpc.health.v1 servicer (Check, capped Watch)
 │   ├── command_helper.py      # HelperCommandChannel: commands sent by a child process
 │   ├── command_helper_process.py  # The child process (run as a script, owns linuxcnc.command())
 │   └── hal_service.py, hal_mapper.py  # HalService
@@ -49,6 +50,8 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── test_connection.py     # Start without LinuxCNC, reconnect, health
 │   ├── test_wait_for_linuxcnc.py  # scripts/wait-for-linuxcnc.py
 │   ├── test_error_broker.py   # Error fan-out, StreamErrors, status.errors
+│   ├── test_health_service.py # Health Check/Watch, watcher cap, the Watch storm
+│   ├── health_watch_storm.py  # Child process for the storm test (not collected)
 │   ├── test_command_helper.py # Command helper, the two locks, acknowledged, not_sent, reason metadata
 │   ├── helper_stand_in/       # Stand-in linuxcnc module for the helper processes tests start
 │   ├── test_file_read_resolve.py  # ReadFile, ResolveFile
@@ -208,6 +211,74 @@ hold its thread for the whole interval; ten such calls blocked every RPC.
   `MAX_STREAM_STATUS_INTERVAL_MS` (60000) in `linuxcnc_service.py`,
   `MAX_STREAM_INTERVAL_SECONDS` (60.0) in `hal_service.py` (`stream_interval_seconds`). Keep the
   two equal. `tests/mock_server.py` mirrors both the clamp and the wait.
+- Measured: 10 concurrent streams of any kind (StreamStatus, StreamErrors, the HAL streams,
+  or health watchers under grpcio-health-checking's blocking variant) occupy all 10 worker
+  threads, and every other RPC then waits until one ends: with 10 StreamStatus streams open,
+  Check and GetServerInfo answered `DEADLINE_EXCEEDED` at a 2 s deadline. Nothing caps these
+  streams except health `Watch` (see "Health service").
+
+**Health service (`health_service.py`)**: `create_server` uses the project's own
+`HealthServicer`, not grpcio-health-checking's `health.HealthServicer` (only its generated
+`health_pb2`/`health_pb2_grpc` and `add_HealthServicer_to_server`; the dependency stays).
+- Why not upstream's (checked in grpcio-health-checking 1.76.0 and 1.85.4): its default
+  non-blocking `Watch` sends the first answer while holding the servicer's lock and waits
+  there for gRPC's event thread, while that thread, ending another Watch, runs the close
+  callback, which needs the same lock. Measured: 8 threads starting and cancelling Watch froze
+  the server in 5 of 5 runs within the first 50-150 attempts (bare server and the real
+  `create_server` wiring alike): every RPC timed out and `server.stop` hung. `set()` with
+  watchers open (it sends to each under the lock) froze it too, 5 of 5, with no client
+  cancelling. Once frozen, the connection listener (called with the servicer's state lock
+  held) blocked in `set()` for good, and the stop wrapper in `enter_graceful_shutdown()`.
+  Upstream also keeps a registration for every Watch whose call ended before the handler
+  ran (it ignores `add_callback` returning False); its blocking variant does not freeze but
+  holds a worker thread per watcher, and 10 watchers took all 10.
+- The rules: **never send and never wait while holding `_lock`.** `Check` reads the dict
+  under it; `Watch` is a plain generator like the other streams (Event registered with
+  `context.add_callback`, return at once and register nothing if that returns False; clear
+  the event, read the status under the lock, check `context.is_active()`, yield with no lock
+  held, `Event.wait`). The wait is bounded by `WATCH_ACTIVITY_CHECK_INTERVAL` (5 s), only so
+  that a watcher whose end-of-call wake-up was lost still notices; gRPC normally wakes it at
+  once. The `is_active()` check on every pass is needed because `clear()` can
+  erase the one wake-up gRPC gives when the call ends. `set()` and `enter_graceful_shutdown()`
+  only change the dict and set events, so they are safe with the LinuxCNC servicer's state
+  lock held and never block.
+- Semantics kept from upstream: `""` starts `SERVING`; unknown service is `NOT_FOUND` on
+  Check and `SERVICE_UNKNOWN` as Watch's first message; after `enter_graceful_shutdown()`
+  every known service is `NOT_SERVING` and later `set` calls are ignored. Changed: after
+  `enter_graceful_shutdown()` each Watch sends its last status (`NOT_SERVING`) and returns,
+  so the call ends with OK and gives its worker back; without that a watcher that never
+  cancels held its worker until gRPC cancelled it at the end of the grace period. An A17
+  client takes the end of the stream as a failure and retries with backoff, which suits a
+  server going away. Changed too: Watch
+  sends the status when it differs from the last one it sent, so an unchanged status is not
+  sent again, changes faster than the watcher looks arrive as the newest one, and a change
+  undone before it looks is not sent at all.
+- Watcher cap: `health_watcher_limit(max_workers)` = `min(4, max_workers // 2)` (4 with
+  the default 10, 0 with one worker), computed in `create_server`, because each watcher holds
+  a worker thread and at least one worker must stay free: with one worker a single watcher
+  would hold it, and Check, every machine RPC and any further Watch (which would never reach
+  the cap check) would queue behind it. A limit of 0 refuses every Watch; negative is a
+  `ValueError`. Over the cap Watch ends at once with **`UNIMPLEMENTED`** ("...limit ...
+  reached; use ... Check", or with limit 0 "not available ... use ... Check").
+- Why `UNIMPLEMENTED` and what it costs: per gRPC's client-side health checking (proposal
+  A17) a client whose Watch fails with `UNIMPLEMENTED` treats the server as healthy and stops
+  health checking for that connection; it does not start again when a slot frees, so it will
+  not see a later `NOT_SERVING`. The alternative, a retryable code such as
+  `RESOURCE_EXHAUSTED`, would put that client's channel into TRANSIENT_FAILURE (A17: any other
+  status), so a fifth client could not use the server at all while four others watch. Do
+  not change it. A slot is free as soon as the `finally` of the ended Watch has run.
+- Measured with the same loads: no freeze in 30 runs, no registration left over, Check and
+  GetServerInfo answered in about 1 ms with 12 watchers attempted at cap 4. The storm child
+  at 3000 attempts (`health_watch_storm.py 3000`, 8 cancelling threads plus status flips)
+  passed 30 of 30 runs, about 4.5 s each, with no watcher left. Delivery of
+  `NOT_SERVING` to watchers at `stop(0)` is a race (it arrived 5 of 5 times); `serve()`
+  stops with a 5 s grace period, which gives it time.
+- `tests/test_health_service.py` runs the storm in a child (`tests/health_watch_storm.py`)
+  with a hard timeout (60 s), so a regression fails the test instead of hanging the suite;
+  the child has its own watchdog (`faulthandler.dump_traceback_later`, 50 s). Its deadlines
+  are 10 s, generous for a loaded runner. It reports thread exceptions, attempts done,
+  Checks answered and Watch handlers run, and the test fails if the storm did nothing. With
+  upstream's servicer swapped into the child it fails at the first Check (attempt 50).
 
 **Command Dispatch**: `SendCommand` uses an explicit `_command_handlers` dict mapping
 command type strings to handler methods (no dynamic `getattr` dispatch).
@@ -545,7 +616,8 @@ of this without re-measuring):
 - `_set_connected` calls `on_connection_change` **with the lock held**, so the listener runs
   before any RPC can use the new connection. `create_server` uses it to set the health status
   of `""` and `linuxcnc.LinuxCNCService` (`NOT_SERVING` until connected). `hal.HalService` is
-  always `SERVING`. The listener must not call `close()`.
+  always `SERVING`. The listener must not call `close()`, and the health `set()` it calls
+  must never block (see "Health service").
 - `_abort_if_disconnected(context)` at the top of an RPC is the only connection check an RPC
   needs (`UNAVAILABLE` while waiting for LinuxCNC, with the trailing metadata
   `linuxcnc-grpc-reason: not-connected`, see "Command helper process"): once it has passed,

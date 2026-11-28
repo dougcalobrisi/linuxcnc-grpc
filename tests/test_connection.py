@@ -1249,6 +1249,69 @@ class TestServerHealthAndOptions:
         finally:
             server.stop(grace=0)
 
+    def test_health_watcher_follows_the_linuxcnc_connection(self, make_server, linuxcnc_switch):
+        """A Watch on "" gets NOT_SERVING, then SERVING once the server has connected."""
+        from grpc_health.v1 import health_pb2, health_pb2_grpc
+
+        linuxcnc_switch.is_running = False
+        server = make_server()
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        try:
+            with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+                health_updates = health_pb2_grpc.HealthStub(channel).Watch(
+                    health_pb2.HealthCheckRequest(service=""), timeout=10.0
+                )
+                assert next(health_updates).status == health_pb2.HealthCheckResponse.NOT_SERVING
+                # The connection listener runs with the servicer's state lock
+                # held; it sets the status while this watcher is open.
+                linuxcnc_switch.is_running = True
+                assert next(health_updates).status == health_pb2.HealthCheckResponse.SERVING
+                health_updates.cancel()
+        finally:
+            server.stop(grace=0)
+
+    @pytest.mark.parametrize("max_workers, watcher_limit", [(10, 4), (4, 2), (1, 0)])
+    def test_health_watchers_are_capped_by_the_worker_count(
+        self, make_server, max_workers, watcher_limit
+    ):
+        """
+        Each open Watch holds a worker thread. Over the limit a Watch gets
+        UNIMPLEMENTED, and the other RPCs keep answering promptly.
+        """
+        from grpc_health.v1 import health_pb2, health_pb2_grpc
+        from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
+
+        server = make_server(max_workers=max_workers)
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        try:
+            with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+                health_stub = health_pb2_grpc.HealthStub(channel)
+                open_watchers = [
+                    health_stub.Watch(health_pb2.HealthCheckRequest(service=""), timeout=10.0)
+                    for _ in range(watcher_limit)
+                ]
+                for health_updates in open_watchers:
+                    next(health_updates)
+
+                with pytest.raises(grpc.RpcError) as error_info:
+                    next(health_stub.Watch(health_pb2.HealthCheckRequest(service=""), timeout=10.0))
+                assert error_info.value.code() == grpc.StatusCode.UNIMPLEMENTED
+                assert "Check" in error_info.value.details()
+
+                assert self._health_status(channel, "hal.HalService") == (
+                    health_pb2.HealthCheckResponse.SERVING
+                )
+                server_info = linuxcnc_pb2_grpc.LinuxCNCServiceStub(channel).GetServerInfo(
+                    linuxcnc_pb2.GetServerInfoRequest(), timeout=10.0
+                )
+                assert server_info.server_version
+                for health_updates in open_watchers:
+                    health_updates.cancel()
+        finally:
+            server.stop(grace=0)
+
     def test_require_linuxcnc_fails_at_startup(self, server_module, linuxcnc_switch):
         linuxcnc_switch.is_running = False
 
@@ -1374,7 +1437,7 @@ class TestServerHealthAndOptions:
                     server_module, "HalServiceServicer",
                     side_effect=RuntimeError("Failed to access HAL"),
                 ), patch.object(
-                    server_module.health.HealthServicer, "enter_graceful_shutdown",
+                    server_module.HealthServicer, "enter_graceful_shutdown",
                     side_effect=RuntimeError("health failed"),
                 ), caplog.at_level(logging.ERROR, logger=server_module.logger.name):
             with pytest.raises(RuntimeError, match="Failed to access HAL"):
@@ -1439,7 +1502,7 @@ class TestServerHealthAndOptions:
             raise RuntimeError("close failed")
 
         with patch.object(
-            server_module.health.HealthServicer, "enter_graceful_shutdown",
+            server_module.HealthServicer, "enter_graceful_shutdown",
             side_effect=RuntimeError("health failed"),
         ), patch.object(servicer, "close", close_that_fails_after_closing), \
                 caplog.at_level(logging.ERROR, logger=server_module.logger.name):
@@ -1555,7 +1618,7 @@ class TestServerHealthAndOptions:
 
         if failing_step == "health":
             failing_patch = patch.object(
-                server_module.health.HealthServicer, "enter_graceful_shutdown",
+                server_module.HealthServicer, "enter_graceful_shutdown",
                 side_effect=RuntimeError("health failed"),
             )
             expected_error = "health failed"
@@ -1840,13 +1903,17 @@ class TestServerHealthAndOptions:
 
         with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
             assert self._health_status(channel, "") == health_pb2.HealthCheckResponse.SERVING
-            real_health_set = server_module.health.HealthServicer.set
+            real_enter_graceful_shutdown = server_module.HealthServicer.enter_graceful_shutdown
 
-            def recording_set(health_servicer, service_name, serving_status):
-                events.append((service_name, serving_status))
-                real_health_set(health_servicer, service_name, serving_status)
+            def recording_enter_graceful_shutdown(health_servicer):
+                real_enter_graceful_shutdown(health_servicer)
+                # What a client is told at this point, before the transport stops.
+                events.append(("", self._health_status(channel, "")))
 
-            with patch.object(server_module.health.HealthServicer, "set", recording_set), \
+            with patch.object(
+                server_module.HealthServicer, "enter_graceful_shutdown",
+                recording_enter_graceful_shutdown,
+            ), \
                     patch.object(servicer_class, "close", recording_close):
                 server.stop(grace=0)
 
@@ -1879,6 +1946,41 @@ class TestServerHealthAndOptions:
             if stopped is None:
                 stopped = server.stop(grace=0)
             assert stopped.wait(timeout=10.0)
+
+    def test_open_health_watchers_do_not_hold_up_a_graceful_stop(self, make_server):
+        """
+        Each watcher gets NOT_SERVING and then the end of its stream, so the
+        stop completes long before the grace period.
+        """
+        from grpc_health.v1 import health_pb2, health_pb2_grpc
+
+        server = make_server()
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        grace_period = 60.0
+        stopped = None
+        try:
+            with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+                health_stub = health_pb2_grpc.HealthStub(channel)
+                open_watchers = [
+                    health_stub.Watch(health_pb2.HealthCheckRequest(service=""), timeout=30.0)
+                    for _ in range(4)
+                ]
+                for health_updates in open_watchers:
+                    assert next(health_updates).status == health_pb2.HealthCheckResponse.SERVING
+                stop_started = time.monotonic()
+                stopped = server.stop(grace=grace_period)
+                for health_updates in open_watchers:
+                    assert [update.status for update in health_updates] == [
+                        health_pb2.HealthCheckResponse.NOT_SERVING
+                    ]
+                    assert health_updates.code() == grpc.StatusCode.OK
+                assert stopped.wait(timeout=15.0)
+                assert time.monotonic() - stop_started < 15.0 < grace_period
+        finally:
+            if stopped is None:
+                stopped = server.stop(grace=0)
+            assert stopped.wait(timeout=15.0)
 
     def test_serve_restores_the_default_action_for_a_handler_not_set_from_python(
         self, server_module
