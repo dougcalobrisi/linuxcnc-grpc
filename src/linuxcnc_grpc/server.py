@@ -75,6 +75,7 @@ def create_server(
     error_channel_mode: str = ERROR_CHANNEL_ON_DEMAND,
     require_linuxcnc: bool = False,
     on_unrecoverable: Callable[[str], None] | None = None,
+    command_helper: bool = True,
 ) -> grpc.Server:
     """
     Create and configure the gRPC server.
@@ -92,11 +93,18 @@ def create_server(
             reports NOT_SERVING and LinuxCNC RPCs return UNAVAILABLE until
             the server has connected
         on_unrecoverable: Called once, with a description, if the server
-            finds that this process can no longer connect to LinuxCNC (see
+            finds that this process can no longer connect to LinuxCNC, or
+            that its command helper process can never be started (see
             LinuxCNCServiceServicer). The server then stays up and
             NOT_SERVING until the process is restarted, so the caller should
             stop it and exit. Called from a background thread; the condition
-            is logged as an error whether or not this is given
+            is logged as an error whether or not this is given. The call can
+            cross with a shutdown: ignore it once you have decided to stop
+        command_helper: If True (the default), commands are sent to
+            LinuxCNC by a helper process the server starts when it connects,
+            so a send that waits for a LinuxCNC task that does not answer
+            cannot stall the server. If False, commands are sent from the
+            server's own process, as versions up to 1.0 did
 
     Returns:
         Configured gRPC server (not yet started), with the port bound.
@@ -151,6 +159,7 @@ def create_server(
             require_linuxcnc=require_linuxcnc,
             on_connection_change=report_linuxcnc_connection,
             on_unrecoverable=on_unrecoverable,
+            command_helper=command_helper,
         )
         linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(linuxcnc_servicer, server)
         hal_servicer = HalServiceServicer()
@@ -161,16 +170,16 @@ def create_server(
         linuxcnc_servicer.start_waiting_for_linuxcnc()
 
         # The servicer runs background threads (the wait for LinuxCNC and
-        # the error channel reader). Stop them with the server, whoever
-        # stops it, so a stopped server does not keep reading LinuxCNC's
-        # error channel.
+        # the error channel reader) and the command helper process. Stop
+        # them with the server, whoever stops it, so a stopped server does
+        # not keep reading LinuxCNC's error channel.
         stop_grpc_server = server.stop
 
         def stop_server_and_servicer(grace):
             # Health watchers are told first: every service turns
             # NOT_SERVING. Then the transport, and only then the servicer.
-            # Closing the servicer can wait for its lock, which a command
-            # that LinuxCNC is not answering holds for seconds; the
+            # Closing the servicer takes time (it waits for its lock, its
+            # threads and the command helper, each with a limit); the
             # transport's shutdown and its grace period must not start late
             # because of that. Every step runs whatever the others did; the
             # first failure is raised once all three have run.
@@ -235,6 +244,7 @@ def serve(
     nc_files_dir: str | None = None,
     error_channel_mode: str = ERROR_CHANNEL_ON_DEMAND,
     require_linuxcnc: bool = False,
+    command_helper: bool = True,
 ):
     """
     Start the gRPC server and run until interrupted.
@@ -246,6 +256,8 @@ def serve(
         error_channel_mode: When the server reads LinuxCNC's error channel
             ("on-demand", "always" or "off")
         require_linuxcnc: Fail instead of waiting if LinuxCNC is not running
+        command_helper: Send commands through a helper process (see
+            create_server)
 
     Raises:
         UnrecoverableConnectionError: after stopping the server, if this
@@ -294,6 +306,7 @@ def serve(
             error_channel_mode=error_channel_mode,
             require_linuxcnc=require_linuxcnc,
             on_unrecoverable=record_unrecoverable_error,
+            command_helper=command_helper,
         )
 
         server.start()
@@ -407,6 +420,16 @@ def main():
         ),
     )
     parser.add_argument(
+        "--in-process-commands",
+        action="store_true",
+        help=(
+            "Send commands to LinuxCNC from the server's own process, as "
+            "versions up to 1.0 did. By default a helper process sends them, "
+            "so that a LinuxCNC task that does not answer cannot stall the "
+            "whole server for 5 seconds per command"
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging"
@@ -425,6 +448,7 @@ def main():
             nc_files_dir=args.nc_files,
             error_channel_mode=args.error_channel,
             require_linuxcnc=args.require_linuxcnc,
+            command_helper=not args.in_process_commands,
         )
     except Exception as e:
         logger.error(f"Server error: {e}")

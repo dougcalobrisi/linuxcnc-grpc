@@ -7,7 +7,11 @@ gRPC methods, allowing integration tests to run without a real LinuxCNC
 installation.
 
 Usage:
-    python tests/mock_server.py [--port PORT] [--host HOST]
+    python tests/mock_server.py [--port PORT] [--host HOST] [--disconnected]
+
+With --disconnected the mock answers as a real server that has not
+connected to LinuxCNC yet: the RPCs that need LinuxCNC fail with
+UNAVAILABLE, the same text and the same trailing metadata.
 
 The server prints "READY:<port>" to stdout when ready to accept connections.
 """
@@ -145,6 +149,14 @@ MOCK_LINUXCNC_SERIAL_BASE = 1000
 # What GetServerInfo reports. The server version is deliberately not a real
 # release number, so nothing mistakes the mock for a released server.
 MOCK_SERVER_VERSION = "0.0.0-mock"
+# What the real server sends while it is not connected to LinuxCNC: the
+# UNAVAILABLE text, and the trailing metadata that tells a client the
+# reason without reading the text.
+MOCK_LINUXCNC_UNAVAILABLE_MESSAGE = (
+    "LinuxCNC is not running, or the server has not connected to it yet"
+)
+MOCK_REASON_METADATA_KEY = "linuxcnc-grpc-reason"
+MOCK_REASON_NOT_CONNECTED = "not-connected"
 MOCK_LINUXCNC_VERSION = "2.9.0-mock"
 
 # The small program the mock's ReadFile and ResolveFile know about.
@@ -371,15 +383,24 @@ def command_rejection_message(request):
 class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
     """Mock LinuxCNC gRPC service returning deterministic responses."""
 
-    def __init__(self):
+    def __init__(self, linuxcnc_connected: bool = True):
+        self._linuxcnc_connected = linuxcnc_connected
         self._command_serial = 0
         # The linuxcnc_serial values SendCommand has returned. RPCs run on a
         # thread pool, so the counter and this set are changed under a lock.
         self._issued_linuxcnc_serials = set()
         self._serial_lock = threading.Lock()
 
+    def _abort_if_disconnected(self, context):
+        """Answer as the real server does before it has connected to LinuxCNC."""
+        if self._linuxcnc_connected:
+            return
+        context.set_trailing_metadata(((MOCK_REASON_METADATA_KEY, MOCK_REASON_NOT_CONNECTED),))
+        context.abort(grpc.StatusCode.UNAVAILABLE, MOCK_LINUXCNC_UNAVAILABLE_MESSAGE)
+
     def GetStatus(self, request, context):
         """Return mock LinuxCNC status."""
+        self._abort_if_disconnected(context)
         return self._build_status()
 
     def SendCommand(self, request, context):
@@ -388,8 +409,11 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
         A command the real server refuses before sending anything (see
         command_rejection_message) gets RCS_ERROR with the same message and,
-        as there, no linuxcnc_serial.
+        as there, no linuxcnc_serial and not_sent set. An accepted command is
+        answered as the real server answers when LinuxCNC's task took it:
+        acknowledged is true.
         """
+        self._abort_if_disconnected(context)
         rejection_message = command_rejection_message(request)
         with self._serial_lock:
             self._command_serial += 1
@@ -404,12 +428,14 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 serial=serial,
                 status=linuxcnc_pb2.RCS_ERROR,
                 error_message=rejection_message,
+                not_sent=True,
             )
         return linuxcnc_pb2.CommandResponse(
             serial=serial,
             status=linuxcnc_pb2.RCS_DONE,
             error_message="",
             linuxcnc_serial=linuxcnc_serial,
+            acknowledged=True,
         )
 
     def WaitComplete(self, request, context):
@@ -419,6 +445,7 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         As on the real server, a request that sets linuxcnc_serial (0
         included) to a value SendCommand did not return gets RCS_ERROR.
         """
+        self._abort_if_disconnected(context)
         if request.HasField("linuxcnc_serial"):
             with self._serial_lock:
                 serial_was_issued = request.linuxcnc_serial in self._issued_linuxcnc_serials
@@ -440,6 +467,7 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
     def StreamStatus(self, request, context):
         """Stream status updates at the requested interval until the client goes away."""
+        self._abort_if_disconnected(context)
         interval = stream_interval_seconds(request.interval_ms)
         cancelled = watch_for_cancellation(context)
         while not cancelled.is_set() and context.is_active():
@@ -448,6 +476,7 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
     def StreamErrors(self, request, context):
         """Replay one fixed buffered message if asked, then stay connected."""
+        self._abort_if_disconnected(context)
         if request.replay_buffered:
             yield linuxcnc_pb2.ErrorMessage(
                 type=linuxcnc_pb2.ErrorMessage.OPERATOR_ERROR,
@@ -521,6 +550,8 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         A name the real server refuses is INVALID_ARGUMENT here too.
         """
         self._abort_unless_name_is_valid(request.filename, context)
+        # After the name, as on the real server.
+        self._abort_if_disconnected(context)
         is_mock_program = request.filename == MOCK_PROGRAM_NAME
         return linuxcnc_pb2.ResolveFileResponse(
             path=f"{MOCK_NC_FILES_DIR}/{request.filename}",
@@ -533,15 +564,16 @@ class MockLinuxCNCServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         )
 
     def GetServerInfo(self, request, context):
-        """Return the mock's fixed version, connected to its mock LinuxCNC."""
+        """Return the mock's fixed version and whether it plays connected."""
         return linuxcnc_pb2.ServerInfo(
             server_version=MOCK_SERVER_VERSION,
-            linuxcnc_connected=True,
+            linuxcnc_connected=self._linuxcnc_connected,
             linuxcnc_version=MOCK_LINUXCNC_VERSION,
         )
 
     def GetMachineConfig(self, request, context):
         """Return a fixed three-axis trivkins mill in mm."""
+        self._abort_if_disconnected(context)
         axis_letters = "XYZ"
         return linuxcnc_pb2.MachineConfig(
             ini_filename="/mock/configs/mock.ini",
@@ -1004,13 +1036,18 @@ class MockHalServicer(hal_pb2_grpc.HalServiceServicer):
 # Server Main
 # =============================================================================
 
-def create_server(host: str = "0.0.0.0", port: int = 50051, max_workers: int = 10):
+def create_server(
+    host: str = "0.0.0.0",
+    port: int = 50051,
+    max_workers: int = 10,
+    linuxcnc_connected: bool = True,
+):
     """Create and configure the mock gRPC server."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
 
     # Register services
     linuxcnc_pb2_grpc.add_LinuxCNCServiceServicer_to_server(
-        MockLinuxCNCServicer(), server
+        MockLinuxCNCServicer(linuxcnc_connected=linuxcnc_connected), server
     )
     hal_pb2_grpc.add_HalServiceServicer_to_server(
         MockHalServicer(), server
@@ -1027,9 +1064,16 @@ def main():
     parser = argparse.ArgumentParser(description="LinuxCNC Mock gRPC Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=50051, help="Port to listen on")
+    parser.add_argument(
+        "--disconnected",
+        action="store_true",
+        help="Answer as a server that has not connected to LinuxCNC yet",
+    )
     args = parser.parse_args()
 
-    server, address = create_server(args.host, args.port)
+    server, address = create_server(
+        args.host, args.port, linuxcnc_connected=not args.disconnected
+    )
 
     # Handle shutdown gracefully
     stop_event = []

@@ -9,7 +9,7 @@ state, commands, HAL data, and file management.
 
 ## What E2E Tests Cover
 
-The suite has about 60 tests organized into these areas:
+The suite has about 70 tests organized into these areas:
 
 - **Status** — version, joints, INI filename, positions, task state
 - **State transitions** — estop/recovery, on/off, mode changes
@@ -28,6 +28,7 @@ The suite has about 60 tests organized into these areas:
 - **Streaming** — StreamStatus, StreamErrors
 - **HAL** — GetSystemStatus, QueryPins/Signals/Components/Params, GetValue, StreamStatus, SendCommand, WatchValues
 - **File management** — upload/list/delete cycle, reading a file back whole and in chunks, resolving the loaded program
+- **A task that does not respond** — the test freezes LinuxCNC's task process (`milltask`) with `SIGSTOP` for about 5 seconds and always continues it afterwards. It checks that a command sent meanwhile returns with `acknowledged` false after about 5 seconds, that `GetServerInfo`, `GetStatus` and the health check, made at the same time while the command waits, all answer before it returns (each has a 3-second deadline), and that the command takes effect once the task runs again. It needs the tests to run on the same host and as the same user as LinuxCNC (as in CI), and is skipped otherwise. Against a server started with `--in-process-commands` it fails, as it should
 
 These tests catch issues that mock-based tests cannot:
 

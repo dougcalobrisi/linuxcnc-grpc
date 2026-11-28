@@ -1446,16 +1446,44 @@ export interface CommandResponse {
    * identifies the command; it does not prove the task received it.
    * LinuxCNC's send normally returns once the task has echoed the serial
    * (TaskStatus.echo_serial_number), but it gives up after about 5 seconds
-   * without an error if the task does not answer. Use WaitComplete, or the
-   * status, to confirm receipt and completion: compare this value with
-   * echo_serial_number, or pass it to WaitComplete. For a command the server
-   * sends as several LinuxCNC messages (coolant, set_limit, override_config,
-   * program_options) it is the serial of the last one LinuxCNC took. Unset
+   * without an error if the task does not answer; acknowledged says which
+   * of the two happened. Use WaitComplete, or the status, to confirm
+   * completion: compare this value with echo_serial_number, or pass it to
+   * WaitComplete. For a command sent as several LinuxCNC messages (coolant,
+   * set_limit, override_config, program_options, and program open, a close
+   * followed by the open) it is the serial of the last one LinuxCNC took. Unset
    * when the command was not dispatched, which includes a command LinuxCNC
    * did not take, or when the LinuxCNC bindings on the server do not expose
    * the serial.
    */
-  linuxcncSerial?: number | undefined;
+  linuxcncSerial?:
+    | number
+    | undefined;
+  /**
+   * From SendCommand: whether LinuxCNC's task had taken the command when the
+   * server's send returned. True: the task had echoed linuxcnc_serial. False:
+   * the command was written to LinuxCNC's command queue, but the task had
+   * not echoed it after LinuxCNC's own wait of about 5 seconds, so the task
+   * is not answering. The command is not withdrawn: it stays in the queue
+   * and runs when the task answers again. Unset when the server cannot tell:
+   * nothing was dispatched, the LinuxCNC bindings on the server do not
+   * expose the serial, or the server is older than this field. It does not
+   * change status: RCS_DONE still means "dispatched". For a command sent as
+   * several LinuxCNC messages it describes the last one LinuxCNC took.
+   */
+  acknowledged?:
+    | boolean
+    | undefined;
+  /**
+   * From SendCommand, with RCS_ERROR: true when the server is certain that
+   * nothing was written to LinuxCNC for this request, so sending it again
+   * cannot run it twice. False does not mean that something was written,
+   * only that the server cannot rule it out (a failure during a send, a
+   * command of several messages that failed part-way, a command helper
+   * process that died while it had the command). A server older than this
+   * field never sets it.
+   */
+  notSent: boolean;
 }
 
 /** Empty - returns full status */
@@ -8059,7 +8087,7 @@ export const LinuxCNCCommand: MessageFns<LinuxCNCCommand> = {
 };
 
 function createBaseCommandResponse(): CommandResponse {
-  return { serial: 0, status: 0, errorMessage: "", linuxcncSerial: undefined };
+  return { serial: 0, status: 0, errorMessage: "", linuxcncSerial: undefined, acknowledged: undefined, notSent: false };
 }
 
 export const CommandResponse: MessageFns<CommandResponse> = {
@@ -8075,6 +8103,12 @@ export const CommandResponse: MessageFns<CommandResponse> = {
     }
     if (message.linuxcncSerial !== undefined) {
       writer.uint32(32).int32(message.linuxcncSerial);
+    }
+    if (message.acknowledged !== undefined) {
+      writer.uint32(40).bool(message.acknowledged);
+    }
+    if (message.notSent !== false) {
+      writer.uint32(48).bool(message.notSent);
     }
     return writer;
   },
@@ -8118,6 +8152,22 @@ export const CommandResponse: MessageFns<CommandResponse> = {
           message.linuxcncSerial = reader.int32();
           continue;
         }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.acknowledged = reader.bool();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.notSent = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -8133,6 +8183,8 @@ export const CommandResponse: MessageFns<CommandResponse> = {
       status: isSet(object.status) ? rcsStatusFromJSON(object.status) : 0,
       errorMessage: isSet(object.errorMessage) ? globalThis.String(object.errorMessage) : "",
       linuxcncSerial: isSet(object.linuxcncSerial) ? globalThis.Number(object.linuxcncSerial) : undefined,
+      acknowledged: isSet(object.acknowledged) ? globalThis.Boolean(object.acknowledged) : undefined,
+      notSent: isSet(object.notSent) ? globalThis.Boolean(object.notSent) : false,
     };
   },
 
@@ -8150,6 +8202,12 @@ export const CommandResponse: MessageFns<CommandResponse> = {
     if (message.linuxcncSerial !== undefined) {
       obj.linuxcncSerial = Math.round(message.linuxcncSerial);
     }
+    if (message.acknowledged !== undefined) {
+      obj.acknowledged = message.acknowledged;
+    }
+    if (message.notSent !== false) {
+      obj.notSent = message.notSent;
+    }
     return obj;
   },
 
@@ -8162,6 +8220,8 @@ export const CommandResponse: MessageFns<CommandResponse> = {
     message.status = object.status ?? 0;
     message.errorMessage = object.errorMessage ?? "";
     message.linuxcncSerial = object.linuxcncSerial ?? undefined;
+    message.acknowledged = object.acknowledged ?? undefined;
+    message.notSent = object.notSent ?? false;
     return message;
   },
 };

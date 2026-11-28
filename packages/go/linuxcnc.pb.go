@@ -4919,17 +4919,37 @@ type CommandResponse struct {
 	// identifies the command; it does not prove the task received it.
 	// LinuxCNC's send normally returns once the task has echoed the serial
 	// (TaskStatus.echo_serial_number), but it gives up after about 5 seconds
-	// without an error if the task does not answer. Use WaitComplete, or the
-	// status, to confirm receipt and completion: compare this value with
-	// echo_serial_number, or pass it to WaitComplete. For a command the server
-	// sends as several LinuxCNC messages (coolant, set_limit, override_config,
-	// program_options) it is the serial of the last one LinuxCNC took. Unset
+	// without an error if the task does not answer; acknowledged says which
+	// of the two happened. Use WaitComplete, or the status, to confirm
+	// completion: compare this value with echo_serial_number, or pass it to
+	// WaitComplete. For a command sent as several LinuxCNC messages (coolant,
+	// set_limit, override_config, program_options, and program open, a close
+	// followed by the open) it is the serial of the last one LinuxCNC took. Unset
 	// when the command was not dispatched, which includes a command LinuxCNC
 	// did not take, or when the LinuxCNC bindings on the server do not expose
 	// the serial.
 	LinuxcncSerial *int32 `protobuf:"varint,4,opt,name=linuxcnc_serial,json=linuxcncSerial,proto3,oneof" json:"linuxcnc_serial,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// From SendCommand: whether LinuxCNC's task had taken the command when the
+	// server's send returned. True: the task had echoed linuxcnc_serial. False:
+	// the command was written to LinuxCNC's command queue, but the task had
+	// not echoed it after LinuxCNC's own wait of about 5 seconds, so the task
+	// is not answering. The command is not withdrawn: it stays in the queue
+	// and runs when the task answers again. Unset when the server cannot tell:
+	// nothing was dispatched, the LinuxCNC bindings on the server do not
+	// expose the serial, or the server is older than this field. It does not
+	// change status: RCS_DONE still means "dispatched". For a command sent as
+	// several LinuxCNC messages it describes the last one LinuxCNC took.
+	Acknowledged *bool `protobuf:"varint,5,opt,name=acknowledged,proto3,oneof" json:"acknowledged,omitempty"`
+	// From SendCommand, with RCS_ERROR: true when the server is certain that
+	// nothing was written to LinuxCNC for this request, so sending it again
+	// cannot run it twice. False does not mean that something was written,
+	// only that the server cannot rule it out (a failure during a send, a
+	// command of several messages that failed part-way, a command helper
+	// process that died while it had the command). A server older than this
+	// field never sets it.
+	NotSent       bool `protobuf:"varint,6,opt,name=not_sent,json=notSent,proto3" json:"not_sent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CommandResponse) Reset() {
@@ -4988,6 +5008,20 @@ func (x *CommandResponse) GetLinuxcncSerial() int32 {
 		return *x.LinuxcncSerial
 	}
 	return 0
+}
+
+func (x *CommandResponse) GetAcknowledged() bool {
+	if x != nil && x.Acknowledged != nil {
+		return *x.Acknowledged
+	}
+	return false
+}
+
+func (x *CommandResponse) GetNotSent() bool {
+	if x != nil {
+		return x.NotSent
+	}
+	return false
 }
 
 type GetStatusRequest struct {
@@ -6824,13 +6858,16 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\x0etask_plan_sync\x18# \x01(\v2\x1d.linuxcnc.TaskPlanSyncCommandH\x00R\ftaskPlanSync\x12.\n" +
 	"\x05debug\x18$ \x01(\v2\x16.linuxcnc.DebugCommandH\x00R\x05debug\x12M\n" +
 	"\x10operator_message\x18% \x01(\v2 .linuxcnc.OperatorMessageCommandH\x00R\x0foperatorMessageB\t\n" +
-	"\acommand\"\xbd\x01\n" +
+	"\acommand\"\x92\x02\n" +
 	"\x0fCommandResponse\x12\x16\n" +
 	"\x06serial\x18\x01 \x01(\x05R\x06serial\x12+\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x13.linuxcnc.RcsStatusR\x06status\x12#\n" +
 	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12,\n" +
-	"\x0flinuxcnc_serial\x18\x04 \x01(\x05H\x00R\x0elinuxcncSerial\x88\x01\x01B\x12\n" +
-	"\x10_linuxcnc_serial\"\x12\n" +
+	"\x0flinuxcnc_serial\x18\x04 \x01(\x05H\x00R\x0elinuxcncSerial\x88\x01\x01\x12'\n" +
+	"\facknowledged\x18\x05 \x01(\bH\x01R\facknowledged\x88\x01\x01\x12\x19\n" +
+	"\bnot_sent\x18\x06 \x01(\bR\anotSentB\x12\n" +
+	"\x10_linuxcnc_serialB\x0f\n" +
+	"\r_acknowledged\"\x12\n" +
 	"\x10GetStatusRequest\"\x89\x01\n" +
 	"\x13WaitCompleteRequest\x12\x16\n" +
 	"\x06serial\x18\x01 \x01(\x05R\x06serial\x12\x18\n" +

@@ -245,6 +245,60 @@ func TestSendCommandMdi(t *testing.T) {
 	}
 }
 
+func TestSendCommandReportsAcknowledged(t *testing.T) {
+	client, conn := newLinuxCNCClient(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := client.SendCommand(ctx, &LinuxCNCCommand{
+		Serial:  103,
+		Command: &LinuxCNCCommand_Mdi{Mdi: &MdiCommand{Command: "G0 X1"}},
+	})
+	if err != nil {
+		t.Fatalf("SendCommand failed: %v", err)
+	}
+
+	if resp.Acknowledged == nil {
+		t.Fatalf("expected acknowledged to be set")
+	}
+	if !resp.GetAcknowledged() {
+		t.Errorf("expected acknowledged to be true")
+	}
+	if resp.GetNotSent() {
+		t.Errorf("an accepted command must not be marked not_sent")
+	}
+}
+
+func TestSendCommandMarksARefusedCommandNotSent(t *testing.T) {
+	client, conn := newLinuxCNCClient(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// The mock machine has three joints, so joint 3 is refused before
+	// anything is sent.
+	resp, err := client.SendCommand(ctx, &LinuxCNCCommand{
+		Serial:  104,
+		Command: &LinuxCNCCommand_Home{Home: &HomeCommand{Joint: 3}},
+	})
+	if err != nil {
+		t.Fatalf("SendCommand failed: %v", err)
+	}
+
+	if resp.Status != RcsStatus_RCS_ERROR {
+		t.Fatalf("expected RCS_ERROR, got %v", resp.Status)
+	}
+	if !resp.GetNotSent() {
+		t.Errorf("expected not_sent to be true for a refused command")
+	}
+	if resp.Acknowledged != nil {
+		t.Errorf("expected acknowledged to be unset, got %v", resp.GetAcknowledged())
+	}
+}
+
 func TestSendCommandJog(t *testing.T) {
 	client, conn := newLinuxCNCClient(t)
 	defer conn.Close()
