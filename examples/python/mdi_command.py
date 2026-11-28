@@ -9,12 +9,21 @@ Usage:
     python mdi_command.py "G0 X10 Y10"
     python mdi_command.py --interactive
 
+Before it sends anything the example checks that the machine is on, that
+every joint is homed and that the interpreter is idle. It does not take the
+machine out of E-stop, power it on or home it: do that at the machine first.
+It then switches to MDI mode. The checks are repeated before every command,
+so in interactive mode a command is not sent while an earlier one is still
+running.
+
 Safety Warning:
     MDI commands execute immediately on the machine. Understand what
-    each command does before running it.
+    each command does before running it. Ctrl+C stops this program, not the
+    machine: a command that was already sent keeps running.
 """
 
 import argparse
+import math
 import sys
 import time
 
@@ -27,6 +36,20 @@ except ImportError:
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent.parent / "packages" / "python"))
     from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
+
+
+# Deadlines, in seconds. Every RPC gets one.
+RPC_TIMEOUT = 5.0             # GetStatus and SendCommand
+STATE_CHANGE_TIMEOUT = 5.0    # A mode change must finish within this
+WAIT_DEADLINE_MARGIN = 5.0    # WaitComplete's client deadline = its timeout + this
+DEFAULT_MDI_TIMEOUT = 60.0    # How long to wait for an MDI command to finish
+MAX_MDI_TIMEOUT = 86400.0     # Longest --wait-timeout accepted (one day)
+POLL_INTERVAL = 0.05
+STOPPED_VELOCITY = 1e-6       # Below this the machine is standing still
+
+
+class ExampleError(Exception):
+    """The example cannot continue; the message says why."""
 
 
 class LinuxCNCClient:
@@ -45,135 +68,242 @@ class LinuxCNCClient:
         return self._serial
 
     def get_status(self) -> linuxcnc_pb2.LinuxCNCStatus:
-        return self.stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
+        return self.stub.GetStatus(linuxcnc_pb2.GetStatusRequest(), timeout=RPC_TIMEOUT)
 
     def send_command(self, command: linuxcnc_pb2.LinuxCNCCommand) -> linuxcnc_pb2.CommandResponse:
+        """Send a command. RCS_DONE in the response means dispatched, not finished."""
         command.serial = self._next_serial()
         command.timestamp = int(time.time() * 1e9)
-        return self.stub.SendCommand(command)
+        return self.stub.SendCommand(command, timeout=RPC_TIMEOUT)
 
-    def wait_complete(self, serial: int, timeout: float = 30.0) -> linuxcnc_pb2.CommandResponse:
-        """Wait for a command to complete."""
-        request = linuxcnc_pb2.WaitCompleteRequest()
-        request.serial = serial
-        request.timeout = timeout
-        return self.stub.WaitComplete(request)
+    def wait_complete(
+        self, sent: linuxcnc_pb2.CommandResponse, timeout: float
+    ) -> linuxcnc_pb2.CommandResponse:
+        """Wait until the command that `sent` answers has finished.
+
+        Returns RCS_DONE, RCS_ERROR (failed) or RCS_EXEC (the timeout
+        expired and the command is still running). RCS_DONE means finished
+        only if LinuxCNC took no later command meanwhile; see
+        confirm_mdi_finished.
+        """
+        request = linuxcnc_pb2.WaitCompleteRequest(timeout=timeout)
+        if sent.HasField("linuxcnc_serial"):
+            # Wait on this command's serial. WaitCompleteRequest.serial would
+            # not do that: the server ignores it.
+            request.linuxcnc_serial = sent.linuxcnc_serial
+        else:
+            print("  Note: the server returned no linuxcnc_serial; waiting on the "
+                  "latest command sent by any client instead.")
+        # The client deadline must be longer than the wait asked of the server.
+        return self.stub.WaitComplete(request, timeout=timeout + WAIT_DEADLINE_MARGIN)
 
     def set_mode(self, mode: linuxcnc_pb2.TaskMode) -> linuxcnc_pb2.CommandResponse:
-        cmd = linuxcnc_pb2.LinuxCNCCommand()
-        cmd.mode.mode = mode
-        return self.send_command(cmd)
+        command = linuxcnc_pb2.LinuxCNCCommand()
+        command.mode.mode = mode
+        return self.send_command(command)
 
-    def set_state(self, state: linuxcnc_pb2.TaskState) -> linuxcnc_pb2.CommandResponse:
-        cmd = linuxcnc_pb2.LinuxCNCCommand()
-        cmd.state.state = state
-        return self.send_command(cmd)
-
-    def mdi(self, gcode: str) -> "tuple[linuxcnc_pb2.CommandResponse, int]":
-        """Send an MDI command. Returns (response, serial)."""
-        cmd = linuxcnc_pb2.LinuxCNCCommand()
-        cmd.mdi.command = gcode
-        resp = self.send_command(cmd)
-        return resp, cmd.serial
+    def mdi(self, gcode: str) -> linuxcnc_pb2.CommandResponse:
+        """Send an MDI command."""
+        command = linuxcnc_pb2.LinuxCNCCommand()
+        command.mdi.command = gcode
+        return self.send_command(command)
 
 
-def ensure_mdi_ready(client: LinuxCNCClient) -> bool:
-    """Ensure machine is ready for MDI commands."""
+def machine_is_on(status: linuxcnc_pb2.LinuxCNCStatus) -> bool:
+    return status.task.task_state == linuxcnc_pb2.STATE_ON
+
+
+def machine_is_busy(status: linuxcnc_pb2.LinuxCNCStatus) -> bool:
+    """True while a program, an MDI command or a jog is under way.
+
+    The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator
+    it read INTERP_IDLE for the whole of some MDI moves, while
+    trajectory.inpos was false in every reading taken during a move. A jog
+    leaves inpos true, so velocity is looked at as well.
+    """
+    return (status.task.interp_state != linuxcnc_pb2.INTERP_IDLE
+            or not status.trajectory.inpos
+            or abs(status.trajectory.current_vel) >= STOPPED_VELOCITY)
+
+
+def ensure_mdi_ready(client: LinuxCNCClient) -> None:
+    """Check the machine is on, homed and idle, then make sure it is in MDI mode."""
     status = client.get_status()
 
-    # Check E-stop
-    if status.task.task_state == linuxcnc_pb2.STATE_ESTOP:
-        print("Machine is in E-stop. Resetting...")
-        resp = client.set_state(linuxcnc_pb2.STATE_ESTOP_RESET)
-        if resp.status != linuxcnc_pb2.RCS_DONE:
-            print(f"Failed to reset E-stop: {resp.error_message}")
+    # Never take the machine out of E-stop or power it on from here.
+    if not machine_is_on(status):
+        state_name = linuxcnc_pb2.TaskState.Name(status.task.task_state)
+        raise ExampleError(
+            f"The machine is not on (state {state_name}). Take it out of E-stop "
+            "and turn it on at the machine, then run this again.")
+
+    # A 1.0 server lists 16 joint entries, of which only the first
+    # trajectory.joints are real. Newer servers list only those.
+    unhomed_joints = [joint.joint_number
+                      for joint in status.joints[:status.trajectory.joints]
+                      if not joint.homed]
+    if unhomed_joints:
+        raise ExampleError(
+            f"Joints {unhomed_joints} are not homed. Home the machine first; "
+            "this example does not home it.")
+
+    # Checked every time, also when the machine is already in MDI mode: a
+    # command whose wait timed out is still running, and so may a program be.
+    if machine_is_busy(status):
+        interp_state_name = linuxcnc_pb2.InterpState.Name(status.task.interp_state)
+        raise ExampleError(
+            "The machine is still busy with a previous command, a running program "
+            f"or a jog (interpreter {interp_state_name}, in position: "
+            f"{status.trajectory.inpos}, velocity {status.trajectory.current_vel:g}). "
+            "Nothing was sent; wait for it to finish and try again.")
+
+    if status.task.task_mode == linuxcnc_pb2.MODE_MDI:
+        return
+
+    print("Setting MDI mode...")
+    sent = client.set_mode(linuxcnc_pb2.MODE_MDI)
+    if sent.status != linuxcnc_pb2.RCS_DONE:
+        raise ExampleError(f"MDI mode was refused: {sent.error_message}")
+
+    finished = client.wait_complete(sent, STATE_CHANGE_TIMEOUT)
+    if finished.status == linuxcnc_pb2.RCS_EXEC:
+        raise ExampleError(f"MDI mode had not finished after {STATE_CHANGE_TIMEOUT:g} s")
+    if finished.status != linuxcnc_pb2.RCS_DONE:
+        raise ExampleError(f"MDI mode failed: {finished.error_message}")
+
+    # Finished is not the same as in effect: check the status, with a deadline.
+    deadline = time.monotonic() + STATE_CHANGE_TIMEOUT
+    while client.get_status().task.task_mode != linuxcnc_pb2.MODE_MDI:
+        if time.monotonic() >= deadline:
+            raise ExampleError(
+                f"MDI mode did not show in the status within {STATE_CHANGE_TIMEOUT:g} s")
+        time.sleep(POLL_INTERVAL)
+
+
+def confirm_mdi_finished(client: LinuxCNCClient, deadline: float) -> bool:
+    """Poll the status until it shows that the MDI command is no longer running.
+
+    RCS_DONE from WaitComplete is not enough. The server also answers it as
+    soon as LinuxCNC has taken a later command from any client (the GUI
+    changing the feed override, say), and the MDI move may then still be
+    running. The status settles it: machine_is_busy is false again.
+
+    The machine must also still be on. An E-stop from another client ends
+    the wait with RCS_DONE too, and the status then reads idle, in position
+    and standing still although the move was cut short.
+
+    One case cannot be told from completion here: an abort from another
+    client. It stops the move and leaves the machine on, idle and in
+    position, exactly as a finished command does. Only the position shows
+    it: the move ends short of its target.
+
+    Returns False if the status did not show that by `deadline` (a
+    time.monotonic() value). The status is read at least once, and each read
+    has its own deadline. Raises ExampleError if the machine is not on.
+    """
+    while True:
+        status = client.get_status()
+        if not machine_is_on(status):
+            state_name = linuxcnc_pb2.TaskState.Name(status.task.task_state)
+            raise ExampleError(
+                f"The machine is no longer on (state {state_name}). The command "
+                "was stopped and did not finish.")
+        if not machine_is_busy(status):
+            return True
+        if time.monotonic() >= deadline:
             return False
-        time.sleep(0.1)
-
-    # Power on
-    status = client.get_status()
-    if status.task.task_state != linuxcnc_pb2.STATE_ON:
-        print("Powering on machine...")
-        resp = client.set_state(linuxcnc_pb2.STATE_ON)
-        if resp.status != linuxcnc_pb2.RCS_DONE:
-            print(f"Failed to power on: {resp.error_message}")
-            return False
-        time.sleep(0.1)
-
-    # Set MDI mode
-    status = client.get_status()
-    if status.task.task_mode != linuxcnc_pb2.MODE_MDI:
-        print("Setting MDI mode...")
-        resp = client.set_mode(linuxcnc_pb2.MODE_MDI)
-        if resp.status != linuxcnc_pb2.RCS_DONE:
-            print(f"Failed to set MDI mode: {resp.error_message}")
-            return False
-        time.sleep(0.1)
-
-    return True
+        time.sleep(POLL_INTERVAL)
 
 
-def execute_mdi(client: LinuxCNCClient, gcode: str, wait: bool = True) -> bool:
-    """Execute an MDI command and optionally wait for completion."""
+def execute_mdi(client: LinuxCNCClient, gcode: str, wait: bool, wait_timeout: float) -> None:
+    """Send an MDI command and, if asked, wait until it has finished."""
     print(f"Executing: {gcode}")
 
-    resp, serial = client.mdi(gcode)
-    if resp.status == linuxcnc_pb2.RCS_ERROR:
-        print(f"  Error: {resp.error_message}")
-        return False
+    sent = client.mdi(gcode)
+    if sent.status != linuxcnc_pb2.RCS_DONE:
+        raise ExampleError(f"The command was refused: {sent.error_message}")
 
-    if wait:
-        # Wait for the command to complete
-        print("  Waiting for completion...")
-        resp = client.wait_complete(serial, timeout=60.0)
-        if resp.status == linuxcnc_pb2.RCS_ERROR:
-            print(f"  Error during execution: {resp.error_message}")
-            return False
-        print("  Done.")
+    if not wait:
+        print("  Dispatched (not waiting for it to finish).")
+        return
 
-    return True
+    print("  Waiting for completion...")
+    # One timeout covers both the wait and the check of the status after it.
+    wait_deadline = time.monotonic() + wait_timeout
+    finished = client.wait_complete(sent, wait_timeout)
+    if finished.status == linuxcnc_pb2.RCS_EXEC:
+        raise ExampleError(
+            f"Timed out: the command was still running after {wait_timeout:g} s. "
+            "It has not been cancelled.")
+    if finished.status != linuxcnc_pb2.RCS_DONE:
+        raise ExampleError(f"The command failed: {finished.error_message}")
+
+    if not confirm_mdi_finished(client, wait_deadline):
+        raise ExampleError(
+            "Not confirmed: the wait ended, but the status did not show the "
+            f"interpreter idle and the motion in position within {wait_timeout:g} s. "
+            "The command may still be running (a wait ends early when LinuxCNC "
+            "takes a later command from any client). It has not been cancelled.")
+    print("  Done.")
 
 
-def interactive_mode(client: LinuxCNCClient):
-    """Interactive MDI shell."""
+def print_position(client: LinuxCNCClient) -> None:
+    pos = client.get_status().position.actual_position
+    print(f"Position: X={pos.x:.4f} Y={pos.y:.4f} Z={pos.z:.4f}")
+
+
+def interactive_mode(client: LinuxCNCClient, wait_timeout: float) -> int:
+    """Interactive MDI shell. Returns how many commands failed.
+
+    A command that fails does not end the session, but it is counted, so the
+    caller can exit non-zero.
+    """
+    failed_command_count = 0
     print("\nInteractive MDI Mode")
     print("Type G-code commands to execute. Type 'quit' or 'exit' to quit.")
     print("Type 'status' to show current position.\n")
 
     while True:
         try:
-            cmd = input("MDI> ").strip()
-        except (EOFError, KeyboardInterrupt):
+            line = input("MDI> ").strip()
+        except EOFError:
             print("\nExiting...")
             break
+        except (OSError, ValueError) as read_error:
+            # A read error is not the end of the input: say so and fail.
+            raise ExampleError(f"Reading input failed: {read_error}") from read_error
 
-        if not cmd:
+        if not line:
             continue
 
-        if cmd.lower() in ("quit", "exit", "q"):
+        if line.lower() in ("quit", "exit", "q"):
             break
 
-        if cmd.lower() == "status":
-            status = client.get_status()
-            pos = status.position.actual_position
-            print(f"Position: X={pos.x:.4f} Y={pos.y:.4f} Z={pos.z:.4f}")
-            continue
-
-        if cmd.lower() == "help":
+        if line.lower() == "help":
             print("Commands:")
             print("  <G-code>  - Execute G-code command")
             print("  status    - Show current position")
             print("  quit      - Exit interactive mode")
             continue
 
-        # Ensure we're still in MDI mode
-        status = client.get_status()
-        if status.task.task_mode != linuxcnc_pb2.MODE_MDI:
-            if not ensure_mdi_ready(client):
-                print("Failed to re-enter MDI mode")
+        try:
+            if line.lower() == "status":
+                print_position(client)
                 continue
 
-        execute_mdi(client, cmd)
+            # The machine may have been turned off or switched to another
+            # mode since the last command, or the last command may still be
+            # running.
+            ensure_mdi_ready(client)
+            execute_mdi(client, line, wait=True, wait_timeout=wait_timeout)
+        except ExampleError as example_error:
+            failed_command_count += 1
+            print(f"  Error: {example_error}")
+        except grpc.RpcError as rpc_error:
+            failed_command_count += 1
+            print(f"  gRPC error: {rpc_error.code()}: {rpc_error.details()}")
+
+    return failed_command_count
 
 
 def main():
@@ -185,6 +315,9 @@ def main():
                         help="Enter interactive MDI mode")
     parser.add_argument("--no-wait", action="store_true",
                         help="Don't wait for command completion")
+    parser.add_argument("--wait-timeout", type=float, default=DEFAULT_MDI_TIMEOUT,
+                        help="Seconds to wait for a command to finish; more than 0 "
+                             "and at most 86400 (default: 60)")
     args = parser.parse_args()
 
     if not args.command and not args.interactive:
@@ -195,28 +328,38 @@ def main():
         print('  python mdi_command.py --interactive')
         sys.exit(1)
 
+    # Checked before any RPC: 0 would make the server use its own default, and
+    # a negative or huge value would give a client deadline that has already
+    # expired or cannot be represented, after the command was dispatched.
+    if not (math.isfinite(args.wait_timeout) and 0 < args.wait_timeout <= MAX_MDI_TIMEOUT):
+        print("Error: --wait-timeout must be a number of seconds greater than 0 "
+              "and at most 86400", file=sys.stderr)
+        sys.exit(1)
+
     client = LinuxCNCClient(args.host, args.port)
 
     try:
-        # Ensure machine is ready for MDI
-        if not ensure_mdi_ready(client):
-            print("Could not prepare machine for MDI")
-            sys.exit(1)
+        ensure_mdi_ready(client)
 
         if args.interactive:
-            interactive_mode(client)
+            failed_command_count = interactive_mode(client, args.wait_timeout)
+            if failed_command_count:
+                raise ExampleError(
+                    f"{failed_command_count} command(s) failed in this session.")
         else:
-            success = execute_mdi(client, args.command, wait=not args.no_wait)
-            if not success:
-                sys.exit(1)
+            execute_mdi(client, args.command, wait=not args.no_wait,
+                        wait_timeout=args.wait_timeout)
+            print_position(client)
 
-            # Show final position
-            status = client.get_status()
-            pos = status.position.actual_position
-            print(f"Position: X={pos.x:.4f} Y={pos.y:.4f} Z={pos.z:.4f}")
-
-    except grpc.RpcError as e:
-        print(f"gRPC error: {e.code()}: {e.details()}", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("\nInterrupted. A command that was already sent keeps running "
+              "on the machine.", file=sys.stderr)
+        sys.exit(130)
+    except ExampleError as example_error:
+        print(f"Error: {example_error}", file=sys.stderr)
+        sys.exit(1)
+    except grpc.RpcError as rpc_error:
+        print(f"gRPC error: {rpc_error.code()}: {rpc_error.details()}", file=sys.stderr)
         sys.exit(1)
     finally:
         client.close()

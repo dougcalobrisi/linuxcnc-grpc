@@ -19,6 +19,61 @@ Example Go clients demonstrating how to connect to and use the LinuxCNC gRPC ser
 | `cmd/jog_axis` | Jog an axis (continuous and incremental) |
 | `cmd/mdi_command` | Execute MDI commands (G-code) |
 | `cmd/hal_query` | Query HAL pins, signals, and parameters |
+| `cmd/upload_file` | Upload, list, and delete G-code files |
+
+## What the motion examples do and do not do
+
+`jog_axis` and `mdi_command` move the machine, so they check before they act:
+
+- The machine must already be on. They never reset E-stop or power the
+  machine on; if it is not on they stop and say so.
+- Every joint must already be homed. They never home the machine.
+- They do switch the task mode (`jog_axis` to manual with teleop on,
+  `mdi_command` to MDI), wait for the switch with `WaitComplete`, and then
+  check that the status shows it.
+- The machine must be idle: the interpreter idle, `trajectory.inpos` true
+  and `trajectory.current_vel` zero. The interpreter state alone is not
+  enough; on the 2.9 simulator it read `INTERP_IDLE` for the whole of some
+  MDI moves. `jog_axis` checks before it changes mode or jogs, and
+  `mdi_command` before every command, so nothing is sent on top of a running
+  program, a jog or an MDI command that has not finished.
+- `jog_axis` repeats these checks on a fresh status right before each jog is
+  started, so a machine that was put in E-stop, turned off or given a program
+  after the first check gets no further jog. A jog stop is always sent.
+- While `jog_axis` waits for an axis to stop it also watches the machine
+  state. After an E-stop the velocity in the status keeps its last value, so
+  the example does not wait for it to reach zero: it stops with the "machine
+  is not on" message.
+- `jog_axis` sends the jog stop on every way out of the continuous jog: when
+  its time is up, on Ctrl+C, after an error and when its output can no longer
+  be written. The incremental jog gets a stop when it is interrupted or fails
+  part way; when it completed normally and the status shows the axis moved
+  and is standing still, no stop is sent. If a stop fails, the example says
+  the axis may still be moving and exits 1.
+- `mdi_command` reports `Done.` only when the command finished. `RCS_DONE`
+  from `WaitComplete` is not enough for that: the wait also ends when
+  LinuxCNC takes a later command from any client, while the MDI move may
+  still be running. So the example then reads the status until the
+  machine is idle by the rule above, and says that the result
+  is not confirmed if that does not show within the timeout. If the machine
+  is no longer on (an E-stop from another client also ends the wait with
+  `RCS_DONE`), it says that the command was stopped and exits non-zero. One
+  thing it cannot detect: an abort from another client leaves the machine on
+  and idle like a finished command, so the example prints `Done.` although
+  the move ended short of its target. A wait that
+  runs out (`--wait-timeout`, 60 seconds by default) is reported as a timeout
+  and the program exits non-zero; the command itself keeps running. In
+  interactive mode a failed command does not end the session, but the exit
+  code at the end is non-zero if any command failed.
+
+`upload_file` never replaces a file: if the name is taken it stops (pick
+another with `--filename`), and `--cleanup` deletes only the file it uploaded.
+
+`stream_status` and `hal_query watch` exit 0 on Ctrl+C and non-zero when the
+stream fails or the server cancels it. `stream_status` also gives up, and
+exits non-zero, when no update arrives for 30 seconds, or for twice
+`--interval` plus 5 seconds if that is longer. `--interval` is in
+milliseconds, from 1 to 60000.
 
 ## Running Examples
 
@@ -29,20 +84,23 @@ From the examples/go directory:
 go run ./cmd/get_status
 
 # Stream status updates
-go run ./cmd/stream_status -- --interval 100
+go run ./cmd/stream_status --interval 100
 
 # Jog demo (moves the machine!)
 go run ./cmd/jog_axis
 
 # MDI commands
 go run ./cmd/mdi_command "G0 X10 Y10"
-go run ./cmd/mdi_command -- --interactive
+go run ./cmd/mdi_command --interactive
 
 # HAL queries
 go run ./cmd/hal_query pins "axis.*"
 go run ./cmd/hal_query signals
 go run ./cmd/hal_query components
 go run ./cmd/hal_query watch spindle.0.speed-out axis.x.pos-cmd
+
+# Upload a sample G-code file, list files, then delete the upload
+go run ./cmd/upload_file --cleanup
 ```
 
 ## Connection Options
@@ -50,8 +108,13 @@ go run ./cmd/hal_query watch spindle.0.speed-out axis.x.pos-cmd
 All examples support `--host` and `--port` flags:
 
 ```bash
-go run ./cmd/get_status -- --host 192.168.1.100 --port 50051
+go run ./cmd/get_status --host 192.168.1.100 --port 50051
 ```
+
+Flags go before any other argument, and there is no `--` separator: Go's
+`flag` package stops reading flags at `--` or at the first argument that is
+not a flag. `go run ./cmd/mdi_command --no-wait "G0 X10"` works;
+`go run ./cmd/mdi_command "G0 X10" --no-wait` is rejected.
 
 ## Using as a Library
 
@@ -64,9 +127,21 @@ go get github.com/dougcalobrisi/linuxcnc-grpc
 ```go
 import pb "github.com/dougcalobrisi/linuxcnc-grpc/packages/go"
 
-conn, _ := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+conn, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+if err != nil {
+    log.Fatal(err)
+}
+defer conn.Close()
 client := pb.NewLinuxCNCServiceClient(conn)
-status, _ := client.GetStatus(context.Background(), &pb.GetStatusRequest{})
+
+// Give every call a deadline.
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+status, err := client.GetStatus(ctx, &pb.GetStatusRequest{})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(status.GetTask().GetTaskMode())
 ```
 
 ## Safety Warning

@@ -35,7 +35,7 @@ import type { ServiceError } from "linuxcnc-grpc";
 program
   .option("--host <host>", "gRPC server host", "localhost")
   .option("--port <port>", "gRPC server port", "50051")
-  .option("--interval <interval>", "Update interval in ms for watch command", "500");
+  .option("--interval <interval>", "Update interval in ms for watch command, 1 to 60000", "500");
 
 program
   .command("pins [pattern]")
@@ -69,6 +69,10 @@ program
 
 const RPC_DEADLINE = 5000;
 
+// The server accepts watch intervals up to 60 seconds.
+const MIN_INTERVAL_MS = 1;
+const MAX_INTERVAL_MS = 60000;
+
 // Declare client before parse() since actions may run synchronously during parse()
 let client: HalServiceClient;
 
@@ -81,7 +85,13 @@ function getAddress(): string {
 
 function getIntervalMs(): number {
   const opts = program.opts();
-  return parseInt(opts.interval);
+  // Number(), not parseInt(): "500abc" must not pass as 500.
+  return opts.interval.trim() === "" ? NaN : Number(opts.interval);
+}
+
+function intervalIsValid(): boolean {
+  const intervalMs = getIntervalMs();
+  return Number.isInteger(intervalMs) && intervalMs >= MIN_INTERVAL_MS && intervalMs <= MAX_INTERVAL_MS;
 }
 
 function formatValue(value: HalValue | undefined): string {
@@ -98,6 +108,9 @@ function formatValue(value: HalValue | undefined): string {
   if (value.u32Value !== undefined) {
     return value.u32Value.toString();
   }
+  // s64 and u64 arrive as JavaScript numbers, so they are exact only up to
+  // Number.MAX_SAFE_INTEGER (2^53 - 1). A larger value arrives as the nearest
+  // number, with its low digits lost.
   if (value.s64Value !== undefined) {
     return value.s64Value.toString();
   }
@@ -132,6 +145,7 @@ function queryPins(pattern: string): void {
     }
     if (!response.success) {
       console.error(`Error: ${response.error}`);
+      client.close();
       process.exit(1);
     }
 
@@ -167,6 +181,7 @@ function querySignals(pattern: string): void {
     }
     if (!response.success) {
       console.error(`Error: ${response.error}`);
+      client.close();
       process.exit(1);
     }
 
@@ -204,6 +219,7 @@ function queryParams(pattern: string): void {
     }
     if (!response.success) {
       console.error(`Error: ${response.error}`);
+      client.close();
       process.exit(1);
     }
 
@@ -240,22 +256,22 @@ function queryComponents(pattern: string): void {
     }
     if (!response.success) {
       console.error(`Error: ${response.error}`);
+      client.close();
       process.exit(1);
     }
 
     console.log(`Found ${response.components.length} components matching '${pattern}':\n`);
-    console.log(
-      `${"Name".padEnd(30)} ${"ID".padEnd(6)} ${"Ready".padEnd(6)} ${"Pins".padEnd(6)} Params`
-    );
-    console.log("-".repeat(60));
+    // The server infers components from pin and parameter names, so the name
+    // and the pin and parameter lists are all it reports about one.
+    console.log(`${"Name".padEnd(30)} ${"Pins".padEnd(6)} Params`);
+    console.log("-".repeat(45));
 
     const comps = [...response.components].sort((a, b) =>
       a.name.localeCompare(b.name)
     );
     for (const comp of comps) {
-      const ready = comp.ready ? "Yes" : "No";
       console.log(
-        `${comp.name.padEnd(30)} ${comp.id.toString().padEnd(6)} ${ready.padEnd(6)} ${comp.pins.length.toString().padEnd(6)} ${comp.params.length}`
+        `${comp.name.padEnd(30)} ${comp.pins.length.toString().padEnd(6)} ${comp.params.length}`
       );
     }
     client.close();
@@ -270,21 +286,31 @@ function watchValues(names: string[]): void {
   console.log(`Watching ${names.length} values (interval: ${getIntervalMs()}ms)`);
   console.log("Press Ctrl+C to stop\n");
 
+  // No deadline here: the watch runs until Ctrl+C, and the server only sends
+  // something when a value changes.
   const stream = client.watchValues(request);
+
+  // True once this program has cancelled the watch itself, on Ctrl+C. Set
+  // before cancel() is called.
+  let cancelledByThisProgram = false;
 
   stream.on("data", (batch) => {
     for (const change of batch.changes) {
       const oldVal = formatValue(change.oldValue);
       const newVal = formatValue(change.newValue);
-      const ts = new Date(Number(change.timestamp) / 1000000).toLocaleTimeString();
+      // The server sends nanoseconds; the generated decoder has already
+      // turned an int64 this large into milliseconds.
+      const ts = new Date(change.timestamp).toLocaleTimeString();
       console.log(`[${ts}] ${change.name}: ${oldVal} -> ${newVal}`);
     }
   });
 
   stream.on("error", (err: ServiceError) => {
-    if (err.code === status.CANCELLED) {
-      // Normal cancellation
+    if (err.code === status.CANCELLED && cancelledByThisProgram) {
+      // Our own Ctrl+C: a normal end
+      client.close();
     } else {
+      // Anything else is a failure, including a watch the server cancelled.
       console.error(`\ngRPC error: ${err.code}: ${err.details}`);
       client.close();
       process.exit(1);
@@ -296,6 +322,7 @@ function watchValues(names: string[]): void {
   });
 
   process.on("SIGINT", () => {
+    cancelledByThisProgram = true;
     stream.cancel();
   });
 }
@@ -325,6 +352,11 @@ function getSystemStatus(): void {
 }
 
 function runCommand(command: string, arg: string | string[]): void {
+  if (command === "watch" && !intervalIsValid()) {
+    console.error("Error: --interval must be a whole number of milliseconds from 1 to 60000");
+    process.exit(1);
+  }
+
   const address = getAddress();
   console.error(`Connecting to ${address}...`);
   client = new HalServiceClient(address, credentials.createInsecure(), {

@@ -11,7 +11,11 @@
 
 use clap::Parser;
 use linuxcnc_grpc::linuxcnc::linux_cnc_service_client::LinuxCncServiceClient;
-use linuxcnc_grpc::linuxcnc::{GetStatusRequest, LinuxCncStatus, TaskMode, TaskState};
+use linuxcnc_grpc::linuxcnc::{
+    ExecState, GetStatusRequest, InterpState, LinuxCncStatus, TaskMode, TaskState,
+};
+use std::time::Duration;
+use tonic::transport::Endpoint;
 
 #[derive(Parser, Debug)]
 #[command(name = "get_status")]
@@ -45,6 +49,14 @@ fn format_task_state(state: i32) -> &'static str {
     }
 }
 
+fn format_exec_state(state: i32) -> &'static str {
+    ExecState::try_from(state).map_or("UNKNOWN", |exec_state| exec_state.as_str_name())
+}
+
+fn format_interp_state(state: i32) -> &'static str {
+    InterpState::try_from(state).map_or("UNKNOWN", |interp_state| interp_state.as_str_name())
+}
+
 fn print_status(status: &LinuxCncStatus) {
     println!("{}", "=".repeat(60));
     println!("LinuxCNC Status");
@@ -55,8 +67,8 @@ fn print_status(status: &LinuxCncStatus) {
         println!("\n[Task]");
         println!("  Mode:       {}", format_task_mode(task.task_mode));
         println!("  State:      {}", format_task_state(task.task_state));
-        println!("  Exec State: {:?}", task.exec_state);
-        println!("  Interp:     {:?}", task.interp_state);
+        println!("  Exec State: {}", format_exec_state(task.exec_state));
+        println!("  Interp:     {}", format_interp_state(task.interp_state));
         if !task.file.is_empty() {
             println!("  File:       {}", task.file);
         }
@@ -162,9 +174,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let addr = format!("http://{}:{}", args.host, args.port);
 
-    let mut client = LinuxCncServiceClient::connect(addr).await?;
+    // Deadlines for connecting and for the request itself.
+    let channel = Endpoint::from_shared(addr)?
+        .connect_timeout(Duration::from_secs(5))
+        .connect()
+        .await?;
+    let mut client = LinuxCncServiceClient::new(channel);
 
-    let request = tonic::Request::new(GetStatusRequest {});
+    let mut request = tonic::Request::new(GetStatusRequest {});
+    request.set_timeout(Duration::from_secs(5));
     let response = client.get_status(request).await?;
     let status = response.into_inner();
 

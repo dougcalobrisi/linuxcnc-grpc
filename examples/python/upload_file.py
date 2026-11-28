@@ -5,13 +5,15 @@ Upload File Example
 Uploads a G-code file to the LinuxCNC nc_files directory via gRPC,
 lists files to confirm, and optionally cleans up.
 
+The upload never replaces a file: if the name is already taken the example
+stops, and --cleanup only deletes a file this run created.
+
 Usage:
-    python upload_file.py [--host HOST] [--port PORT] [--cleanup]
+    python upload_file.py [--host HOST] [--port PORT] [--filename NAME] [--cleanup]
 """
 
 import argparse
 import sys
-
 
 import grpc
 
@@ -41,58 +43,80 @@ M2
 """
 
 
-def upload_file(host: str, port: int, cleanup: bool) -> None:
+RPC_TIMEOUT = 10.0  # seconds, for every RPC
+
+
+def upload_file(host: str, port: int, filename: str, cleanup: bool) -> None:
     """Upload a G-code file, list files, and optionally clean up."""
     channel = grpc.insecure_channel(f"{host}:{port}")
     stub = linuxcnc_pb2_grpc.LinuxCNCServiceStub(channel)
 
-    filename = "grpc_example.ngc"
+    # True only once this run has created the file, so that --cleanup can
+    # never delete a file that was there before.
+    file_was_created = False
 
     try:
-        # Upload the file
+        # Upload the file. fail_if_exists makes the server refuse to replace
+        # an existing file instead of overwriting it.
         print(f"Uploading '{filename}'...")
         upload_request = linuxcnc_pb2.UploadFileRequest(
             filename=filename,
             content=SAMPLE_GCODE,
+            fail_if_exists=True,
         )
-        upload_response = stub.UploadFile(upload_request)
-        overwrite_msg = " (overwritten)" if upload_response.overwritten else ""
-        print(f"  Written to: {upload_response.path}{overwrite_msg}")
+        try:
+            upload_response = stub.UploadFile(upload_request, timeout=RPC_TIMEOUT)
+        except grpc.RpcError as rpc_error:
+            if rpc_error.code() == grpc.StatusCode.ALREADY_EXISTS:
+                print(f"'{filename}' already exists on the machine and was left "
+                      "untouched. Delete it there or pick another name with "
+                      "--filename.", file=sys.stderr)
+                sys.exit(1)
+            raise
+        file_was_created = True
+        print(f"  Written to: {upload_response.path}")
         print(f"  Size: {len(SAMPLE_GCODE)} bytes")
 
         # List files to confirm
-        print(f"\nListing files...")
-        list_request = linuxcnc_pb2.ListFilesRequest()
-        list_response = stub.ListFiles(list_request)
+        print("\nListing files...")
+        list_response = stub.ListFiles(linuxcnc_pb2.ListFilesRequest(), timeout=RPC_TIMEOUT)
         print(f"  Directory: {list_response.directory}")
         print(f"  {'Name':<30} {'Size':>8}  {'Type'}")
         print(f"  {'-'*30} {'-'*8}  {'-'*4}")
-        for f in list_response.files:
-            ftype = "DIR" if f.is_directory else "FILE"
-            print(f"  {f.name:<30} {f.size_bytes:>8}  {ftype}")
+        for file_info in list_response.files:
+            file_type = "DIR" if file_info.is_directory else "FILE"
+            print(f"  {file_info.name:<30} {file_info.size_bytes:>8}  {file_type}")
 
-        # Optionally clean up
-        if cleanup:
-            print(f"\nDeleting '{filename}'...")
-            delete_request = linuxcnc_pb2.DeleteFileRequest(filename=filename)
-            delete_response = stub.DeleteFile(delete_request)
-            print(f"  Deleted: {delete_response.path}")
-
-    except grpc.RpcError as e:
-        print(f"gRPC error: {e.code()}: {e.details()}", file=sys.stderr)
+    except grpc.RpcError as rpc_error:
+        print(f"gRPC error: {rpc_error.code()}: {rpc_error.details()}", file=sys.stderr)
         sys.exit(1)
     finally:
-        channel.close()
+        try:
+            # Optionally clean up, but only the file this run created.
+            if cleanup and file_was_created:
+                print(f"\nDeleting '{filename}'...")
+                delete_request = linuxcnc_pb2.DeleteFileRequest(filename=filename)
+                delete_response = stub.DeleteFile(delete_request, timeout=RPC_TIMEOUT)
+                print(f"  Deleted: {delete_response.path}")
+        except grpc.RpcError as rpc_error:
+            print(f"Could not delete '{filename}': {rpc_error.code()}: "
+                  f"{rpc_error.details()}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            channel.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Upload G-code file via gRPC")
     parser.add_argument("--host", default="localhost", help="gRPC server host")
     parser.add_argument("--port", type=int, default=50051, help="gRPC server port")
-    parser.add_argument("--cleanup", action="store_true", help="Delete the file after uploading")
+    parser.add_argument("--filename", default="grpc_example.ngc",
+                        help="Name to upload as (default: grpc_example.ngc)")
+    parser.add_argument("--cleanup", action="store_true",
+                        help="Delete the uploaded file afterwards")
     args = parser.parse_args()
 
-    upload_file(args.host, args.port, args.cleanup)
+    upload_file(args.host, args.port, args.filename, args.cleanup)
 
 
 if __name__ == "__main__":

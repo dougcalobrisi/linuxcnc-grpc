@@ -21,7 +21,7 @@ use linuxcnc_grpc::hal::{
 };
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::signal;
-use tokio::time::timeout;
+use tonic::transport::{Channel, Endpoint};
 
 #[derive(Parser, Debug)]
 #[command(name = "hal_query")]
@@ -35,8 +35,8 @@ struct Args {
     #[arg(long, default_value_t = 50051)]
     port: u16,
 
-    /// Update interval in ms for watch command
-    #[arg(long, default_value_t = 500)]
+    /// Update interval in ms for watch command, 1 to 60000
+    #[arg(long, default_value_t = 500, allow_negative_numbers = true)]
     interval: i32,
 
     #[command(subcommand)]
@@ -76,6 +76,21 @@ enum Command {
     },
     /// Get HAL system status
     Status,
+}
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const RPC_TIMEOUT: Duration = Duration::from_secs(5); // Deadline of every query
+
+// The server accepts watch intervals up to 60 seconds.
+const MIN_INTERVAL_MS: i32 = 1;
+const MAX_INTERVAL_MS: i32 = 60000;
+
+/// Build a request with the query deadline. The client enforces it and the
+/// server sees it too.
+fn with_deadline<T>(message: T) -> tonic::Request<T> {
+    let mut request = tonic::Request::new(message);
+    request.set_timeout(RPC_TIMEOUT);
+    request
 }
 
 fn format_value(value: &Option<HalValue>) -> String {
@@ -119,19 +134,18 @@ fn format_direction(direction: i32) -> &'static str {
 }
 
 async fn query_pins(
-    client: &mut HalServiceClient<tonic::transport::Channel>,
+    client: &mut HalServiceClient<Channel>,
     pattern: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = client
-        .query_pins(tonic::Request::new(QueryPinsCommand {
+        .query_pins(with_deadline(QueryPinsCommand {
             pattern: pattern.to_string(),
         }))
         .await?
         .into_inner();
 
     if !response.success {
-        eprintln!("Error: {}", response.error);
-        return Ok(());
+        return Err(response.error.into());
     }
 
     println!("Found {} pins matching '{}':\n", response.pins.len(), pattern);
@@ -163,19 +177,18 @@ async fn query_pins(
 }
 
 async fn query_signals(
-    client: &mut HalServiceClient<tonic::transport::Channel>,
+    client: &mut HalServiceClient<Channel>,
     pattern: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = client
-        .query_signals(tonic::Request::new(QuerySignalsCommand {
+        .query_signals(with_deadline(QuerySignalsCommand {
             pattern: pattern.to_string(),
         }))
         .await?
         .into_inner();
 
     if !response.success {
-        eprintln!("Error: {}", response.error);
-        return Ok(());
+        return Err(response.error.into());
     }
 
     println!(
@@ -215,19 +228,18 @@ async fn query_signals(
 }
 
 async fn query_params(
-    client: &mut HalServiceClient<tonic::transport::Channel>,
+    client: &mut HalServiceClient<Channel>,
     pattern: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = client
-        .query_params(tonic::Request::new(QueryParamsCommand {
+        .query_params(with_deadline(QueryParamsCommand {
             pattern: pattern.to_string(),
         }))
         .await?
         .into_inner();
 
     if !response.success {
-        eprintln!("Error: {}", response.error);
-        return Ok(());
+        return Err(response.error.into());
     }
 
     println!(
@@ -255,19 +267,18 @@ async fn query_params(
 }
 
 async fn query_components(
-    client: &mut HalServiceClient<tonic::transport::Channel>,
+    client: &mut HalServiceClient<Channel>,
     pattern: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = client
-        .query_components(tonic::Request::new(QueryComponentsCommand {
+        .query_components(with_deadline(QueryComponentsCommand {
             pattern: pattern.to_string(),
         }))
         .await?
         .into_inner();
 
     if !response.success {
-        eprintln!("Error: {}", response.error);
-        return Ok(());
+        return Err(response.error.into());
     }
 
     println!(
@@ -275,22 +286,18 @@ async fn query_components(
         response.components.len(),
         pattern
     );
-    println!(
-        "{:<30} {:<6} {:<6} {:<6} {}",
-        "Name", "ID", "Ready", "Pins", "Params"
-    );
-    println!("{}", "-".repeat(60));
+    // The server infers components from pin and parameter names, so the name
+    // and the pin and parameter lists are all it reports about one.
+    println!("{:<30} {:<6} {}", "Name", "Pins", "Params");
+    println!("{}", "-".repeat(45));
 
     let mut comps = response.components;
     comps.sort_by(|a, b| a.name.cmp(&b.name));
 
     for comp in comps {
-        let ready = if comp.ready { "Yes" } else { "No" };
         println!(
-            "{:<30} {:<6} {:<6} {:<6} {}",
+            "{:<30} {:<6} {}",
             comp.name,
-            comp.id,
-            ready,
             comp.pins.len(),
             comp.params.len()
         );
@@ -300,16 +307,16 @@ async fn query_components(
 }
 
 async fn watch_values(
-    client: &mut HalServiceClient<tonic::transport::Channel>,
+    client: &mut HalServiceClient<Channel>,
     names: Vec<String>,
     interval_ms: i32,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // No deadline here: the watch runs until Ctrl+C, and the server only
+    // sends something when a value changes.
     let request = tonic::Request::new(WatchRequest {
         names: names.clone(),
         interval_ms,
     });
-
-    let mut stream = client.watch_values(request).await?.into_inner();
 
     println!("Watching {} values (interval: {}ms)", names.len(), interval_ms);
     println!("Press Ctrl+C to stop\n");
@@ -322,14 +329,22 @@ async fn watch_values(
 
     tokio::pin!(ctrl_c);
 
+    // Opening the watch waits for the server's response headers, and a
+    // server may send those only together with the first change. So Ctrl+C
+    // is watched here already. There is no timeout: a quiet watch is normal.
+    let mut stream = tokio::select! {
+        _ = &mut ctrl_c => return Ok(()),
+        opened = client.watch_values(request) => opened?.into_inner(),
+    };
+
     loop {
         tokio::select! {
             _ = &mut ctrl_c => {
                 break;
             }
-            result = timeout(Duration::from_secs(30), stream.next()) => {
-                match result {
-                    Ok(Some(Ok(batch))) => {
+            next_batch = stream.next() => {
+                match next_batch {
+                    Some(Ok(batch)) => {
                         for change in batch.changes {
                             let old_val = format_value(&change.old_value);
                             let new_val = format_value(&change.new_value);
@@ -338,15 +353,11 @@ async fn watch_values(
                             println!("[{}] {}: {} -> {}", datetime, change.name, old_val, new_val);
                         }
                     }
-                    Ok(Some(Err(e))) => {
-                        eprintln!("Stream error: {}", e);
-                        break;
+                    Some(Err(stream_error)) => {
+                        // Includes a watch the server cancelled.
+                        return Err(format!("Stream error: {stream_error}").into());
                     }
-                    Ok(None) => {
-                        break;
-                    }
-                    Err(_) => {
-                        eprintln!("Timeout: no update received in 30 seconds");
+                    None => {
                         break;
                     }
                 }
@@ -393,10 +404,10 @@ fn chrono_lite_format(ts: std::time::SystemTime) -> String {
 }
 
 async fn get_system_status(
-    client: &mut HalServiceClient<tonic::transport::Channel>,
+    client: &mut HalServiceClient<Channel>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = client
-        .get_system_status(tonic::Request::new(GetSystemStatusRequest {}))
+        .get_system_status(with_deadline(GetSystemStatusRequest {}))
         .await?
         .into_inner();
 
@@ -417,11 +428,22 @@ async fn get_system_status(
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+async fn main() {
+    // An error, including a response with success = false, exits non-zero.
+    if let Err(error) = run(Args::parse()).await {
+        eprintln!("Error: {error}");
+        std::process::exit(1);
+    }
+}
+
+async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("http://{}:{}", args.host, args.port);
 
-    let mut client = HalServiceClient::connect(addr).await?;
+    let channel = Endpoint::from_shared(addr)?
+        .connect_timeout(CONNECT_TIMEOUT)
+        .connect()
+        .await?;
+    let mut client = HalServiceClient::new(channel);
 
     match args.command {
         Command::Pins { pattern } => query_pins(&mut client, &pattern).await?,
@@ -431,6 +453,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Watch { names } => {
             if names.is_empty() {
                 eprintln!("Error: watch command requires at least one name");
+                std::process::exit(1);
+            }
+            if !(MIN_INTERVAL_MS..=MAX_INTERVAL_MS).contains(&args.interval) {
+                eprintln!(
+                    "Error: --interval must be a whole number of milliseconds from 1 to 60000"
+                );
                 std::process::exit(1);
             }
             watch_values(&mut client, names, args.interval).await?

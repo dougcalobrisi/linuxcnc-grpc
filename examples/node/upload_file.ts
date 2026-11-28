@@ -4,8 +4,11 @@
  * Uploads a G-code file to the LinuxCNC nc_files directory via gRPC,
  * lists files to confirm, and optionally cleans up.
  *
+ * The upload never replaces a file: if the name is already taken the example
+ * stops, and --cleanup only deletes a file this run created.
+ *
  * Usage:
- *   npx tsx upload_file.ts [--host HOST] [--port PORT] [--cleanup]
+ *   npx tsx upload_file.ts [--host HOST] [--port PORT] [--filename NAME] [--cleanup]
  */
 
 import { program } from "commander";
@@ -14,18 +17,27 @@ import {
   UploadFileRequest,
   ListFilesRequest,
   DeleteFileRequest,
+  UploadFileResponse,
+  ListFilesResponse,
+  DeleteFileResponse,
   Metadata,
   credentials,
+  status,
 } from "linuxcnc-grpc";
+import type { ServiceError } from "linuxcnc-grpc";
 
 program
   .option("--host <host>", "gRPC server host", "localhost")
   .option("--port <port>", "gRPC server port", "50051")
-  .option("--cleanup", "Delete the file after uploading")
+  .option("--filename <name>", "Name to upload as", "grpc_example.ngc")
+  .option("--cleanup", "Delete the uploaded file afterwards")
   .parse();
 
 const opts = program.opts();
 const address = `${opts.host}:${opts.port}`;
+const filename: string = opts.filename;
+
+const RPC_TIMEOUT_MS = 10000; // Deadline of every RPC
 
 const sampleGCode = `(Sample G-code uploaded via gRPC)
 G21 (metric)
@@ -50,68 +62,100 @@ const client = new LinuxCNCServiceClient(
   }
 );
 
-const filename = "grpc_example.ngc";
-const deadline = new Date(Date.now() + 10000);
+function deadlineIn(milliseconds: number): { deadline: Date } {
+  return { deadline: new Date(Date.now() + milliseconds) };
+}
 
-// Upload the file
-console.log(`Uploading '${filename}'...`);
-client.uploadFile(
-  UploadFileRequest.create({ filename, content: sampleGCode }),
-  new Metadata(),
-  { deadline },
-  (err, uploadResp) => {
-    if (err) {
-      console.error(`UploadFile error: ${err.code}: ${err.details}`);
-      client.close();
-      process.exit(1);
+function uploadFile(request: UploadFileRequest): Promise<UploadFileResponse> {
+  return new Promise((resolve, reject) => {
+    client.uploadFile(request, new Metadata(), deadlineIn(RPC_TIMEOUT_MS), (err, response) => {
+      if (err) reject(err);
+      else resolve(response);
+    });
+  });
+}
+
+function listFiles(): Promise<ListFilesResponse> {
+  return new Promise((resolve, reject) => {
+    client.listFiles(ListFilesRequest.create({}), new Metadata(), deadlineIn(RPC_TIMEOUT_MS), (err, response) => {
+      if (err) reject(err);
+      else resolve(response);
+    });
+  });
+}
+
+function deleteFile(request: DeleteFileRequest): Promise<DeleteFileResponse> {
+  return new Promise((resolve, reject) => {
+    client.deleteFile(request, new Metadata(), deadlineIn(RPC_TIMEOUT_MS), (err, response) => {
+      if (err) reject(err);
+      else resolve(response);
+    });
+  });
+}
+
+function errorText(err: unknown): string {
+  const serviceError = err as Partial<ServiceError>;
+  if (serviceError.code !== undefined) {
+    return `gRPC error ${serviceError.code}: ${serviceError.details}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function main(): Promise<void> {
+  // True only once this run has created the file, so that --cleanup can
+  // never delete a file that was there before.
+  let fileWasCreated = false;
+
+  try {
+    // Upload the file. failIfExists makes the server refuse to replace an
+    // existing file instead of overwriting it.
+    console.log(`Uploading '${filename}'...`);
+    let uploadResponse: UploadFileResponse;
+    try {
+      uploadResponse = await uploadFile(
+        UploadFileRequest.create({ filename, content: sampleGCode, failIfExists: true })
+      );
+    } catch (err) {
+      if ((err as Partial<ServiceError>).code === status.ALREADY_EXISTS) {
+        throw new Error(
+          `'${filename}' already exists on the machine and was left untouched. ` +
+            "Delete it there or pick another name with --filename."
+        );
+      }
+      throw err;
     }
-
-    const overwriteMsg = uploadResp.overwritten ? " (overwritten)" : "";
-    console.log(`  Written to: ${uploadResp.path}${overwriteMsg}`);
+    fileWasCreated = true;
+    console.log(`  Written to: ${uploadResponse.path}`);
     console.log(`  Size: ${sampleGCode.length} bytes`);
 
     // List files to confirm
     console.log("\nListing files...");
-    client.listFiles(
-      ListFilesRequest.create({}),
-      new Metadata(),
-      { deadline },
-      (err, listResp) => {
-        if (err) {
-          console.error(`ListFiles error: ${err.code}: ${err.details}`);
-          client.close();
-          process.exit(1);
-        }
-
-        console.log(`  Directory: ${listResp.directory}`);
-        console.log(`  ${"Name".padEnd(30)} ${"Size".padStart(8)}  Type`);
-        console.log(`  ${"-".repeat(30)} ${"-".repeat(8)}  ----`);
-        for (const f of listResp.files) {
-          const ftype = f.isDirectory ? "DIR" : "FILE";
-          console.log(`  ${f.name.padEnd(30)} ${String(f.sizeBytes).padStart(8)}  ${ftype}`);
-        }
-
-        // Optionally clean up
-        if (opts.cleanup) {
-          console.log(`\nDeleting '${filename}'...`);
-          client.deleteFile(
-            DeleteFileRequest.create({ filename }),
-            new Metadata(),
-            { deadline },
-            (err, deleteResp) => {
-              if (err) {
-                console.error(`DeleteFile error: ${err.code}: ${err.details}`);
-                client.close();
-                process.exit(1);
-              }
-              console.log(`  Deleted: ${deleteResp.path}`);
-              client.close();
-            }
-          );
-        } else {
-          client.close();
-        }
-      }
-    );
+    const listResponse = await listFiles();
+    console.log(`  Directory: ${listResponse.directory}`);
+    console.log(`  ${"Name".padEnd(30)} ${"Size".padStart(8)}  Type`);
+    console.log(`  ${"-".repeat(30)} ${"-".repeat(8)}  ----`);
+    for (const fileInfo of listResponse.files) {
+      const fileType = fileInfo.isDirectory ? "DIR" : "FILE";
+      console.log(`  ${fileInfo.name.padEnd(30)} ${String(fileInfo.sizeBytes).padStart(8)}  ${fileType}`);
+    }
+  } catch (err) {
+    console.error(`Error: ${errorText(err)}`);
+    process.exitCode = 1;
   }
-);
+
+  try {
+    // Optionally clean up, but only the file this run created.
+    if (opts.cleanup && fileWasCreated) {
+      console.log(`\nDeleting '${filename}'...`);
+      const deleteResponse = await deleteFile(DeleteFileRequest.create({ filename }));
+      console.log(`  Deleted: ${deleteResponse.path}`);
+    }
+  } catch (err) {
+    console.error(`Could not delete '${filename}': ${errorText(err)}`);
+    process.exitCode = 1;
+  } finally {
+    client.close();
+  }
+}
+
+main();

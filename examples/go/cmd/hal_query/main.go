@@ -5,10 +5,10 @@
 //
 // Usage:
 //
-//	go run hal_query.go pins "axis.*"
-//	go run hal_query.go signals
-//	go run hal_query.go components
-//	go run hal_query.go watch "spindle.0.speed-out" "axis.x.pos-cmd"
+//	go run ./cmd/hal_query pins "axis.*"
+//	go run ./cmd/hal_query signals
+//	go run ./cmd/hal_query components
+//	go run ./cmd/hal_query watch "spindle.0.speed-out" "axis.x.pos-cmd"
 package main
 
 import (
@@ -28,6 +28,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/dougcalobrisi/linuxcnc-grpc/packages/go"
+)
+
+// The server accepts watch intervals up to 60 seconds.
+const (
+	minIntervalMs = 1
+	maxIntervalMs = 60000
 )
 
 // rpcCtx returns a context with a 5-second timeout for individual RPC calls.
@@ -180,24 +186,23 @@ func queryComponents(client pb.HalServiceClient, pattern string) {
 	}
 
 	fmt.Printf("Found %d components matching '%s':\n\n", len(response.Components), pattern)
-	fmt.Printf("%-30s %-6s %-6s %-6s %s\n", "Name", "ID", "Ready", "Pins", "Params")
-	fmt.Println(strings.Repeat("-", 60))
+	// The server infers components from pin and parameter names, so the name
+	// and the pin and parameter lists are all it reports about one.
+	fmt.Printf("%-30s %-6s %s\n", "Name", "Pins", "Params")
+	fmt.Println(strings.Repeat("-", 45))
 
 	// Sort components by name
 	comps := response.Components
 	sort.Slice(comps, func(i, j int) bool { return comps[i].Name < comps[j].Name })
 
 	for _, comp := range comps {
-		ready := "No"
-		if comp.Ready {
-			ready = "Yes"
-		}
-		fmt.Printf("%-30s %-6d %-6s %-6d %d\n", comp.Name, comp.Id, ready, len(comp.Pins), len(comp.Params))
+		fmt.Printf("%-30s %-6d %d\n", comp.Name, len(comp.Pins), len(comp.Params))
 	}
 }
 
 func watchValues(client pb.HalServiceClient, names []string, intervalMs int) {
-	// Set up cancellation on Ctrl+C
+	// Set up cancellation on Ctrl+C. There is no deadline here: the watch runs
+	// until Ctrl+C, and the server only sends something when a value changes.
 	ctx, cancel := context.WithCancel(context.Background())
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -215,7 +220,8 @@ func watchValues(client pb.HalServiceClient, names []string, intervalMs int) {
 	}
 
 	fmt.Printf("Watching %d values (interval: %dms)\n", len(names), intervalMs)
-	fmt.Println("Press Ctrl+C to stop\n")
+	fmt.Println("Press Ctrl+C to stop")
+	fmt.Println()
 
 	for {
 		batch, err := stream.Recv()
@@ -224,9 +230,11 @@ func watchValues(client pb.HalServiceClient, names []string, intervalMs int) {
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				// Cancelled, normal exit
+				// Cancelled by this program (Ctrl+C): normal exit
 				break
 			}
+			// Anything else is a failure, including a watch the server
+			// cancelled.
 			log.Fatalf("Stream error: %v", err)
 		}
 
@@ -262,7 +270,7 @@ func getSystemStatus(client pb.HalServiceClient) {
 }
 
 func printUsage() {
-	fmt.Println("Usage: go run hal_query.go <command> [options]")
+	fmt.Println("Usage: go run ./cmd/hal_query <command> [options]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  pins [pattern]       Query HAL pins")
 	fmt.Println("  signals [pattern]    Query HAL signals")
@@ -271,16 +279,16 @@ func printUsage() {
 	fmt.Println("  watch <names...>     Watch values for changes")
 	fmt.Println("  status               Get HAL system status")
 	fmt.Println("\nExamples:")
-	fmt.Println("  go run hal_query.go pins \"axis.*\"")
-	fmt.Println("  go run hal_query.go signals")
-	fmt.Println("  go run hal_query.go components")
-	fmt.Println("  go run hal_query.go watch spindle.0.speed-out axis.x.pos-cmd")
+	fmt.Println("  go run ./cmd/hal_query pins \"axis.*\"")
+	fmt.Println("  go run ./cmd/hal_query signals")
+	fmt.Println("  go run ./cmd/hal_query components")
+	fmt.Println("  go run ./cmd/hal_query watch spindle.0.speed-out axis.x.pos-cmd")
 }
 
 func main() {
 	host := flag.String("host", "localhost", "gRPC server host")
 	port := flag.Int("port", 50051, "gRPC server port")
-	intervalMs := flag.Int("interval", 500, "Update interval in ms for watch command")
+	intervalMs := flag.Int("interval", 500, "Update interval in ms for watch command, 1 to 60000")
 	flag.Parse()
 
 	args := flag.Args()
@@ -328,6 +336,10 @@ func main() {
 	case "watch":
 		if len(args) < 2 {
 			fmt.Println("Error: watch command requires at least one name")
+			os.Exit(1)
+		}
+		if *intervalMs < minIntervalMs || *intervalMs > maxIntervalMs {
+			fmt.Fprintln(os.Stderr, "Error: --interval must be a whole number of milliseconds from 1 to 60000")
 			os.Exit(1)
 		}
 		watchValues(client, args[1:], *intervalMs)

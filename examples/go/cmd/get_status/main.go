@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	go run get_status.go [--host HOST] [--port PORT]
+//	go run ./cmd/get_status [--host HOST] [--port PORT]
 package main
 
 import (

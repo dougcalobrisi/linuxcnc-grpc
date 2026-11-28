@@ -12,7 +12,6 @@ Usage:
 import argparse
 import sys
 
-
 import grpc
 
 # Try installed package first, fall back to local packages/ directory
@@ -24,6 +23,9 @@ except ImportError:
     from linuxcnc_pb import linuxcnc_pb2, linuxcnc_pb2_grpc
 
 
+RPC_TIMEOUT = 5.0  # seconds
+
+
 def get_status(host: str, port: int) -> None:
     """Connect to LinuxCNC gRPC server and print status."""
     channel = grpc.insecure_channel(f"{host}:{port}")
@@ -32,7 +34,7 @@ def get_status(host: str, port: int) -> None:
     try:
         # Request current status
         request = linuxcnc_pb2.GetStatusRequest()
-        status = stub.GetStatus(request)
+        status = stub.GetStatus(request, timeout=RPC_TIMEOUT)
 
         print("=" * 60)
         print("LinuxCNC Status")

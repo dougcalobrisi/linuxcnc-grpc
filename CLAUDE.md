@@ -82,6 +82,68 @@ Each language directory contains equivalent implementations:
 - `hal_query` - HAL pin/signal/parameter querying
 - `upload_file` - Upload, list, and delete G-code files
 
+The two motion examples (`jog_axis`, `mdi_command`) require a machine that is already on and
+homed. They do not reset E-stop, power the machine on or home it, and they stop with a message
+otherwise. Keep it that way: an example must not take a machine out of E-stop. `jog_axis`
+sends its jog stop on every exit path (Ctrl+C, SIGTERM, an error). Every unary RPC in the
+examples has a deadline; the streams run until interrupted.
+
+More rules for the motion examples, the same in all four languages:
+- **`jog_axis` checks readiness on a fresh status right before every jog start**
+  (`ready_status_for_jog` / `readyStatusForJog`: on, homed, both axes present, not busy),
+  not only at startup. The call sits outside the code that sends the stop, so a failed
+  check sends nothing, and it only returns an error, never prints. A jog stop is never gated
+  by it.
+- **`mdi_command` does not take `RCS_DONE` from a targeted `WaitComplete` as completion.**
+  The server answers it as soon as a later serial is echoed. `confirm_mdi_finished` /
+  `confirmMDIFinished` then polls `GetStatus` until `machine_is_busy` is false,
+  up to the deadline taken before the wait (plus at most one `GetStatus` deadline), and the
+  example reports "Not confirmed" (non-zero exit) otherwise. Idle and in position show the
+  command is no longer running, not that an overtaken command succeeded.
+- **"Busy" is one helper, `machine_is_busy` / `machineIsBusy`, in both motion examples:**
+  interpreter not idle, or `trajectory.inpos` false, or `trajectory.current_vel` not below
+  `STOPPED_VELOCITY` (1e-6). Measured on the 2.9 sim: during an MDI move
+  `task.interp_state` read `INTERP_IDLE` for the whole move in 7 of 71 six-second moves (no
+  trigger found) and `task.exec_state` read `EXEC_DONE` mid-move; `trajectory.inpos` was false
+  in every mid-move sample and true at the end. With a guard on the interpreter state alone,
+  `mdi_command` sent a second command during a move and `jog_axis` sent a manual-mode change
+  that stopped an MDI move part-way. A jog keeps `inpos` true, hence the velocity term. Do
+  not reduce the rule to the interpreter state.
+- **`jog_axis` checks `task_state` on every poll of its wait for motion to end**
+  (`require_machine_on` / `requireMachineOn` in `wait_for_motion_to_end`). Measured on the 2.9
+  sim: after an E-stop during a jog the axis stops at once but `trajectory.current_vel` stays
+  at its last non-zero value until the machine is turned on again, so a wait on velocity
+  alone ran into its 10 s timeout ("X was still moving"). The jog stop on the way out is
+  still sent; LinuxCNC refuses it, which is harmless.
+- **`mdi_command`'s confirmation also requires `task_state == STATE_ON`** (`machine_is_on` /
+  `machineIsOn`, checked on every poll before the busy test). Measured on the 2.9 sim in all
+  four languages: an E-stop from a second client 1 unit into `G1 X-2 F60` ended the targeted
+  wait with `RCS_DONE` within 10 ms, and the status read interpreter idle, in position,
+  velocity 0 (`task_state` `STATE_ESTOP_RESET` for 30-50 ms, then `STATE_ESTOP`), so the
+  example printed `Done.` and exited 0. It now reports "The machine is no longer on (state
+  ...). The command was stopped and did not finish." and exits 1.
+- **Known limit, documented and not worked around:** an abort from another client
+  (`program.abort`) also ends the wait with `RCS_DONE` and leaves the machine on, idle and in
+  position. Measured in Python on the sim: `Done.`, exit 0, with X at 0.95 of a move to
+  -2.09, and nothing in `status.errors` (the server was not reading the error channel). The
+  examples do not parse a target position out of the G-code; do not add that.
+- Ctrl+C in `mdi_command` ends the program at once and sends no abort (an example must not
+  decide to abort what a machine is doing). Python catches `KeyboardInterrupt`; Go and Rust
+  install no handler and are ended by the signal; Node needs a `SIGINT` listener on the
+  readline interface and on `process`, because readline in a terminal otherwise only closes
+  itself and an awaited call keeps waiting.
+
+What was run where: the fresh readiness check, the MDI confirmation and Ctrl+C were run on
+the 2.9 simulator in all four languages. The busy rule and the machine-state check in the
+wait were run on the simulator in Python and Go (E-stop during the incremental jog: exit
+within 0.1 s; the examples started during long MDI moves: refused every time and nothing
+sent, also in moves where the interpreter read idle; an overtaken MDI wait; SIGINT during
+the continuous jog) and against a stub gRPC server in Node and Rust.
+
+Measured on the 2.9 simulator: a continuous jog at velocity 1 moved 0.53 units in 0.5 s, so
+**jog velocity is in machine units per second** (the examples once used 100 and 50, labelled
+units per minute). The examples use 1.
+
 Run examples:
 ```bash
 # Python
