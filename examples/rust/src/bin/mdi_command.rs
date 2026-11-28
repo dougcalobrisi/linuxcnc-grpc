@@ -40,6 +40,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(5); // GetStatus and SendComma
 const STATE_CHANGE_TIMEOUT: Duration = Duration::from_secs(5); // A mode change must finish within this
 const WAIT_DEADLINE_MARGIN: Duration = Duration::from_secs(5); // WaitComplete's client deadline = its timeout + this
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const STOPPED_VELOCITY: f64 = 1e-6; // Below this the machine is standing still
 const MAX_MDI_TIMEOUT_SECONDS: f64 = 86400.0; // Longest --wait-timeout accepted (one day)
 
 type ExampleResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -125,8 +126,10 @@ impl LinuxCncClient {
 
     /// Wait until the command that `sent` answers has finished.
     ///
-    /// The result is `RcsDone` (finished), `RcsError` (failed) or `RcsExec`
-    /// (the timeout expired and the command is still running).
+    /// The result is `RcsDone`, `RcsError` (failed) or `RcsExec` (the timeout
+    /// expired and the command is still running). `RcsDone` means finished
+    /// only if LinuxCNC took no later command meanwhile; see
+    /// `confirm_mdi_finished`.
     async fn wait_complete(
         &mut self,
         sent: &CommandResponse,
@@ -165,6 +168,23 @@ impl LinuxCncClient {
 
 fn task_mode(status: &LinuxCncStatus) -> Option<i32> {
     status.task.as_ref().map(|task| task.task_mode)
+}
+
+/// True while a program, an MDI command or a jog is under way.
+///
+/// The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator
+/// it read `InterpIdle` for the whole of some MDI moves, while
+/// `trajectory.inpos` was false in every reading taken during a move. A jog
+/// leaves `inpos` true, so velocity is looked at as well.
+fn machine_is_busy(status: &LinuxCncStatus) -> bool {
+    let interpreter_is_idle = status
+        .task
+        .as_ref()
+        .is_some_and(|task| task.interp_state == InterpState::InterpIdle as i32);
+    let is_in_position_and_still = status.trajectory.as_ref().is_some_and(|trajectory| {
+        trajectory.inpos && trajectory.current_vel.abs() < STOPPED_VELOCITY
+    });
+    !(interpreter_is_idle && is_in_position_and_still)
 }
 
 /// Check the machine is on, homed and idle, then make sure it is in MDI mode.
@@ -207,13 +227,15 @@ async fn ensure_mdi_ready(client: &mut LinuxCncClient) -> ExampleResult<()> {
 
     // Checked every time, also when the machine is already in MDI mode: a
     // command whose wait timed out is still running, and so may a program be.
-    if task.interp_state != InterpState::InterpIdle as i32 {
+    if machine_is_busy(&status) {
         let interp_state_name = InterpState::try_from(task.interp_state)
             .map(|state| state.as_str_name())
             .unwrap_or("unknown");
         return Err(format!(
-            "The interpreter is still busy with a previous command or a running program \
-             (state {interp_state_name}). Nothing was sent; wait for it to finish and try again."
+            "The machine is still busy with a previous command, a running program or a jog \
+             (interpreter {interp_state_name}, in position: {}, velocity {}). Nothing was sent; \
+             wait for it to finish and try again.",
+            trajectory.inpos, trajectory.current_vel
         )
         .into());
     }
@@ -250,6 +272,30 @@ async fn ensure_mdi_ready(client: &mut LinuxCncClient) -> ExampleResult<()> {
     Ok(())
 }
 
+/// Poll the status until it shows that the MDI command is no longer running.
+///
+/// `RcsDone` from WaitComplete is not enough. The server also answers it as
+/// soon as LinuxCNC has taken a later command from any client (the GUI
+/// changing the feed override, say), and the MDI move may then still be
+/// running. The status settles it: `machine_is_busy` is false again.
+///
+/// Returns `false` if the status did not show that by `deadline`. The status
+/// is read at least once, and each read has its own deadline.
+async fn confirm_mdi_finished(
+    client: &mut LinuxCncClient,
+    deadline: Instant,
+) -> ExampleResult<bool> {
+    loop {
+        if !machine_is_busy(&client.get_status().await?) {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 /// Send an MDI command and, if asked, wait until it has finished.
 async fn execute_mdi(
     client: &mut LinuxCncClient,
@@ -270,19 +316,31 @@ async fn execute_mdi(
     }
 
     println!("  Waiting for completion...");
+    // One timeout covers both the wait and the check of the status after it.
+    let wait_deadline = Instant::now() + wait_timeout;
     let finished = client.wait_complete(&sent, wait_timeout).await?;
-    if finished.status == RcsStatus::RcsDone as i32 {
-        println!("  Done.");
-        Ok(())
-    } else if finished.status == RcsStatus::RcsExec as i32 {
-        Err(format!(
+    if finished.status == RcsStatus::RcsExec as i32 {
+        return Err(format!(
             "Timed out: the command was still running after {wait_timeout:?}. It has not been \
              cancelled."
         )
-        .into())
-    } else {
-        Err(format!("The command failed: {}", finished.error_message).into())
+        .into());
     }
+    if finished.status != RcsStatus::RcsDone as i32 {
+        return Err(format!("The command failed: {}", finished.error_message).into());
+    }
+
+    if !confirm_mdi_finished(client, wait_deadline).await? {
+        return Err(format!(
+            "Not confirmed: the wait ended, but the status did not show the interpreter idle \
+             and the motion in position within {wait_timeout:?}. The command may still be \
+             running (a wait ends early when LinuxCNC takes a later command from any client). \
+             It has not been cancelled."
+        )
+        .into());
+    }
+    println!("  Done.");
+    Ok(())
 }
 
 async fn print_position(client: &mut LinuxCncClient) -> ExampleResult<()> {

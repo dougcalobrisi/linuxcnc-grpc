@@ -11,7 +11,8 @@
  * every joint is homed and that the interpreter is idle. It does not take the
  * machine out of E-stop, power it on or home it: do that at the machine first.
  * It then switches to manual mode and turns teleop on, which is what an axis
- * jog needs.
+ * jog needs. The checks are repeated on a fresh status right before each jog
+ * is started.
  *
  * Safety Warning:
  *   This script moves the machine! Ensure you have clear access to E-stop
@@ -272,9 +273,43 @@ async function changeAndConfirm(
   }
 }
 
-/** Check the machine is on, homed and idle, then set manual mode and teleop. */
-async function prepareForAxisJog(): Promise<void> {
-  let status = await getStatus();
+/** Throw unless the machine is on. It is never turned on from here. */
+function requireMachineOn(status: LinuxCNCStatus): void {
+  const taskState = status.task?.taskState;
+  if (taskState !== TaskState.STATE_ON) {
+    throw new Error(
+      `The machine is not on (state ${taskState === undefined ? "unknown" : taskStateToJSON(taskState)}). ` +
+        "Take it out of E-stop and turn it on at the machine, then run this again."
+    );
+  }
+}
+
+/**
+ * True while a program, an MDI command or a jog is under way.
+ *
+ * The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator
+ * it read INTERP_IDLE for the whole of some MDI moves, while
+ * trajectory.inpos was false in every reading taken during a move. A jog
+ * leaves inpos true, so velocity is looked at as well.
+ */
+function machineIsBusy(status: LinuxCNCStatus): boolean {
+  return (
+    status.task?.interpState !== InterpState.INTERP_IDLE ||
+    status.trajectory?.inpos !== true ||
+    Math.abs(status.trajectory.currentVel) >= STOPPED_VELOCITY
+  );
+}
+
+/**
+ * Fetch a fresh status and check that the machine is on, homed and idle.
+ *
+ * Called before the mode is changed and again right before every jog is
+ * started: the machine can be put in E-stop, turned off or given a program
+ * at any moment, so an earlier answer is not good enough. Only the start of
+ * a jog depends on this check; a jog stop is always sent.
+ */
+async function readyStatusForJog(): Promise<LinuxCNCStatus> {
+  const status = await getStatus();
   const task = status.task;
   const trajectory = status.trajectory;
   if (!task || !trajectory) {
@@ -282,12 +317,7 @@ async function prepareForAxisJog(): Promise<void> {
   }
 
   // Never take the machine out of E-stop or power it on from here.
-  if (task.taskState !== TaskState.STATE_ON) {
-    throw new Error(
-      `The machine is not on (state ${taskStateToJSON(task.taskState)}). Take it out of E-stop ` +
-        "and turn it on at the machine, then run this again."
-    );
-  }
+  requireMachineOn(status);
 
   // A 1.0 server lists 16 joint entries, of which only the first
   // trajectory.joints are real. Newer servers list only those.
@@ -309,15 +339,23 @@ async function prepareForAxisJog(): Promise<void> {
   }
 
   // Checked whatever the mode is: never jog, or change mode, under a
-  // running program or MDI command.
-  if (task.interpState !== InterpState.INTERP_IDLE) {
+  // running program, MDI command or jog.
+  if (machineIsBusy(status)) {
     throw new Error(
-      "The interpreter is still busy with a program or MDI command " +
-        `(state ${interpStateToJSON(task.interpState)}). Nothing was moved; wait for it to finish and run this again.`
+      "The machine is busy with a program, an MDI command or a jog " +
+        `(interpreter ${interpStateToJSON(task.interpState)}, in position: ${trajectory.inpos}, ` +
+        `velocity ${trajectory.currentVel}). The jog was not started; wait for it to finish and run this again.`
     );
   }
 
-  if (task.taskMode !== TaskMode.MODE_MANUAL) {
+  return status;
+}
+
+/** Check the machine is on, homed and idle, then set manual mode and teleop. */
+async function prepareForAxisJog(): Promise<void> {
+  let status = await readyStatusForJog();
+
+  if (status.task?.taskMode !== TaskMode.MODE_MANUAL) {
     console.log("Setting manual mode...");
     await changeAndConfirm(
       await setMode(TaskMode.MODE_MANUAL),
@@ -361,12 +399,17 @@ async function stopJog(axis: number): Promise<void> {
  * A jog that LinuxCNC refuses still answers RCS_DONE, so the only proof of a
  * jog is the status. trajectory.inpos stays true during a jog; velocity is
  * what shows motion.
+ *
+ * The machine state is checked on every poll. After an E-stop the axis stops
+ * at once, but the velocity in the status keeps its last value until the
+ * machine is turned on again, so velocity alone would never show the stop.
  */
 async function waitForMotionToEnd(axis: number, startPosition: number): Promise<number> {
   const axisLetter = AXIS_LETTERS[axis];
   const startedWaiting = Date.now();
   for (;;) {
     const status = await getStatus();
+    requireMachineOn(status);
     const position = axisPosition(status, axis);
     const hasMoved = Math.abs(position - startPosition) > MOVED_THRESHOLD;
     const isStopped = Math.abs(status.trajectory?.currentVel ?? 0) < STOPPED_VELOCITY;
@@ -393,7 +436,8 @@ async function demoIncrementalJog(): Promise<void> {
   console.log("\n--- Incremental Jog Demo ---");
   console.log(`Jogging ${axisLetter} by +${INCREMENT_DISTANCE} at ${JOG_VELOCITY} units/s...`);
 
-  const startPosition = axisPosition(await getStatus(), INCREMENT_AXIS);
+  // The check is repeated here, on a fresh status, right before the start.
+  const startPosition = axisPosition(await readyStatusForJog(), INCREMENT_AXIS);
   await pause(0); // Do not start a jog after an interrupt
   keepRunningWhenOutputIsLost();
   let endPosition: number;
@@ -421,7 +465,8 @@ async function demoContinuousJog(): Promise<void> {
   console.log("\n--- Continuous Jog Demo ---");
   console.log(`Jogging ${axisLetter} at +${JOG_VELOCITY} units/s for ${CONTINUOUS_JOG_SECONDS} seconds...`);
 
-  const startPosition = axisPosition(await getStatus(), CONTINUOUS_AXIS);
+  // The check is repeated here, on a fresh status, right before the start.
+  const startPosition = axisPosition(await readyStatusForJog(), CONTINUOUS_AXIS);
   await pause(0); // Do not start a jog after an interrupt
   keepRunningWhenOutputIsLost();
   try {

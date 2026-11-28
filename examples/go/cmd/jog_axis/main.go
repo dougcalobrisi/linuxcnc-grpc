@@ -11,7 +11,8 @@
 // every joint is homed and that the interpreter is idle. It does not take the
 // machine out of E-stop, power it on or home it: do that at the machine first.
 // It then switches to manual mode and turns teleop on, which is what an axis
-// jog needs.
+// jog needs. The checks are repeated on a fresh status right before each jog
+// is started.
 //
 // Safety Warning:
 //
@@ -285,18 +286,44 @@ func changeAndConfirm(interrupt context.Context, client *LinuxCNCClient, sent *p
 	}
 }
 
-// prepareForAxisJog checks the machine is on, homed and idle, then sets manual
-// mode and teleop.
-func prepareForAxisJog(interrupt context.Context, client *LinuxCNCClient) error {
-	status, err := client.GetStatus()
-	if err != nil {
-		return err
-	}
-
-	// Never take the machine out of E-stop or power it on from here.
+// requireMachineOn returns an error unless the machine is on. It is never
+// turned on from here.
+func requireMachineOn(status *pb.LinuxCNCStatus) error {
 	if status.GetTask().GetTaskState() != pb.TaskState_STATE_ON {
 		return fmt.Errorf("the machine is not on (state %s). Take it out of E-stop and turn it on at the machine, then run this again",
 			status.GetTask().GetTaskState())
+	}
+	return nil
+}
+
+// machineIsBusy is true while a program, an MDI command or a jog is under way.
+//
+// The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator it
+// read INTERP_IDLE for the whole of some MDI moves, while Trajectory.Inpos
+// was false in every reading taken during a move. A jog leaves Inpos true, so
+// velocity is looked at as well.
+func machineIsBusy(status *pb.LinuxCNCStatus) bool {
+	return status.GetTask().GetInterpState() != pb.InterpState_INTERP_IDLE ||
+		!status.GetTrajectory().GetInpos() ||
+		math.Abs(status.GetTrajectory().GetCurrentVel()) >= stoppedVelocity
+}
+
+// readyStatusForJog fetches a fresh status and checks that the machine is on,
+// homed and idle.
+//
+// It is called before the mode is changed and again right before every jog is
+// started: the machine can be put in E-stop, turned off or given a program at
+// any moment, so an earlier answer is not good enough. Only the start of a
+// jog depends on this check; a jog stop is always sent.
+func readyStatusForJog(client *LinuxCNCClient) (*pb.LinuxCNCStatus, error) {
+	status, err := client.GetStatus()
+	if err != nil {
+		return nil, err
+	}
+
+	// Never take the machine out of E-stop or power it on from here.
+	if err := requireMachineOn(status); err != nil {
+		return nil, err
 	}
 
 	// A 1.0 server lists 16 joint entries, of which only the first
@@ -309,20 +336,31 @@ func prepareForAxisJog(interrupt context.Context, client *LinuxCNCClient) error 
 		}
 	}
 	if len(unhomedJoints) > 0 {
-		return fmt.Errorf("joints %v are not homed. Home the machine first; this example does not home it", unhomedJoints)
+		return nil, fmt.Errorf("joints %v are not homed. Home the machine first; this example does not home it", unhomedJoints)
 	}
 
 	for _, axis := range []int32{incrementAxis, continuousAxis} {
 		if status.GetTrajectory().GetAxisMask()&(1<<axis) == 0 {
-			return fmt.Errorf("this machine has no %s axis", axisLetter(axis))
+			return nil, fmt.Errorf("this machine has no %s axis", axisLetter(axis))
 		}
 	}
 
 	// Checked whatever the mode is: never jog, or change mode, under a
-	// running program or MDI command.
-	if status.GetTask().GetInterpState() != pb.InterpState_INTERP_IDLE {
-		return fmt.Errorf("the interpreter is still busy with a program or MDI command (state %s). Nothing was moved; wait for it to finish and run this again",
-			status.GetTask().GetInterpState())
+	// running program, MDI command or jog.
+	if machineIsBusy(status) {
+		return nil, fmt.Errorf("the machine is busy with a program, an MDI command or a jog (interpreter %s, in position: %t, velocity %g). The jog was not started; wait for it to finish and run this again",
+			status.GetTask().GetInterpState(), status.GetTrajectory().GetInpos(), status.GetTrajectory().GetCurrentVel())
+	}
+
+	return status, nil
+}
+
+// prepareForAxisJog checks the machine is on, homed and idle, then sets manual
+// mode and teleop.
+func prepareForAxisJog(interrupt context.Context, client *LinuxCNCClient) error {
+	status, err := readyStatusForJog(client)
+	if err != nil {
+		return err
 	}
 
 	if status.GetTask().GetTaskMode() != pb.TaskMode_MODE_MANUAL {
@@ -385,11 +423,18 @@ func reportStopFailureBeforePanic(stopErr error) {
 // A jog that LinuxCNC refuses still answers RCS_DONE, so the only proof of a
 // jog is the status. Trajectory.Inpos stays true during a jog; velocity is
 // what shows motion.
+//
+// The machine state is checked on every poll. After an E-stop the axis stops
+// at once, but the velocity in the status keeps its last value until the
+// machine is turned on again, so velocity alone would never show the stop.
 func waitForMotionToEnd(interrupt context.Context, client *LinuxCNCClient, axis int32, startPosition float64) (float64, error) {
 	startedWaiting := time.Now()
 	for {
 		status, err := client.GetStatus()
 		if err != nil {
+			return 0, err
+		}
+		if err := requireMachineOn(status); err != nil {
 			return 0, err
 		}
 		position := axisPosition(status, axis)
@@ -419,7 +464,8 @@ func demoIncrementalJog(interrupt context.Context, client *LinuxCNCClient) (err 
 	fmt.Println("\n--- Incremental Jog Demo ---")
 	fmt.Printf("Jogging %s by +%g at %g units/s...\n", axisLetter(incrementAxis), incrementDistance, jogVelocity)
 
-	status, err := client.GetStatus()
+	// The check is repeated here, on a fresh status, right before the start.
+	status, err := readyStatusForJog(client)
 	if err != nil {
 		return err
 	}
@@ -499,7 +545,8 @@ func demoContinuousJog(interrupt context.Context, client *LinuxCNCClient) error 
 	fmt.Println("\n--- Continuous Jog Demo ---")
 	fmt.Printf("Jogging %s at +%g units/s for %g seconds...\n", axisLetter(continuousAxis), jogVelocity, continuousJogSeconds)
 
-	status, err := client.GetStatus()
+	// The check is repeated here, on a fresh status, right before the start.
+	status, err := readyStatusForJog(client)
 	if err != nil {
 		return err
 	}

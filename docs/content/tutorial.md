@@ -113,7 +113,7 @@ finally:
 
 #### 5a. Send commands (MDI G-code)
 
-LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first).
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first). `RCS_DONE` from the wait means the move has finished only if no other client sent LinuxCNC a command meanwhile; a program that must be sure also reads the status, as the [`mdi_command` example](examples.md#mdi_command) does.
 
 Create `mdi.py`:
 
@@ -274,7 +274,7 @@ process.on("SIGINT", () => {
 
 #### 5b. Send commands (MDI G-code)
 
-LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first).
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first). `RCS_DONE` from the wait means the move has finished only if no other client sent LinuxCNC a command meanwhile; a program that must be sure also reads the status, as the [`mdi_command` example](examples.md#mdi_command) does.
 
 Create `mdi.ts`:
 
@@ -495,7 +495,7 @@ func main() {
 
 #### 5c. Send commands (MDI G-code)
 
-LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first).
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first). `RCS_DONE` from the wait means the move has finished only if no other client sent LinuxCNC a command meanwhile; a program that must be sure also reads the status, as the [`mdi_command` example](examples.md#mdi_command) does.
 
 Create `mdi.go`:
 
@@ -698,7 +698,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 5d. Send commands (MDI G-code)
 
-LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first).
+LinuxCNC runs MDI moves only on a machine that is powered on, **homed** and in MDI mode. This script powers the machine on and switches to MDI mode, waiting for each step with `WaitComplete` rather than sleeping. It does not home the machine: home it first, from the GUI or with the `home` command. On an unhomed machine LinuxCNC refuses the move ("Can't issue MDI command when not homed"). The server never switches modes for you; see [Modes and teleop: what to send first](api-reference.md#modes-and-teleop-what-to-send-first). `RCS_DONE` from the wait means the move has finished only if no other client sent LinuxCNC a command meanwhile; a program that must be sure also reads the status, as the [`mdi_command` example](examples.md#mdi_command) does.
 
 Replace `src/main.rs`:
 

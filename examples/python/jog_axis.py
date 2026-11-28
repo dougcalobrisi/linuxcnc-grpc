@@ -12,7 +12,8 @@ Before it moves anything the example checks that the machine is on, that
 every joint is homed and that the interpreter is idle. It does not take the
 machine out of E-stop, power it on or home it: do that at the machine first.
 It then switches to manual mode and turns teleop on, which is what an axis
-jog needs.
+jog needs. The checks are repeated on a fresh status right before each jog
+is started.
 
 Safety Warning:
     This script moves the machine! Ensure you have clear access to E-stop
@@ -230,16 +231,40 @@ def change_and_confirm(client: LinuxCNCClient, sent: linuxcnc_pb2.CommandRespons
         pause(POLL_INTERVAL)
 
 
-def prepare_for_axis_jog(client: LinuxCNCClient) -> None:
-    """Check the machine is on, homed and idle, then set manual mode and teleop."""
-    status = client.get_status()
-
-    # Never take the machine out of E-stop or power it on from here.
+def require_machine_on(status: linuxcnc_pb2.LinuxCNCStatus) -> None:
+    """Raise unless the machine is on. It is never turned on from here."""
     if status.task.task_state != linuxcnc_pb2.STATE_ON:
         state_name = linuxcnc_pb2.TaskState.Name(status.task.task_state)
         raise ExampleError(
             f"The machine is not on (state {state_name}). Take it out of E-stop "
             "and turn it on at the machine, then run this again.")
+
+
+def machine_is_busy(status: linuxcnc_pb2.LinuxCNCStatus) -> bool:
+    """True while a program, an MDI command or a jog is under way.
+
+    The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator
+    it read INTERP_IDLE for the whole of some MDI moves, while
+    trajectory.inpos was false in every reading taken during a move. A jog
+    leaves inpos true, so velocity is looked at as well.
+    """
+    return (status.task.interp_state != linuxcnc_pb2.INTERP_IDLE
+            or not status.trajectory.inpos
+            or abs(status.trajectory.current_vel) >= STOPPED_VELOCITY)
+
+
+def ready_status_for_jog(client: LinuxCNCClient) -> linuxcnc_pb2.LinuxCNCStatus:
+    """Fetch a fresh status and check that the machine is on, homed and idle.
+
+    Called before the mode is changed and again right before every jog is
+    started: the machine can be put in E-stop, turned off or given a program
+    at any moment, so an earlier answer is not good enough. Only the start of
+    a jog depends on this check; a jog stop is always sent.
+    """
+    status = client.get_status()
+
+    # Never take the machine out of E-stop or power it on from here.
+    require_machine_on(status)
 
     # A 1.0 server lists 16 joint entries, of which only the first
     # trajectory.joints are real. Newer servers list only those.
@@ -257,13 +282,21 @@ def prepare_for_axis_jog(client: LinuxCNCClient) -> None:
             raise ExampleError(f"This machine has no {AXIS_LETTERS[axis]} axis.")
 
     # Checked whatever the mode is: never jog, or change mode, under a
-    # running program or MDI command.
-    if status.task.interp_state != linuxcnc_pb2.INTERP_IDLE:
+    # running program, MDI command or jog.
+    if machine_is_busy(status):
         interp_state_name = linuxcnc_pb2.InterpState.Name(status.task.interp_state)
         raise ExampleError(
-            "The interpreter is still busy with a program or MDI command "
-            f"(state {interp_state_name}). Nothing was moved; wait for it to "
-            "finish and run this again.")
+            "The machine is busy with a program, an MDI command or a jog "
+            f"(interpreter {interp_state_name}, in position: {status.trajectory.inpos}, "
+            f"velocity {status.trajectory.current_vel:g}). The jog was not started; "
+            "wait for it to finish and run this again.")
+
+    return status
+
+
+def prepare_for_axis_jog(client: LinuxCNCClient) -> None:
+    """Check the machine is on, homed and idle, then set manual mode and teleop."""
+    status = ready_status_for_jog(client)
 
     if status.task.task_mode != linuxcnc_pb2.MODE_MANUAL:
         print("Setting manual mode...")
@@ -300,11 +333,17 @@ def wait_for_motion_to_end(client: LinuxCNCClient, axis: int, start_position: fl
     A jog that LinuxCNC refuses still answers RCS_DONE, so the only proof of a
     jog is the status. trajectory.inpos stays true during a jog; velocity is
     what shows motion.
+
+    The machine state is checked on every poll. After an E-stop the axis
+    stops at once, but the velocity in the status keeps its last value until
+    the machine is turned on again, so velocity alone would never show the
+    stop.
     """
     axis_letter = AXIS_LETTERS[axis]
     started_waiting = time.monotonic()
     while True:
         status = client.get_status()
+        require_machine_on(status)
         position = axis_position(status, axis)
         has_moved = abs(position - start_position) > MOVED_THRESHOLD
         is_stopped = abs(status.trajectory.current_vel) < STOPPED_VELOCITY
@@ -327,7 +366,8 @@ def demo_incremental_jog(client: LinuxCNCClient) -> None:
     print("\n--- Incremental Jog Demo ---")
     print(f"Jogging {axis_letter} by +{INCREMENT_DISTANCE:g} at {JOG_VELOCITY:g} units/s...")
 
-    start_position = axis_position(client.get_status(), INCREMENT_AXIS)
+    # The check is repeated here, on a fresh status, right before the start.
+    start_position = axis_position(ready_status_for_jog(client), INCREMENT_AXIS)
     pause(0)  # Do not start a jog after an interrupt
     try:
         # Nothing is printed between here and the stop: a failed print must
@@ -353,7 +393,8 @@ def demo_continuous_jog(client: LinuxCNCClient) -> None:
     report(f"Jogging {axis_letter} at +{JOG_VELOCITY:g} units/s "
            f"for {CONTINUOUS_JOG_SECONDS:g} seconds...")
 
-    start_position = axis_position(client.get_status(), CONTINUOUS_AXIS)
+    # The check is repeated here, on a fresh status, right before the start.
+    start_position = axis_position(ready_status_for_jog(client), CONTINUOUS_AXIS)
     pause(0)  # Do not start a jog after an interrupt
     try:
         # From here on the stop below is always sent: after the sleep, on

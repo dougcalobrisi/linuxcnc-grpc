@@ -39,16 +39,31 @@ Example Python clients demonstrating how to connect to and use the LinuxCNC gRPC
 - They do switch the task mode (`jog_axis` to manual with teleop on,
   `mdi_command` to MDI), wait for the switch with `WaitComplete`, and then
   check that the status shows it.
-- The interpreter must be idle. `jog_axis` checks before it changes mode or
-  jogs, and `mdi_command` before every command, so nothing is sent on top of
-  a running program or of an MDI command that has not finished.
+- The machine must be idle: the interpreter idle, `trajectory.inpos` true
+  and `trajectory.current_vel` zero. The interpreter state alone is not
+  enough; on the 2.9 simulator it read `INTERP_IDLE` for the whole of some
+  MDI moves. `jog_axis` checks before it changes mode or jogs, and
+  `mdi_command` before every command, so nothing is sent on top of a running
+  program, a jog or an MDI command that has not finished.
+- `jog_axis` repeats these checks on a fresh status right before each jog is
+  started, so a machine that was put in E-stop, turned off or given a program
+  after the first check gets no further jog. A jog stop is always sent.
+- While `jog_axis` waits for an axis to stop it also watches the machine
+  state. After an E-stop the velocity in the status keeps its last value, so
+  the example does not wait for it to reach zero: it stops with the "machine
+  is not on" message.
 - `jog_axis` sends the jog stop on every way out of the continuous jog: when
   its time is up, on Ctrl+C, after an error and when its output can no longer
   be written. The incremental jog gets a stop when it is interrupted or fails
   part way; when it completed normally and the status shows the axis moved
   and is standing still, no stop is sent. If a stop fails, the example says
   the axis may still be moving and exits 1.
-- `mdi_command` reports `Done.` only when the command finished. A wait that
+- `mdi_command` reports `Done.` only when the command finished. `RCS_DONE`
+  from `WaitComplete` is not enough for that: the wait also ends when
+  LinuxCNC takes a later command from any client, while the MDI move may
+  still be running. So the example then reads the status until the
+  machine is idle by the rule above, and says that the result
+  is not confirmed if that does not show within the timeout. A wait that
   runs out (`--wait-timeout`, 60 seconds by default) is reported as a timeout
   and the program exits non-zero; the command itself keeps running. In
   interactive mode a failed command does not end the session, but the exit

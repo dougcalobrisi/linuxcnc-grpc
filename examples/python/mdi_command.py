@@ -45,6 +45,7 @@ WAIT_DEADLINE_MARGIN = 5.0    # WaitComplete's client deadline = its timeout + t
 DEFAULT_MDI_TIMEOUT = 60.0    # How long to wait for an MDI command to finish
 MAX_MDI_TIMEOUT = 86400.0     # Longest --wait-timeout accepted (one day)
 POLL_INTERVAL = 0.05
+STOPPED_VELOCITY = 1e-6       # Below this the machine is standing still
 
 
 class ExampleError(Exception):
@@ -80,8 +81,10 @@ class LinuxCNCClient:
     ) -> linuxcnc_pb2.CommandResponse:
         """Wait until the command that `sent` answers has finished.
 
-        Returns RCS_DONE (finished), RCS_ERROR (failed) or RCS_EXEC (the
-        timeout expired and the command is still running).
+        Returns RCS_DONE, RCS_ERROR (failed) or RCS_EXEC (the timeout
+        expired and the command is still running). RCS_DONE means finished
+        only if LinuxCNC took no later command meanwhile; see
+        confirm_mdi_finished.
         """
         request = linuxcnc_pb2.WaitCompleteRequest(timeout=timeout)
         if sent.HasField("linuxcnc_serial"):
@@ -104,6 +107,19 @@ class LinuxCNCClient:
         command = linuxcnc_pb2.LinuxCNCCommand()
         command.mdi.command = gcode
         return self.send_command(command)
+
+
+def machine_is_busy(status: linuxcnc_pb2.LinuxCNCStatus) -> bool:
+    """True while a program, an MDI command or a jog is under way.
+
+    The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator
+    it read INTERP_IDLE for the whole of some MDI moves, while
+    trajectory.inpos was false in every reading taken during a move. A jog
+    leaves inpos true, so velocity is looked at as well.
+    """
+    return (status.task.interp_state != linuxcnc_pb2.INTERP_IDLE
+            or not status.trajectory.inpos
+            or abs(status.trajectory.current_vel) >= STOPPED_VELOCITY)
 
 
 def ensure_mdi_ready(client: LinuxCNCClient) -> None:
@@ -129,12 +145,13 @@ def ensure_mdi_ready(client: LinuxCNCClient) -> None:
 
     # Checked every time, also when the machine is already in MDI mode: a
     # command whose wait timed out is still running, and so may a program be.
-    if status.task.interp_state != linuxcnc_pb2.INTERP_IDLE:
+    if machine_is_busy(status):
         interp_state_name = linuxcnc_pb2.InterpState.Name(status.task.interp_state)
         raise ExampleError(
-            "The interpreter is still busy with a previous command or a running "
-            f"program (state {interp_state_name}). Nothing was sent; wait for it "
-            "to finish and try again.")
+            "The machine is still busy with a previous command, a running program "
+            f"or a jog (interpreter {interp_state_name}, in position: "
+            f"{status.trajectory.inpos}, velocity {status.trajectory.current_vel:g}). "
+            "Nothing was sent; wait for it to finish and try again.")
 
     if status.task.task_mode == linuxcnc_pb2.MODE_MDI:
         return
@@ -159,6 +176,26 @@ def ensure_mdi_ready(client: LinuxCNCClient) -> None:
         time.sleep(POLL_INTERVAL)
 
 
+def confirm_mdi_finished(client: LinuxCNCClient, deadline: float) -> bool:
+    """Poll the status until it shows that the MDI command is no longer running.
+
+    RCS_DONE from WaitComplete is not enough. The server also answers it as
+    soon as LinuxCNC has taken a later command from any client (the GUI
+    changing the feed override, say), and the MDI move may then still be
+    running. The status settles it: machine_is_busy is false again.
+
+    Returns False if the status did not show that by `deadline` (a
+    time.monotonic() value). The status is read at least once, and each read
+    has its own deadline.
+    """
+    while True:
+        if not machine_is_busy(client.get_status()):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_INTERVAL)
+
+
 def execute_mdi(client: LinuxCNCClient, gcode: str, wait: bool, wait_timeout: float) -> None:
     """Send an MDI command and, if asked, wait until it has finished."""
     print(f"Executing: {gcode}")
@@ -172,15 +209,23 @@ def execute_mdi(client: LinuxCNCClient, gcode: str, wait: bool, wait_timeout: fl
         return
 
     print("  Waiting for completion...")
+    # One timeout covers both the wait and the check of the status after it.
+    wait_deadline = time.monotonic() + wait_timeout
     finished = client.wait_complete(sent, wait_timeout)
-    if finished.status == linuxcnc_pb2.RCS_DONE:
-        print("  Done.")
-    elif finished.status == linuxcnc_pb2.RCS_EXEC:
+    if finished.status == linuxcnc_pb2.RCS_EXEC:
         raise ExampleError(
             f"Timed out: the command was still running after {wait_timeout:g} s. "
             "It has not been cancelled.")
-    else:
+    if finished.status != linuxcnc_pb2.RCS_DONE:
         raise ExampleError(f"The command failed: {finished.error_message}")
+
+    if not confirm_mdi_finished(client, wait_deadline):
+        raise ExampleError(
+            "Not confirmed: the wait ended, but the status did not show the "
+            f"interpreter idle and the motion in position within {wait_timeout:g} s. "
+            "The command may still be running (a wait ends early when LinuxCNC "
+            "takes a later command from any client). It has not been cancelled.")
+    print("  Done.")
 
 
 def print_position(client: LinuxCNCClient) -> None:

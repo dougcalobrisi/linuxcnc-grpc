@@ -273,6 +273,15 @@ keyboard jog pendant.
   interpreter is idle, and stopping with a clear message if not. The example
   never resets E-stop, powers the machine on or homes it, and never jogs or
   changes mode under a running program or MDI command.
+- Telling "idle" from the status: the interpreter is idle, `trajectory.inpos`
+  is true and `trajectory.current_vel` is zero. The interpreter state alone
+  is not enough: on the 2.9 simulator it read `INTERP_IDLE` for the whole of
+  some MDI moves (see
+  [Modes and teleop](api-reference.md#modes-and-teleop-what-to-send-first)).
+- Repeating that check on a fresh status right before each jog is started.
+  The machine can be put in E-stop, turned off or given a program between
+  the first check and a later jog, so the answer from startup is not reused.
+  Only the start of a jog depends on the check; a jog stop is always sent.
 - Setting manual mode and turning teleop on, which an axis jog needs
   (see [Modes and teleop](api-reference.md#modes-and-teleop-what-to-send-first))
 - Waiting for a mode change with `WaitComplete` and the command's
@@ -286,6 +295,11 @@ keyboard jog pendant.
   error, and when the terminal or pipe the example prints to has gone away
 - Confirming motion from the status, because a jog that LinuxCNC refuses still
   answers `RCS_DONE`
+- Checking the machine state on every poll while waiting for an axis to stop.
+  After an E-stop the axis stops at once, but `trajectory.current_vel` keeps
+  its last value until the machine is turned on again, so a wait on velocity
+  alone would run into its timeout. The example stops waiting at once and
+  exits with the "machine is not on" message.
 
 Jog velocity is in machine units per second. The example uses 1 unit per
 second and a 1 unit increment; change the constants at the top of the file to
@@ -319,7 +333,50 @@ more helpers are used but not repeated here; they are in the file:
 `axis_position(status, axis)` returns one axis of
 `status.position.actual_position`, and
 `wait_for_motion_to_end(client, axis, start_position)` polls `GetStatus`
-until the axis has moved and `trajectory.current_vel` is back to zero.
+until the axis has moved and `trajectory.current_vel` is back to zero; on
+every poll it also calls `require_machine_on(status)`, which raises the
+"machine is not on" error.
+
+`ready_status_for_jog(client)` fetches a fresh status, raises `ExampleError`
+unless the machine is on, homed and idle, and returns the status. It runs
+before the mode is changed and again right before each jog is started:
+
+```python
+def require_machine_on(status):
+    """Raise unless the machine is on. It is never turned on from here."""
+    if status.task.task_state != linuxcnc_pb2.STATE_ON:
+        state_name = linuxcnc_pb2.TaskState.Name(status.task.task_state)
+        raise ExampleError(
+            f"The machine is not on (state {state_name}). Take it out of E-stop "
+            "and turn it on at the machine, then run this again.")
+
+
+def machine_is_busy(status):
+    """True while a program, an MDI command or a jog is under way."""
+    return (status.task.interp_state != linuxcnc_pb2.INTERP_IDLE
+            or not status.trajectory.inpos
+            or abs(status.trajectory.current_vel) >= STOPPED_VELOCITY)
+
+
+def ready_status_for_jog(client):
+    status = client.get_status()
+    require_machine_on(status)
+
+    # ... every joint is homed, the machine has the two axes ...
+
+    if machine_is_busy(status):
+        interp_state_name = linuxcnc_pb2.InterpState.Name(status.task.interp_state)
+        raise ExampleError(
+            "The machine is busy with a program, an MDI command or a jog "
+            f"(interpreter {interp_state_name}, in position: {status.trajectory.inpos}, "
+            f"velocity {status.trajectory.current_vel:g}). The jog was not started; "
+            "wait for it to finish and run this again.")
+
+    return status
+```
+
+`STOPPED_VELOCITY` is `1e-6`. `mdi_command` has the same `machine_is_busy`
+and uses it before every command and to confirm that a command has finished.
 
 Switching mode: send, wait on that command's serial, then check the status.
 
@@ -397,7 +454,8 @@ def stop_jog(client, axis):
             "The axis may still be moving: use the E-stop.")
 
 
-start_position = axis_position(client.get_status(), CONTINUOUS_AXIS)
+# The check is repeated here, on a fresh status, right before the start.
+start_position = axis_position(ready_status_for_jog(client), CONTINUOUS_AXIS)
 pause(0)  # Do not start a jog after an interrupt
 try:
     sent = client.jog_continuous(CONTINUOUS_AXIS, JOG_VELOCITY)
@@ -450,14 +508,16 @@ Y moved from 0.0000 to 0.4400
 Jog demo complete!
 ```
 
-If the machine is not ready the example stops before sending anything:
+If the machine is not ready the example stops without starting a jog. At
+startup that is before anything is sent; before the second jog it is after
+the first one has run:
 
 ```
 Error: The machine is not on (state STATE_ESTOP). Take it out of E-stop and turn it on at the machine, then run this again.
 ```
 
 ```
-Error: The interpreter is still busy with a program or MDI command (state INTERP_READING). Nothing was moved; wait for it to finish and run this again.
+Error: The machine is busy with a program, an MDI command or a jog (interpreter INTERP_READING, in position: False, velocity 1). The jog was not started; wait for it to finish and run this again.
 ```
 
 ---
@@ -478,7 +538,15 @@ Execute G-code commands via MDI (Manual Data Input).
   command's serial. The answer is exact as long as nothing else is sent to
   LinuxCNC meanwhile (see
   [Command and Error Semantics](server.md#waitcomplete))
-- Telling the three outcomes of a wait apart: finished, failed, timed out
+- Confirming completion from the status after the wait answers `RCS_DONE`.
+  The server gives that answer as soon as LinuxCNC has taken a later command
+  from any client (the GUI changing the feed override, for example), and the
+  MDI move may then still be running. So the example polls `GetStatus` until
+  the machine is idle (`task.interp_state` is `INTERP_IDLE`,
+  `trajectory.inpos` is true and `trajectory.current_vel` is zero), within
+  what is left of `--wait-timeout`, and prints `Done.` only then.
+- Telling the four outcomes apart: finished, failed, timed out, and not
+  confirmed (the wait ended but the status did not settle in time)
 - Interactive command loop
 
 ### Key code (Python)
@@ -486,14 +554,17 @@ Execute G-code commands via MDI (Manual Data Input).
 `wait_complete` is a method of the example's `LinuxCNCClient` wrapper, and
 `client.mdi` is the wrapper's method that sends an `MdiCommand` (both under
 [Client Wrapper Class](#client-wrapper-class)). `WAIT_DEADLINE_MARGIN` is 5
-seconds and `ExampleError` is the example's own exception.
+seconds, `POLL_INTERVAL` is 0.05 seconds and `ExampleError` is the example's
+own exception.
 
 ```python
 def wait_complete(self, sent, timeout):
     """Wait until the command that `sent` answers has finished.
 
-    Returns RCS_DONE (finished), RCS_ERROR (failed) or RCS_EXEC (the
-    timeout expired and the command is still running).
+    Returns RCS_DONE, RCS_ERROR (failed) or RCS_EXEC (the timeout
+    expired and the command is still running). RCS_DONE means finished
+    only if LinuxCNC took no later command meanwhile; see
+    confirm_mdi_finished.
     """
     request = linuxcnc_pb2.WaitCompleteRequest(timeout=timeout)
     if sent.HasField("linuxcnc_serial"):
@@ -505,6 +576,21 @@ def wait_complete(self, sent, timeout):
               "latest command sent by any client instead.")
     # The client deadline must be longer than the wait asked of the server.
     return self.stub.WaitComplete(request, timeout=timeout + WAIT_DEADLINE_MARGIN)
+
+
+def confirm_mdi_finished(client, deadline):
+    """Poll the status until it shows that the MDI command is no longer running.
+
+    Returns False if the status did not show that by `deadline` (a
+    time.monotonic() value). The status is read at least once, and each read
+    has its own deadline.
+    """
+    while True:
+        if not machine_is_busy(client.get_status()):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_INTERVAL)
 
 
 def execute_mdi(client, gcode, wait, wait_timeout):
@@ -521,16 +607,36 @@ def execute_mdi(client, gcode, wait, wait_timeout):
         return
 
     print("  Waiting for completion...")
+    # One timeout covers both the wait and the check of the status after it.
+    wait_deadline = time.monotonic() + wait_timeout
     finished = client.wait_complete(sent, wait_timeout)
-    if finished.status == linuxcnc_pb2.RCS_DONE:
-        print("  Done.")
-    elif finished.status == linuxcnc_pb2.RCS_EXEC:
+    if finished.status == linuxcnc_pb2.RCS_EXEC:
         raise ExampleError(
             f"Timed out: the command was still running after {wait_timeout:g} s. "
             "It has not been cancelled.")
-    else:
+    if finished.status != linuxcnc_pb2.RCS_DONE:
         raise ExampleError(f"The command failed: {finished.error_message}")
+
+    if not confirm_mdi_finished(client, wait_deadline):
+        raise ExampleError(
+            "Not confirmed: the wait ended, but the status did not show the "
+            f"interpreter idle and the motion in position within {wait_timeout:g} s. "
+            "The command may still be running (a wait ends early when LinuxCNC "
+            "takes a later command from any client). It has not been cancelled.")
+    print("  Done.")
 ```
+
+`RCS_DONE` from the wait is not the last word. If nothing else was sent to
+LinuxCNC during the wait, the command has finished and the first status read
+confirms it. If LinuxCNC took a later command meanwhile, the wait has ended
+early, and `confirm_mdi_finished` keeps reading the status until
+`machine_is_busy` (shown under [jog_axis](#jog_axis)) is false: the
+interpreter is idle, the motion is in position and the velocity is zero. The wait and the
+confirmation share one `--wait-timeout`; the last status read can add its own
+5 second deadline at most. The status shows that the command is no longer
+running. It does not show whether a command whose wait ended early succeeded
+or failed: for that, look at the operator messages
+([`StreamErrors`](api-reference.md#streamerrors) or `status.errors`).
 
 `ensure_mdi_ready` runs before every command. It refuses to go on unless the
 machine is on, homed and idle, and switches to MDI mode the same way
@@ -543,12 +649,15 @@ status = client.get_status()
 # ... the machine is on, every joint is homed ...
 
 # A command whose wait timed out is still running, and so may a program be.
-if status.task.interp_state != linuxcnc_pb2.INTERP_IDLE:
+# The interpreter state alone does not show a running MDI move reliably;
+# machine_is_busy also looks at trajectory.inpos and the velocity.
+if machine_is_busy(status):
     interp_state_name = linuxcnc_pb2.InterpState.Name(status.task.interp_state)
     raise ExampleError(
-        "The interpreter is still busy with a previous command or a running "
-        f"program (state {interp_state_name}). Nothing was sent; wait for it "
-        "to finish and try again.")
+        "The machine is still busy with a previous command, a running program "
+        f"or a jog (interpreter {interp_state_name}, in position: "
+        f"{status.trajectory.inpos}, velocity {status.trajectory.current_vel:g}). "
+        "Nothing was sent; wait for it to finish and try again.")
 
 if status.task.task_mode == linuxcnc_pb2.MODE_MDI:
     return
@@ -580,14 +689,21 @@ python mdi_command.py --interactive
 its own 5 second default, and a negative value would give the wait a deadline
 that has already passed.
 
-The exit code is non-zero when the command was refused, failed or was still
-running when the wait ran out. In interactive mode a command that fails does
+The exit code is non-zero when the command was refused, failed, was still
+running when the wait ran out, or could not be confirmed as finished in the
+status. In interactive mode a command that fails does
 not end the session: the error is printed and the prompt comes back. The
 failure is remembered, and the exit code after `quit` or end of input is
 non-zero if any command in the session failed. An error while reading the
 input (as opposed to its end) stops the session with a non-zero exit code.
 Ctrl+C stops the example, not the machine: a command that was already sent
-keeps running.
+keeps running. The example ends at once, also in the middle of a wait, and
+sends no abort: whether to abort what the machine is doing is the operator's
+decision. Python and Node.js print a line saying so and exit 130; the Go and
+Rust programs are ended by the signal. In Node.js this needs a `SIGINT`
+listener on the `readline` interface as well as on the process: in a terminal
+`readline` takes Ctrl+C itself and, without a listener, only closes the
+interface, which does not end a call that is already awaited.
 
 In Go, flags must come before the G-code:
 `go run ./cmd/mdi_command --no-wait "M5"`.

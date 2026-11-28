@@ -13,7 +13,8 @@
 //! every joint is homed and that the interpreter is idle. It does not take the
 //! machine out of E-stop, power it on or home it: do that at the machine first.
 //! It then switches to manual mode and turns teleop on, which is what an axis
-//! jog needs.
+//! jog needs. The checks are repeated on a fresh status right before each jog
+//! is started.
 //!
 //! # Safety Warning
 //!
@@ -355,12 +356,47 @@ fn motion_mode(status: &LinuxCncStatus) -> Option<i32> {
     status.trajectory.as_ref().map(|trajectory| trajectory.motion_mode)
 }
 
-/// Check the machine is on, homed and idle, then set manual mode and teleop.
-async fn prepare_for_axis_jog(
-    client: &mut LinuxCncClient,
-    interrupt: &InterruptFlag,
-) -> ExampleResult<()> {
-    let mut status = client.get_status().await?;
+/// Return an error unless the machine is on. It is never turned on from here.
+fn require_machine_on(status: &LinuxCncStatus) -> ExampleResult<()> {
+    let task_state = status.task.as_ref().map(|task| task.task_state);
+    if task_state != Some(TaskState::StateOn as i32) {
+        let state_name = task_state
+            .and_then(|state| TaskState::try_from(state).ok())
+            .map_or("unknown", |state| state.as_str_name());
+        return Err(format!(
+            "The machine is not on (state {state_name}). Take it out of E-stop and turn it on \
+             at the machine, then run this again."
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// True while a program, an MDI command or a jog is under way.
+///
+/// The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator
+/// it read `InterpIdle` for the whole of some MDI moves, while
+/// `trajectory.inpos` was false in every reading taken during a move. A jog
+/// leaves `inpos` true, so velocity is looked at as well.
+fn machine_is_busy(status: &LinuxCncStatus) -> bool {
+    let interpreter_is_idle = status
+        .task
+        .as_ref()
+        .is_some_and(|task| task.interp_state == InterpState::InterpIdle as i32);
+    let is_in_position_and_still = status.trajectory.as_ref().is_some_and(|trajectory| {
+        trajectory.inpos && trajectory.current_vel.abs() < STOPPED_VELOCITY
+    });
+    !(interpreter_is_idle && is_in_position_and_still)
+}
+
+/// Fetch a fresh status and check that the machine is on, homed and idle.
+///
+/// Called before the mode is changed and again right before every jog is
+/// started: the machine can be put in E-stop, turned off or given a program
+/// at any moment, so an earlier answer is not good enough. Only the start of
+/// a jog depends on this check; a jog stop is always sent.
+async fn ready_status_for_jog(client: &mut LinuxCncClient) -> ExampleResult<LinuxCncStatus> {
+    let status = client.get_status().await?;
     let task = status.task.as_ref().ok_or("the status has no task section")?;
     let trajectory = status
         .trajectory
@@ -368,16 +404,7 @@ async fn prepare_for_axis_jog(
         .ok_or("the status has no trajectory section")?;
 
     // Never take the machine out of E-stop or power it on from here.
-    if task.task_state != TaskState::StateOn as i32 {
-        let state_name = TaskState::try_from(task.task_state)
-            .map(|state| state.as_str_name())
-            .unwrap_or("unknown");
-        return Err(format!(
-            "The machine is not on (state {state_name}). Take it out of E-stop and turn it on \
-             at the machine, then run this again."
-        )
-        .into());
-    }
+    require_machine_on(&status)?;
 
     // A 1.0 server lists 16 joint entries, of which only the first
     // trajectory.joints are real. Newer servers list only those.
@@ -404,19 +431,31 @@ async fn prepare_for_axis_jog(
     }
 
     // Checked whatever the mode is: never jog, or change mode, under a
-    // running program or MDI command.
-    if task.interp_state != InterpState::InterpIdle as i32 {
+    // running program, MDI command or jog.
+    if machine_is_busy(&status) {
         let interp_state_name = InterpState::try_from(task.interp_state)
             .map(|state| state.as_str_name())
             .unwrap_or("unknown");
         return Err(format!(
-            "The interpreter is still busy with a program or MDI command (state \
-             {interp_state_name}). Nothing was moved; wait for it to finish and run this again."
+            "The machine is busy with a program, an MDI command or a jog (interpreter \
+             {interp_state_name}, in position: {}, velocity {}). The jog was not started; wait \
+             for it to finish and run this again.",
+            trajectory.inpos, trajectory.current_vel
         )
         .into());
     }
 
-    if task.task_mode != TaskMode::ModeManual as i32 {
+    Ok(status)
+}
+
+/// Check the machine is on, homed and idle, then set manual mode and teleop.
+async fn prepare_for_axis_jog(
+    client: &mut LinuxCncClient,
+    interrupt: &InterruptFlag,
+) -> ExampleResult<()> {
+    let mut status = ready_status_for_jog(client).await?;
+
+    if task_mode(&status) != Some(TaskMode::ModeManual as i32) {
         println!("Setting manual mode...");
         let sent = client.set_mode(TaskMode::ModeManual).await?;
         change_and_confirm(client, interrupt, sent, "Manual mode", |new_status| {
@@ -462,6 +501,10 @@ async fn stop_jog(client: &mut LinuxCncClient, axis: usize) -> ExampleResult<()>
 /// A jog that LinuxCNC refuses still answers `RcsDone`, so the only proof of a
 /// jog is the status. `trajectory.inpos` stays true during a jog; velocity is
 /// what shows motion.
+///
+/// The machine state is checked on every poll. After an E-stop the axis stops
+/// at once, but the velocity in the status keeps its last value until the
+/// machine is turned on again, so velocity alone would never show the stop.
 async fn wait_for_motion_to_end(
     client: &mut LinuxCncClient,
     interrupt: &InterruptFlag,
@@ -472,6 +515,7 @@ async fn wait_for_motion_to_end(
     let started_waiting = Instant::now();
     loop {
         let status = client.get_status().await?;
+        require_machine_on(&status)?;
         let position = axis_position(&status, axis)?;
         let current_velocity = status
             .trajectory
@@ -522,7 +566,8 @@ async fn demo_incremental_jog(
     println!("\n--- Incremental Jog Demo ---");
     println!("Jogging {axis_letter} by +{INCREMENT_DISTANCE} at {JOG_VELOCITY} units/s...");
 
-    let start_position = axis_position(&client.get_status().await?, INCREMENT_AXIS)?;
+    // The check is repeated here, on a fresh status, right before the start.
+    let start_position = axis_position(&ready_status_for_jog(client).await?, INCREMENT_AXIS)?;
     interrupt.pause(Duration::ZERO).await?; // Do not start a jog after an interrupt
 
     // The jog is run so that neither an error nor a panic in it can get past
@@ -579,7 +624,8 @@ async fn demo_continuous_jog(
         "Jogging {axis_letter} at +{JOG_VELOCITY} units/s for {CONTINUOUS_JOG_SECONDS} seconds..."
     );
 
-    let start_position = axis_position(&client.get_status().await?, CONTINUOUS_AXIS)?;
+    // The check is repeated here, on a fresh status, right before the start.
+    let start_position = axis_position(&ready_status_for_jog(client).await?, CONTINUOUS_AXIS)?;
     interrupt.pause(Duration::ZERO).await?; // Do not start a jog after an interrupt
 
     // The stop is always sent: after the sleep, on Ctrl+C, on any error

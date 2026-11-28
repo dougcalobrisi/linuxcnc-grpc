@@ -258,6 +258,27 @@ Telling whether a jog is moving:
   joint's `inpos`. Don't use it to wait for a jog to finish.
 - Use `trajectory.current_vel`, `axes[n].velocity` or `joints[n].velocity`:
   they are non-zero while the jog moves and return to zero when it stops.
+- **After an E-stop `trajectory.current_vel` keeps its last value.** An
+  E-stop during a jog stops the axis at once, but on the 2.9 simulator the
+  velocity in the status stayed at its last non-zero value until the machine
+  was turned on again. A loop that waits for the velocity to reach zero must
+  also look at `task.task_state` and stop waiting when it is no longer
+  `STATE_ON`.
+
+Telling whether an MDI move is running:
+
+- **`task.interp_state` alone is not a reliable busy test for MDI.** Measured
+  on the 2.9 simulator: in 7 of 71 six-second MDI moves it read `INTERP_IDLE`
+  for the whole move, and `task.exec_state` read `EXEC_DONE` in the middle
+  of a move.
+- **`trajectory.inpos` was `false` in every reading taken during an MDI move
+  and `true` at its end.** It was the only field that reliably told a
+  running MDI move apart.
+- So treat the machine as idle only when all three agree:
+  `task.interp_state` is `INTERP_IDLE`, `trajectory.inpos` is `true` and
+  `trajectory.current_vel` is zero. `inpos` covers MDI and program moves,
+  the velocity covers jogs, and the interpreter state covers a program that
+  is running but not moving (a dwell, a pause).
 
 ```python
 def set_mode_and_wait(stub, mode, timeout=5.0):
@@ -317,7 +338,9 @@ Once a later command has been echoed, sent through this server or by any
 other client of the same LinuxCNC, the answer is `RCS_DONE` and the outcome
 of the earlier command is not known from the wait. A client that needs to
 know a motion has finished should also read the status (`task.interp_state`,
-`trajectory.inpos`, `trajectory.current_vel`). See
+`trajectory.inpos` and `trajectory.current_vel` together; see
+[Modes and teleop](#modes-and-teleop-what-to-send-first) for why the
+interpreter state alone is not enough). See
 [Command and Error Semantics](server.md#waitcomplete) for the rules in full.
 
 **Example (Python):**
@@ -339,6 +362,8 @@ if sent.HasField("linuxcnc_serial"):
 response = stub.WaitComplete(request)
 
 if response.status == linuxcnc_pb2.RCS_DONE:
+    # Finished, unless LinuxCNC took a later command from any client
+    # meanwhile: to be sure, also read the status, as described above.
     print("Command completed")
 ```
 

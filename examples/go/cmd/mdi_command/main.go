@@ -51,6 +51,9 @@ const (
 	pollInterval       = 50 * time.Millisecond
 )
 
+// Below this velocity the machine is standing still.
+const stoppedVelocity = 1e-6
+
 // LinuxCNCClient wraps the gRPC client with helper methods
 type LinuxCNCClient struct {
 	conn   *grpc.ClientConn
@@ -96,8 +99,9 @@ func (c *LinuxCNCClient) SendCommand(cmd *pb.LinuxCNCCommand) (*pb.CommandRespon
 }
 
 // WaitComplete waits until the command that sent answers has finished. The
-// result is RCS_DONE (finished), RCS_ERROR (failed) or RCS_EXEC (the timeout
-// expired and the command is still running).
+// result is RCS_DONE, RCS_ERROR (failed) or RCS_EXEC (the timeout expired and
+// the command is still running). RCS_DONE means finished only if LinuxCNC
+// took no later command meanwhile; see confirmMDIFinished.
 func (c *LinuxCNCClient) WaitComplete(sent *pb.CommandResponse, timeout time.Duration) (*pb.CommandResponse, error) {
 	request := &pb.WaitCompleteRequest{Timeout: timeout.Seconds()}
 	if sent.LinuxcncSerial != nil {
@@ -130,6 +134,18 @@ func (c *LinuxCNCClient) MDI(gcode string) (*pb.CommandResponse, error) {
 	})
 }
 
+// machineIsBusy is true while a program, an MDI command or a jog is under way.
+//
+// The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator it
+// read INTERP_IDLE for the whole of some MDI moves, while Trajectory.Inpos
+// was false in every reading taken during a move. A jog leaves Inpos true, so
+// velocity is looked at as well.
+func machineIsBusy(status *pb.LinuxCNCStatus) bool {
+	return status.GetTask().GetInterpState() != pb.InterpState_INTERP_IDLE ||
+		!status.GetTrajectory().GetInpos() ||
+		math.Abs(status.GetTrajectory().GetCurrentVel()) >= stoppedVelocity
+}
+
 // ensureMDIReady checks the machine is on, homed and idle, then makes sure it
 // is in MDI mode.
 func ensureMDIReady(client *LinuxCNCClient) error {
@@ -158,9 +174,9 @@ func ensureMDIReady(client *LinuxCNCClient) error {
 
 	// Checked every time, also when the machine is already in MDI mode: a
 	// command whose wait timed out is still running, and so may a program be.
-	if status.GetTask().GetInterpState() != pb.InterpState_INTERP_IDLE {
-		return fmt.Errorf("the interpreter is still busy with a previous command or a running program (state %s). Nothing was sent; wait for it to finish and try again",
-			status.GetTask().GetInterpState())
+	if machineIsBusy(status) {
+		return fmt.Errorf("the machine is still busy with a previous command, a running program or a jog (interpreter %s, in position: %t, velocity %g). Nothing was sent; wait for it to finish and try again",
+			status.GetTask().GetInterpState(), status.GetTrajectory().GetInpos(), status.GetTrajectory().GetCurrentVel())
 	}
 
 	if status.GetTask().GetTaskMode() == pb.TaskMode_MODE_MDI {
@@ -205,6 +221,32 @@ func ensureMDIReady(client *LinuxCNCClient) error {
 	}
 }
 
+// confirmMDIFinished polls the status until it shows that the MDI command is
+// no longer running.
+//
+// RCS_DONE from WaitComplete is not enough. The server also answers it as
+// soon as LinuxCNC has taken a later command from any client (the GUI
+// changing the feed override, say), and the MDI move may then still be
+// running. The status settles it: machineIsBusy is false again.
+//
+// It returns false if the status did not show that by the deadline. The
+// status is read at least once, and each read has its own deadline.
+func confirmMDIFinished(client *LinuxCNCClient, deadline time.Time) (bool, error) {
+	for {
+		status, err := client.GetStatus()
+		if err != nil {
+			return false, err
+		}
+		if !machineIsBusy(status) {
+			return true, nil
+		}
+		if !time.Now().Before(deadline) {
+			return false, nil
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
 // executeMDI sends an MDI command and, if asked, waits until it has finished.
 func executeMDI(client *LinuxCNCClient, gcode string, wait bool, waitTimeout time.Duration) error {
 	fmt.Printf("Executing: %s\n", gcode)
@@ -223,19 +265,29 @@ func executeMDI(client *LinuxCNCClient, gcode string, wait bool, waitTimeout tim
 	}
 
 	fmt.Println("  Waiting for completion...")
+	// One timeout covers both the wait and the check of the status after it.
+	waitDeadline := time.Now().Add(waitTimeout)
 	finished, err := client.WaitComplete(sent, waitTimeout)
 	if err != nil {
 		return err
 	}
 	switch finished.GetStatus() {
 	case pb.RcsStatus_RCS_DONE:
-		fmt.Println("  Done.")
-		return nil
 	case pb.RcsStatus_RCS_EXEC:
 		return fmt.Errorf("timed out: the command was still running after %v. It has not been cancelled", waitTimeout)
 	default:
 		return fmt.Errorf("the command failed: %s", finished.GetErrorMessage())
 	}
+
+	isConfirmed, err := confirmMDIFinished(client, waitDeadline)
+	if err != nil {
+		return err
+	}
+	if !isConfirmed {
+		return fmt.Errorf("not confirmed: the wait ended, but the status did not show the interpreter idle and the motion in position within %v. The command may still be running (a wait ends early when LinuxCNC takes a later command from any client). It has not been cancelled", waitTimeout)
+	}
+	fmt.Println("  Done.")
+	return nil
 }
 
 func printPosition(client *LinuxCNCClient) error {

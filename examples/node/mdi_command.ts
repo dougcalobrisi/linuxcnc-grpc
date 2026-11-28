@@ -62,6 +62,7 @@ const RPC_TIMEOUT_MS = 5000; // GetStatus and SendCommand
 const STATE_CHANGE_TIMEOUT_MS = 5000; // A mode change must finish within this
 const WAIT_DEADLINE_MARGIN_MS = 5000; // WaitComplete's client deadline = its timeout + this
 const POLL_INTERVAL_MS = 50;
+const STOPPED_VELOCITY = 1e-6; // Below this the machine is standing still
 const MAX_MDI_TIMEOUT_SECONDS = 86400; // Longest --wait-timeout accepted (one day)
 
 if (!command && !opts.interactive) {
@@ -128,8 +129,9 @@ function sendCommand(cmd: LinuxCNCCommand): Promise<CommandResponse> {
 /**
  * Wait until the command that `sent` answers has finished.
  *
- * The result is RCS_DONE (finished), RCS_ERROR (failed) or RCS_EXEC (the
- * timeout expired and the command is still running).
+ * The result is RCS_DONE, RCS_ERROR (failed) or RCS_EXEC (the timeout
+ * expired and the command is still running). RCS_DONE means finished only if
+ * LinuxCNC took no later command meanwhile; see confirmMDIFinished.
  */
 function waitComplete(sent: CommandResponse, timeoutMs: number): Promise<CommandResponse> {
   const request = WaitCompleteRequest.create();
@@ -167,6 +169,22 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+/**
+ * True while a program, an MDI command or a jog is under way.
+ *
+ * The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator
+ * it read INTERP_IDLE for the whole of some MDI moves, while
+ * trajectory.inpos was false in every reading taken during a move. A jog
+ * leaves inpos true, so velocity is looked at as well.
+ */
+function machineIsBusy(status: LinuxCNCStatus): boolean {
+  return (
+    status.task?.interpState !== InterpState.INTERP_IDLE ||
+    status.trajectory?.inpos !== true ||
+    Math.abs(status.trajectory.currentVel) >= STOPPED_VELOCITY
+  );
+}
+
 /** Check the machine is on, homed and idle, then make sure it is in MDI mode. */
 async function ensureMDIReady(): Promise<void> {
   const status = await getStatus();
@@ -198,10 +216,11 @@ async function ensureMDIReady(): Promise<void> {
 
   // Checked every time, also when the machine is already in MDI mode: a
   // command whose wait timed out is still running, and so may a program be.
-  if (task.interpState !== InterpState.INTERP_IDLE) {
+  if (machineIsBusy(status)) {
     throw new Error(
-      "The interpreter is still busy with a previous command or a running program " +
-        `(state ${interpStateToJSON(task.interpState)}). Nothing was sent; wait for it to finish and try again.`
+      "The machine is still busy with a previous command, a running program or a jog " +
+        `(interpreter ${interpStateToJSON(task.interpState)}, in position: ${trajectory.inpos}, ` +
+        `velocity ${trajectory.currentVel}). Nothing was sent; wait for it to finish and try again.`
     );
   }
 
@@ -233,6 +252,30 @@ async function ensureMDIReady(): Promise<void> {
   }
 }
 
+/**
+ * Poll the status until it shows that the MDI command is no longer running.
+ *
+ * RCS_DONE from WaitComplete is not enough. The server also answers it as
+ * soon as LinuxCNC has taken a later command from any client (the GUI
+ * changing the feed override, say), and the MDI move may then still be
+ * running. The status settles it: machineIsBusy is false again.
+ *
+ * Resolves to false if the status did not show that by `deadlineMs` (a
+ * Date.now() value). The status is read at least once, and each read has its
+ * own deadline.
+ */
+async function confirmMDIFinished(deadlineMs: number): Promise<boolean> {
+  for (;;) {
+    if (!machineIsBusy(await getStatus())) {
+      return true;
+    }
+    if (Date.now() >= deadlineMs) {
+      return false;
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
 /** Send an MDI command and, if asked, wait until it has finished. */
 async function executeMDI(gcode: string, wait: boolean): Promise<void> {
   console.log(`Executing: ${gcode}`);
@@ -248,16 +291,26 @@ async function executeMDI(gcode: string, wait: boolean): Promise<void> {
   }
 
   console.log("  Waiting for completion...");
+  // One timeout covers both the wait and the check of the status after it.
+  const waitDeadlineMs = Date.now() + waitTimeoutMs;
   const finished = await waitComplete(sent, waitTimeoutMs);
-  if (finished.status === RcsStatus.RCS_DONE) {
-    console.log("  Done.");
-  } else if (finished.status === RcsStatus.RCS_EXEC) {
+  if (finished.status === RcsStatus.RCS_EXEC) {
     throw new Error(
       `Timed out: the command was still running after ${waitTimeoutMs / 1000} s. It has not been cancelled.`
     );
-  } else {
+  }
+  if (finished.status !== RcsStatus.RCS_DONE) {
     throw new Error(`The command failed: ${finished.errorMessage}`);
   }
+
+  if (!(await confirmMDIFinished(waitDeadlineMs))) {
+    throw new Error(
+      "Not confirmed: the wait ended, but the status did not show the interpreter idle and the motion " +
+        `in position within ${waitTimeoutMs / 1000} s. The command may still be running (a wait ends early ` +
+        "when LinuxCNC takes a later command from any client). It has not been cancelled."
+    );
+  }
+  console.log("  Done.");
 }
 
 async function printPosition(): Promise<void> {
@@ -270,6 +323,23 @@ async function printPosition(): Promise<void> {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Ctrl+C: close the client and leave at once, also in the middle of a wait.
+ *
+ * Without this the program could go on waiting for the whole --wait-timeout:
+ * in a terminal the line reader takes Ctrl+C and only closes itself, which
+ * does not end a call that is already being awaited.
+ *
+ * No abort is sent. Whether to abort what the machine is doing is the
+ * operator's decision, not this example's: a command that was already sent
+ * keeps running.
+ */
+function exitOnInterrupt(): void {
+  console.error("\nInterrupted. A command that was already sent keeps running on the machine.");
+  client.close();
+  process.exit(130);
 }
 
 /**
@@ -288,6 +358,10 @@ async function interactiveMode(): Promise<number> {
     output: process.stdout,
     prompt: "MDI> ",
   });
+
+  // In a terminal Ctrl+C arrives here, not as a signal to the process. It is
+  // not the end of the input: leave at once.
+  lineReader.on("SIGINT", exitOnInterrupt);
 
   // Input can end (Ctrl+D, or a piped script running out) while a command is
   // still being waited for; prompting a closed reader throws.
@@ -354,6 +428,9 @@ async function interactiveMode(): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  // Ctrl+C when the input is not a terminal, or outside interactive mode.
+  process.on("SIGINT", exitOnInterrupt);
+
   try {
     await ensureMDIReady();
 
