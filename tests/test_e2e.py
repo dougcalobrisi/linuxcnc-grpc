@@ -8,6 +8,8 @@ These tests require:
 Run with: pytest tests/test_e2e.py -v -m e2e
 """
 
+import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -1959,3 +1961,267 @@ class TestE2EHalWatchValues:
             lambda s: s.task.interp_state == linuxcnc_pb2.INTERP_IDLE,
             description="interp idle after watch test",
         )
+
+
+# ---------------------------------------------------------------------------
+# A LinuxCNC task that does not answer
+# ---------------------------------------------------------------------------
+
+# LinuxCNC's task process. Freezing it with SIGSTOP is what a task that has
+# stopped answering looks like to the server.
+TASK_PROCESS_NAME = "milltask"
+# How long the send has to have been out, and not back, before the other
+# RPCs are tried. The send waits about 5 seconds for the frozen task.
+SECONDS_BEFORE_PROBING = 1.0
+# Deadline of each other RPC made during the freeze. They run at the same
+# time, from SECONDS_BEFORE_PROBING on, so together they end by about 4 s,
+# inside the send's 5 s wait. Generous, for a loaded runner; what is checked
+# above all is that each answered before the send returned.
+PROBE_DEADLINE_SECONDS = 3.0
+# How long to wait for the queued command, and the state put back, after
+# the task runs again.
+SETTLE_SECONDS = 15.0
+
+
+def task_process_ids():
+    """Process ids of LinuxCNC's task on this host, found by name in /proc."""
+    process_ids = []
+    for process_directory in Path("/proc").glob("[0-9]*"):
+        try:
+            if (process_directory / "comm").read_text().strip() == TASK_PROCESS_NAME:
+                process_ids.append(int(process_directory.name))
+        except OSError:
+            continue  # the process ended while it was being looked at
+    return process_ids
+
+
+def ini_file_of_process(process_id):
+    """The resolved path after '-ini' on a process's command line, or None."""
+    try:
+        arguments = Path(f"/proc/{process_id}/cmdline").read_bytes().split(b"\0")
+        working_directory = os.readlink(f"/proc/{process_id}/cwd")
+    except OSError:
+        return None
+    arguments = [argument.decode(errors="replace") for argument in arguments]
+    if "-ini" not in arguments[:-1]:
+        return None
+    ini_argument = arguments[arguments.index("-ini") + 1]
+    return os.path.realpath(os.path.join(working_directory, ini_argument))
+
+
+class SignalTarget:
+    """
+    One process to signal. With a pidfd (Linux 5.3 and newer) a signal
+    can only reach the process the pidfd was opened for, even if its
+    process id is reused; otherwise os.kill is used.
+    """
+
+    def __init__(self, process_id):
+        self.process_id = process_id
+        self._pidfd = None
+        if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"):
+            try:
+                self._pidfd = os.pidfd_open(process_id)
+            except ProcessLookupError:
+                raise
+            except OSError:
+                self._pidfd = None  # not supported here
+
+    def send(self, signal_number):
+        if self._pidfd is not None:
+            signal.pidfd_send_signal(self._pidfd, signal_number)
+        else:
+            os.kill(self.process_id, signal_number)
+
+    def continue_if_alive(self):
+        """SIGCONT; a task that has exited meanwhile needs none."""
+        try:
+            self.send(signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+
+    def close(self):
+        if self._pidfd is not None:
+            os.close(self._pidfd)
+            self._pidfd = None
+
+
+def task_of_this_linuxcnc(ini_filename):
+    """
+    The task process of the LinuxCNC the server talks to, or a skip.
+
+    It must be the only process of that name on this host, and its command
+    line must name the INI file the server's status reports. The check is
+    made after the pidfd is opened, so it is about the process the pidfd
+    will signal.
+    """
+    candidates = task_process_ids()
+    if len(candidates) != 1:
+        pytest.skip(
+            f"Cannot freeze LinuxCNC's task: expected one '{TASK_PROCESS_NAME}' "
+            f"process on this host, found {len(candidates)}"
+        )
+    try:
+        target = SignalTarget(candidates[0])
+    except ProcessLookupError:
+        pytest.skip(f"Cannot freeze LinuxCNC's task: '{TASK_PROCESS_NAME}' ended")
+    task_ini_file = ini_file_of_process(target.process_id)
+    if not ini_filename or task_ini_file != os.path.realpath(ini_filename):
+        target.close()
+        pytest.skip(
+            f"Cannot freeze LinuxCNC's task: '{TASK_PROCESS_NAME}' "
+            f"(pid {target.process_id}) runs {task_ini_file!r}, the server's LinuxCNC "
+            f"{ini_filename!r}"
+        )
+    return target
+
+
+def serial_reached(echo_serial_number, linuxcnc_serial):
+    """Whether the echo serial is at or past the serial, as LinuxCNC compares them."""
+    difference = (echo_serial_number - linuxcnc_serial + 2**31) % 2**32 - 2**31
+    return difference >= 0
+
+
+def settle_after_freeze(stub, send, outcome):
+    """
+    After the task runs again: let the queued command finish and put the
+    mode back, whatever the test found. Records in ``outcome`` what it saw;
+    never raises, so it cannot hide the test's own failure.
+    """
+    try:
+        response = send.result(timeout=60)[0]
+        outcome["response"] = response
+        deadline = time.monotonic() + SETTLE_SECONDS
+        while time.monotonic() < deadline:
+            status = stub.GetStatus(linuxcnc_pb2.GetStatusRequest(), timeout=5)
+            if (
+                response.HasField("linuxcnc_serial")
+                and serial_reached(status.task.echo_serial_number, response.linuxcnc_serial)
+                and status.task.task_mode == linuxcnc_pb2.MODE_MDI
+            ):
+                outcome["took_effect"] = True
+                break
+            time.sleep(STATE_POLL_INTERVAL)
+    except Exception as settle_error:
+        outcome["settle_error"] = repr(settle_error)
+    try:
+        outcome["mode_back"] = stub.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                mode=linuxcnc_pb2.ModeCommand(mode=linuxcnc_pb2.MODE_MANUAL)
+            ),
+            timeout=30,
+        )
+    except Exception as restore_error:
+        outcome["restore_error"] = repr(restore_error)
+
+
+@pytest.mark.e2e
+class TestE2EUnresponsiveTask:
+    """A command for a frozen task does not stall the rest of the server."""
+
+    def test_frozen_task_blocks_only_the_command(self, linuxcnc_stub, grpc_channel):
+        from concurrent import futures
+
+        from grpc_health.v1 import health_pb2, health_pb2_grpc
+
+        status_before = linuxcnc_stub.GetStatus(linuxcnc_pb2.GetStatusRequest(), timeout=10)
+        task = task_of_this_linuxcnc(status_before.task.ini_filename)
+        health_stub = health_pb2_grpc.HealthStub(grpc_channel)
+        mode_mdi = linuxcnc_pb2.LinuxCNCCommand(
+            mode=linuxcnc_pb2.ModeCommand(mode=linuxcnc_pb2.MODE_MDI)
+        )
+
+        def timed(call):
+            started = time.monotonic()
+            result = call()
+            finished = time.monotonic()
+            return result, finished - started, finished
+
+        try:
+            task.send(signal.SIGSTOP)
+        except PermissionError:
+            task.close()
+            pytest.skip(
+                f"Cannot freeze LinuxCNC's task: no permission to signal pid {task.process_id}"
+            )
+        except ProcessLookupError:
+            task.close()
+            pytest.skip(f"Cannot freeze LinuxCNC's task: pid {task.process_id} has ended")
+        send = None
+        rpc_pool = None
+        probes = {}
+        outcome = {}
+        try:
+            rpc_pool = futures.ThreadPoolExecutor(max_workers=4)
+            send_submitted = time.monotonic()
+            send = rpc_pool.submit(
+                timed, lambda: linuxcnc_stub.SendCommand(mode_mdi, timeout=60)
+            )
+            # The send is blocked: it has been out for a while without
+            # coming back. A frozen task cannot have echoed it.
+            while time.monotonic() - send_submitted < SECONDS_BEFORE_PROBING:
+                assert not send.done(), (
+                    f"SendCommand came back although the task was frozen: {send.result()}"
+                )
+                time.sleep(0.05)
+            # All at once, so their deadlines cannot add up past the send.
+            probe_calls = {
+                "GetServerInfo": lambda: linuxcnc_stub.GetServerInfo(
+                    linuxcnc_pb2.GetServerInfoRequest(), timeout=PROBE_DEADLINE_SECONDS
+                ),
+                "GetStatus": lambda: linuxcnc_stub.GetStatus(
+                    linuxcnc_pb2.GetStatusRequest(), timeout=PROBE_DEADLINE_SECONDS
+                ),
+                "health": lambda: health_stub.Check(
+                    health_pb2.HealthCheckRequest(service=""), timeout=PROBE_DEADLINE_SECONDS
+                ),
+            }
+            probe_futures = {
+                probe_name: rpc_pool.submit(timed, probe_call)
+                for probe_name, probe_call in probe_calls.items()
+            }
+            for probe_name, probe_future in probe_futures.items():
+                probes[probe_name] = probe_future.result(timeout=60)
+            response, send_seconds, send_finished = send.result(timeout=60)
+        finally:
+            # Each step runs whatever the one before did, and none of them
+            # replaces the test's own failure.
+            try:
+                task.continue_if_alive()
+            finally:
+                try:
+                    task.close()
+                finally:
+                    try:
+                        if rpc_pool is not None:
+                            rpc_pool.shutdown(wait=False)
+                    finally:
+                        if send is not None:
+                            settle_after_freeze(linuxcnc_stub, send, outcome)
+
+        # The other RPCs answered while the send was still waiting.
+        for probe_name, (_, probe_seconds, probe_finished) in probes.items():
+            assert probe_finished < send_finished, (
+                f"{probe_name} answered only after the send ({probe_seconds:.3f}s)"
+            )
+        server_info = probes["GetServerInfo"][0]
+        status = probes["GetStatus"][0]
+        health = probes["health"][0]
+        assert server_info.linuxcnc_connected
+        assert status.task.task_mode == linuxcnc_pb2.MODE_MANUAL
+        assert serial_reached(status.task.echo_serial_number, status_before.task.echo_serial_number)
+        assert health.status == health_pb2.HealthCheckResponse.SERVING
+
+        # LinuxCNC gave up waiting for the echo after about 5 seconds; the
+        # command was written all the same.
+        assert response.status == linuxcnc_pb2.RCS_DONE, response.error_message
+        assert response.HasField("linuxcnc_serial")
+        assert not serial_reached(status.task.echo_serial_number, response.linuxcnc_serial)
+        assert response.HasField("acknowledged")
+        assert response.acknowledged is False
+        assert not response.not_sent
+        assert send_seconds > 4.0, f"SendCommand took only {send_seconds:.3f}s"
+
+        # The command stayed queued and ran once the task ran again.
+        assert outcome.get("took_effect"), f"the queued mode change did not take effect: {outcome}"
+        assert outcome["mode_back"].acknowledged is True, outcome

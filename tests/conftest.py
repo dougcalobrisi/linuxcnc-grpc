@@ -2,6 +2,9 @@
 Pytest fixtures for LinuxCNC gRPC server tests.
 """
 
+import json
+import os
+import select
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -12,6 +15,87 @@ import pytest
 # Add src to path for imports
 SRC_DIR = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(SRC_DIR))
+
+HELPER_STAND_IN_DIRECTORY = Path(__file__).parent / "helper_stand_in"
+# Longest a test waits for a helper process to do something.
+HELPER_WAIT_TIMEOUT = 20.0  # seconds
+
+
+class HelperStandIn:
+    """
+    Steers and observes the command helper processes a test starts.
+
+    The helper is the real script; its ``linuxcnc`` module is the stand-in
+    in tests/helper_stand_in, which reads and writes the files here.
+    """
+
+    def __init__(self, control_directory: Path):
+        self.control_directory = control_directory
+        self._behaviours = {}
+        os.mkfifo(control_directory / "entered")
+        os.mkfifo(control_directory / "release")
+        # Opened for reading and writing, so neither this process nor the
+        # helper ever waits for the other end to be opened.
+        self._entered_descriptor = os.open(control_directory / "entered", os.O_RDWR)
+        self._release_descriptor = os.open(control_directory / "release", os.O_RDWR)
+
+    def set_behaviour(self, method_name: str, behaviour: str) -> None:
+        """Give a command method (or "*", "command", "stat.poll") a behaviour."""
+        self._behaviours[method_name] = behaviour
+        # Written whole and then renamed: the helper may read at any time.
+        new_file = self.control_directory / "behaviour.json.new"
+        new_file.write_text(json.dumps(self._behaviours))
+        os.replace(new_file, self.control_directory / "behaviour.json")
+
+    def wait_until_entered(self) -> str:
+        """Wait for a call with the "block" behaviour; returns its method name."""
+        readable, _, _ = select.select([self._entered_descriptor], [], [], HELPER_WAIT_TIMEOUT)
+        assert readable, "no helper call reached its blocking point"
+        return os.read(self._entered_descriptor, 4096).decode().strip()
+
+    def release(self, word: str = "go") -> None:
+        """Let a blocked call go on ("go") or end its process ("exit")."""
+        os.write(self._release_descriptor, (word + "\n").encode())
+
+    def calls(self) -> list[tuple[str, list]]:
+        """Every command call made so far, as (method name, arguments)."""
+        return [(method_name, arguments) for _, method_name, arguments in self._call_records()]
+
+    def process_ids(self) -> list[int]:
+        """The process id of the helper that made each call."""
+        return [process_id for process_id, _, _ in self._call_records()]
+
+    def _call_records(self) -> list:
+        call_log = self.control_directory / "calls.log"
+        if not call_log.exists():
+            return []
+        return [json.loads(line) for line in call_log.read_text().splitlines()]
+
+    def close(self) -> None:
+        os.close(self._entered_descriptor)
+        os.close(self._release_descriptor)
+
+
+@pytest.fixture(autouse=True)
+def helper_stand_in(tmp_path_factory, monkeypatch):
+    """
+    Give every command helper process a test starts the stand-in linuxcnc.
+
+    Applied to every test, so no test can start a helper against a real
+    LinuxCNC by accident.
+    """
+    # Not under the test's own tmp_path: tests list what is in there.
+    control_directory = tmp_path_factory.mktemp("helper-stand-in")
+    monkeypatch.setenv("STAND_IN_LINUXCNC_DIRECTORY", str(control_directory))
+    inherited_module_path = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        str(HELPER_STAND_IN_DIRECTORY)
+        + (os.pathsep + inherited_module_path if inherited_module_path else ""),
+    )
+    stand_in = HelperStandIn(control_directory)
+    yield stand_in
+    stand_in.close()
 
 
 @pytest.fixture

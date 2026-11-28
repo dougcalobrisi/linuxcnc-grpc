@@ -10,7 +10,7 @@ use linuxcnc_grpc::linuxcnc::{
     linux_cnc_service_client::LinuxCncServiceClient,
     GetStatusRequest, LinuxCncCommand, WaitCompleteRequest, StreamStatusRequest,
     GetServerInfoRequest,
-    StateCommand, MdiCommand, JogCommand,
+    StateCommand, MdiCommand, JogCommand, HomeCommand,
     TaskMode, TaskState, ExecState, RcsStatus, JogType,
 };
 use linuxcnc_grpc::hal::{
@@ -174,6 +174,68 @@ async fn test_send_command_mdi() {
     assert_eq!(resp.status, RcsStatus::RcsDone as i32);
     let linuxcnc_serial = resp.linuxcnc_serial.expect("linuxcnc_serial should be set");
     assert_ne!(linuxcnc_serial, resp.serial);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_send_command_reports_acknowledged() {
+    let server = MockServer::start().expect("Failed to start mock server");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut client = LinuxCncServiceClient::connect(server.address())
+        .await
+        .expect("Failed to connect");
+
+    let command = LinuxCncCommand {
+        timestamp: 0,
+        serial: 103,
+        command: Some(linuxcnc_grpc::linuxcnc::linux_cnc_command::Command::Mdi(
+            MdiCommand {
+                command: "G0 X1".to_string(),
+            },
+        )),
+    };
+
+    let resp = client
+        .send_command(command)
+        .await
+        .expect("SendCommand failed")
+        .into_inner();
+
+    assert_eq!(resp.status, RcsStatus::RcsDone as i32);
+    assert_eq!(resp.acknowledged, Some(true));
+    assert!(!resp.not_sent);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_send_command_marks_a_refused_command_not_sent() {
+    let server = MockServer::start().expect("Failed to start mock server");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut client = LinuxCncServiceClient::connect(server.address())
+        .await
+        .expect("Failed to connect");
+
+    // The mock machine has three joints, so joint 3 is refused before
+    // anything is sent.
+    let command = LinuxCncCommand {
+        timestamp: 0,
+        serial: 104,
+        command: Some(linuxcnc_grpc::linuxcnc::linux_cnc_command::Command::Home(
+            HomeCommand { joint: 3 },
+        )),
+    };
+
+    let resp = client
+        .send_command(command)
+        .await
+        .expect("SendCommand failed")
+        .into_inner();
+
+    assert_eq!(resp.status, RcsStatus::RcsError as i32);
+    assert!(resp.not_sent);
+    assert_eq!(resp.acknowledged, None);
 }
 
 #[tokio::test]

@@ -65,6 +65,7 @@ python -m linuxcnc_grpc.server --host 0.0.0.0 --port 50051
 | `--nc-files` | `/home/linuxcnc/linuxcnc/nc_files` | Directory for G-code file operations |
 | `--error-channel` | `on-demand` | When to read LinuxCNC's error channel: `on-demand`, `always` or `off`. See [Error messages and the GUI](#error-messages-and-the-gui) |
 | `--require-linuxcnc` | off | Exit with an error if LinuxCNC is not running at startup, as versions up to 1.0 did. See [Starting before LinuxCNC](#starting-before-linuxcnc) |
+| `--in-process-commands` | off | Send commands to LinuxCNC from the server's own process, as versions up to 1.0 did, instead of from its command helper process. See [A LinuxCNC task that does not respond](#a-linuxcnc-task-that-does-not-respond) |
 | `--debug` | off | Enable debug logging |
 
 ## Auto-Start with LinuxCNC
@@ -130,6 +131,13 @@ has to start it again for the next LinuxCNC session (see
 [Starting before LinuxCNC](#starting-before-linuxcnc)). Run it as the same
 user that runs LinuxCNC.
 
+The server runs one child process, its command helper (see
+[A LinuxCNC task that does not respond](#a-linuxcnc-task-that-does-not-respond)).
+The unit needs nothing for it. When systemd stops the service it sends
+`SIGTERM` to every process of the service; the helper ignores it and ends as
+soon as the server has closed the pipe to it, or once it has finished a send
+that was under way.
+
 ## Starting before LinuxCNC
 
 The server no longer needs LinuxCNC to be running when it starts. If LinuxCNC
@@ -168,6 +176,17 @@ with status 1. A supervisor such as systemd with `Restart=always` starts a
 fresh process, which connects normally. Without a supervisor, start the
 server again by hand.
 
+The server's command helper process (see
+[A LinuxCNC task that does not respond](#a-linuxcnc-task-that-does-not-respond))
+makes its own connection check when it starts. If it fails while the
+server's check passes (LinuxCNC went away in between), the server process
+itself has tried nothing and is not affected: it stays disconnected and tries
+again at the usual intervals, also at startup. After 10 such failures in a
+row it gives up in the same way as above, with an error that says the
+command helper could not be started, so the server cannot send commands.
+For `create_server()` this is the same `on_unrecoverable` call, with the same
+caveat: it can cross with a shutdown.
+
 A program that builds the server with `create_server()` instead of running
 `linuxcnc-grpc` gets the error in the log, and can pass
 `on_unrecoverable=callback` to be told: the callback is called once, from a
@@ -195,9 +214,10 @@ starts it again, such as systemd with `Restart=always`. A server started with
 killing the task processes with `kill -9`: LinuxCNC's status memory stays in
 place, so the server keeps running, keeps returning the last status, and
 health stays `SERVING`. A command sent in that state blocks for about 5
-seconds and then reports `RCS_DONE` (LinuxCNC's own send timeout does not
-raise an error); a `WaitComplete` on it never completes and returns
-`RCS_EXEC` at its timeout. LinuxCNC's Python interface exposes no heartbeat,
+seconds and then reports `RCS_DONE` with `acknowledged` false (LinuxCNC's own
+send timeout does not raise an error; see
+[A LinuxCNC task that does not respond](#a-linuxcnc-task-that-does-not-respond));
+a `WaitComplete` on it never completes and returns `RCS_EXEC` at its timeout. LinuxCNC's Python interface exposes no heartbeat,
 so the server has no cheap way to tell a dead task from an idle one. Clients
 that need to know should watch for a `WaitComplete` that times out on a
 command that should be quick. The next start of LinuxCNC after a crash cleans
@@ -215,6 +235,120 @@ While waiting for LinuxCNC, each check starts a short-lived Python process
 while LinuxCNC is down). It took 7 ms on the simulator; the cost on a slow
 controller PC has not been measured. The checks stop once the server has
 connected.
+
+## A LinuxCNC task that does not respond
+
+LinuxCNC's task process (`milltask`) takes the commands that clients send. If
+it stops answering (it hangs, is stopped in a debugger, or does not get the
+CPU), commands behave as described here. Everything in this section was
+measured on the LinuxCNC 2.9.4 simulator with the task process frozen by
+`SIGSTOP`; the numbers are from that machine.
+
+**A command waits up to 5 seconds per LinuxCNC message.** LinuxCNC's Python
+call that sends a command writes it to LinuxCNC's command queue and then waits
+for the task to confirm it, for at most 5 seconds (a fixed value built into
+LinuxCNC). After that it returns without an error. So `SendCommand` answers
+after about 5 seconds (5.01 s measured), or 10 seconds for a command sent as
+two LinuxCNC messages such as `coolant` (10.02 s), with `RCS_DONE`, a
+`linuxcnc_serial` and `acknowledged` false.
+
+**The command is not withdrawn.** It stays in LinuxCNC's queue and runs when
+the task runs again: a mode change sent to the frozen task took effect within
+about 35 ms of the task being continued, and so did two commands queued behind
+each other, in order. A client deadline does not withdraw a command either. A
+`SendCommand` that has reached its turn is carried out even if its client has
+given up meanwhile; only a command still waiting for its turn is dropped when
+its client goes away (unless it only stops something, see below).
+
+**Commands are sent one at a time, a stop included.** The server sends one
+command, with all its messages, before it starts the next. A command that
+arrives while another waits for the task waits for its turn: a feed override
+sent 0.5 s after a mode change returned after 9.5 s, both with `acknowledged`
+false. That applies to an E-stop or an abort sent through the server as well.
+A command waiting its turn is answered `RCS_ERROR` with `not_sent` true,
+without being sent, if its client goes away or the server stops, except a
+command that only stops something (E-stop, machine off, program abort and
+pause, jog stop, spindle off), which always waits and is sent. Every waiting
+command occupies one of the server's worker threads (10 by default). Do not
+make the server the machine's only way to stop: the E-stop chain of a machine
+belongs in its hardware and HAL configuration.
+
+**The rest of the server keeps answering.** LinuxCNC's send call waits
+without letting any other Python thread of the process run. A server that made
+that call itself stalled completely: status, health, file and HAL calls were
+all answered about 4.5 seconds late. The server therefore sends commands from
+a separate process, its command helper, and waits for the helper's answer in a
+way that lets the other threads run. With a send blocked for 5 seconds,
+`GetStatus`, `GetServerInfo`, the health check, `ListFiles` and HAL
+`QueryPins` answered in 3 to 16 ms, and `StreamStatus` at 100 ms kept sending
+an update every 0.10 to 0.11 s. A `WaitComplete` with a 2-second timeout
+made meanwhile waited for the command being sent and answered `RCS_EXEC`
+after 2.0 s, as for any command still in progress (see
+[`WaitComplete`](#waitcomplete)). The same scenario
+without the helper (`--in-process-commands`): every one of those calls
+answered when the send returned, 4.5 s late, and the status stream sent
+nothing for 3 seconds. The helper costs a command a few milliseconds at most:
+the medians of 100 commands with and without it were 50 and 49 ms for a mode
+change and 29 and 24 ms for a feed override.
+
+**What `acknowledged` tells.** `CommandResponse.acknowledged` is set on every
+command that was dispatched with LinuxCNC bindings that report serials (2.8,
+2.9 and master do):
+
+- `true`: the task had echoed the command's serial when the send returned. It
+  has taken the command; it may still be executing it.
+- `false`: the command was written to LinuxCNC's queue, but the task had not
+  taken it after LinuxCNC's 5-second wait. The task is not answering. The
+  command runs whenever the task does; read the status
+  (`task.echo_serial_number` reaching `linuxcnc_serial`, then the state you
+  expect) before you rely on it or send it again. The server logs a warning.
+- unset: the server cannot tell (nothing was dispatched, the bindings have
+  no serial, or the status poll right after the send failed).
+
+`RCS_DONE` keeps its meaning, "dispatched". For a command sent as several
+LinuxCNC messages, `acknowledged` describes the last one.
+
+**The command helper process.** The server starts it when it connects to
+LinuxCNC. It shows in `ps` as a child of the server:
+
+```text
+/path/to/python /path/to/site-packages/linuxcnc_grpc/command_helper_process.py
+```
+
+(the same Python interpreter as the server).
+
+It runs in a session of its own, so a Ctrl+C in the server's terminal does not
+reach it. It ignores `SIGTERM` and `SIGINT`, so that a signal sent to a whole
+group of processes cannot stop it in the middle of a write to LinuxCNC. It
+ends when the server closes the pipe to it, which the server does when it
+stops and which also happens when the server dies. If it is in a send at that
+moment it finishes the send first, which can take up to 5 seconds per message.
+It is not left behind.
+
+A command that is under way when the server stops is completed, all its
+messages, and the server process exits once it is done. Measured with
+`SIGTERM` to the server 1 s into a blocked single-message command: the server
+exited 4 s later, when the send returned, and the helper with it. 1 s into a
+blocked `coolant` command (two messages): the client's call ended with
+`UNAVAILABLE` when the server's 5-second grace period ran out, the server
+still sent the second message and exited 9 s after the signal, and no helper
+was left. A supervisor that kills the server sooner than that cuts the command
+short; systemd's default stop timeout is 90 seconds.
+
+If the helper dies, or the pipe to it breaks, the server starts another one
+before the next command. A command the helper had already been given is
+answered `RCS_ERROR` with a message that it may have been sent: the helper
+writes to LinuxCNC before it answers, so the server cannot know. Check the
+status before sending it again. Health stays `SERVING` meanwhile, because the
+server's connection to LinuxCNC is unchanged; if no helper can be started,
+commands are answered `RCS_ERROR` with `not_sent` true.
+
+**Turning it off.** `--in-process-commands` (or
+`create_server(command_helper=False)`) sends commands from the server's own
+process, as versions up to 1.0 did. There is no child process then, and a
+command sent to a task that does not respond stalls every RPC of the server
+for as long as the send waits. A `LinuxCNCServiceServicer` built directly in
+Python sends from its own process unless it is given `command_helper=True`.
 
 ## Network Configuration
 
@@ -359,7 +493,7 @@ when it has finished, call `WaitComplete` or watch the status
 ### `RCS_ERROR` from `SendCommand`
 
 `SendCommand` answers `RCS_ERROR`, with the reason in `error_message`, in
-three cases:
+these cases:
 
 - **The server rejected the command.** It checks some values itself: a joint
   or spindle index, an MDI command that is empty or too long, the file name of
@@ -367,6 +501,9 @@ three cases:
   check is not sent, and `error_message` is the server's own text, for example
   `MDI command must not be empty`.
 - **A LinuxCNC call failed.** `error_message` is the text of that error.
+- **The command helper process was lost with the command.** The text says the
+  command may have been sent; check the status before sending it again (see
+  [A LinuxCNC task that does not respond](#a-linuxcnc-task-that-does-not-respond)).
 - **LinuxCNC did not take the command.** If the write to LinuxCNC's command
   channel fails, LinuxCNC's Python bindings report no error. The server
   notices because LinuxCNC's command serial did not change, and answers
@@ -402,6 +539,16 @@ as two messages (close the current program, open the new one).
 After `RCS_ERROR` from one of these four commands, read the status before you
 send the command again: part of it may have taken effect.
 
+**`not_sent` says when a retry is safe.** With `RCS_ERROR`,
+`CommandResponse.not_sent` is true when the server is certain that nothing
+was written to LinuxCNC for the request: the server rejected it, it was
+dropped while waiting its turn (shutdown, client gone), no command helper
+could be started, or LinuxCNC took none of its messages. Sending it again
+cannot run it twice. False means the server cannot rule out that something
+was written: a LinuxCNC call that failed during a send, a command of several
+messages that failed part-way, a helper lost with the command, or bindings
+without a serial. A 1.0 server never sets it.
+
 ### The response serial is the server's, not LinuxCNC's
 
 `CommandResponse.serial` is the `serial` you set on the request or, if you
@@ -422,10 +569,11 @@ command. It is set whenever the command was dispatched:
   so `task.echo_serial_number` is normally at or past this value by the time
   you get the response. But if the task does not answer, the send gives up
   after about 5 seconds without an error and the serial is returned all the
-  same (see [What happens when LinuxCNC stops](#what-happens-when-linuxcnc-stops)).
-  The server does not check the echo itself. To confirm that the command was
-  received, call `WaitComplete` with the value or compare it with
-  `task.echo_serial_number` in the status.
+  same (see [A LinuxCNC task that does not respond](#a-linuxcnc-task-that-does-not-respond)).
+  The server looks at the echo once, right after the send, and reports it in
+  `acknowledged`. To confirm later that the command was received, call
+  `WaitComplete` with the value or compare it with `task.echo_serial_number`
+  in the status.
 - **It says nothing about the outcome.** LinuxCNC can still refuse the command
   (an MDI line in the wrong mode, for example) or fail part-way. Pass the
   value to `WaitComplete` to get `RCS_DONE` or `RCS_ERROR` for it, within the
@@ -499,6 +647,19 @@ The rest of this section describes the wait without `linuxcnc_serial`.
   timeout.
 - The command it waits on is the latest one dispatched when the call arrives.
   A command sent while the wait is in progress does not change its target.
+- A command whose messages are still being sent when the call arrives (a
+  `SendCommand` waiting for a task that does not respond, say) is the latest
+  one. The wait goes on until its send is over and then applies the rules
+  below to it; while the send lasts it answers `RCS_EXEC` at its timeout, as
+  for any command still in progress. That is also what versions up to 1.0
+  answered, only later: there the wait could not even start until the send
+  had returned. If the server's command helper process is lost with that
+  command, what became of it is not known; the wait then reports on the
+  command before it, and the `SendCommand` itself says the command may have
+  been sent.
+- A wait with `linuxcnc_serial` is not held up by a command being sent. After
+  `acknowledged` false it waits for the task to take the command, and answers
+  `RCS_EXEC` at its timeout while the task does not answer.
 - The command counts as finished when LinuxCNC has picked it up and is no
   longer executing it; the result is then `RCS_DONE` or `RCS_ERROR`.
 - If LinuxCNC has already moved on to a later command (one sent during the
@@ -644,7 +805,11 @@ The server uses a thread pool for handling concurrent requests:
 Every stream that is open (`StreamStatus`, `StreamErrors`, the HAL streams)
 occupies one worker thread for as long as it lasts. A stream gives its thread
 back as soon as the client cancels or disconnects, whatever interval it asked
-for.
+for. So does every `SendCommand` that waits for its turn behind a command the
+LinuxCNC task is not answering (see
+[A LinuxCNC task that does not respond](#a-linuxcnc-task-that-does-not-respond));
+a waiting command whose client has gone gives its thread back within about a
+tenth of a second, unless it only stops something.
 
 ## Troubleshooting
 

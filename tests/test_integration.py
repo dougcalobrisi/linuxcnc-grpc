@@ -44,14 +44,15 @@ def load_fixture(name: str) -> dict:
 class MockServerFixture:
     """Context manager for running mock server during tests."""
 
-    def __init__(self, port: int = 50099):
+    def __init__(self, port: int = 50099, extra_arguments: tuple[str, ...] = ()):
         self.port = port
+        self.extra_arguments = list(extra_arguments)
         self.process = None
 
     def __enter__(self):
         # Start mock server
         self.process = subprocess.Popen(
-            [sys.executable, str(MOCK_SERVER_PATH), "--port", str(self.port)],
+            [sys.executable, str(MOCK_SERVER_PATH), "--port", str(self.port), *self.extra_arguments],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -322,6 +323,21 @@ class TestLinuxCNCServiceIntegration:
         assert response.status == linuxcnc_pb2.RCS_ERROR
         assert response.error_message == expected_message
         assert not response.HasField("linuxcnc_serial")
+        assert response.not_sent
+        assert not response.HasField("acknowledged")
+
+    def test_accepted_command_is_acknowledged_and_not_marked_not_sent(self, linuxcnc_client):
+        """The mock answers an accepted command as a server whose LinuxCNC took it."""
+        response = linuxcnc_client.SendCommand(
+            linuxcnc_pb2.LinuxCNCCommand(
+                serial=111, mdi=linuxcnc_pb2.MdiCommand(command="G0 X1")
+            )
+        )
+
+        assert response.status == linuxcnc_pb2.RCS_DONE
+        assert response.HasField("acknowledged")
+        assert response.acknowledged
+        assert not response.not_sent
 
     @pytest.mark.parametrize(
         "command_fields",
@@ -867,6 +883,78 @@ class TestHalServiceIntegration:
 
         assert error_info.value.code() == grpc.StatusCode.DEADLINE_EXCEEDED
         assert received_batches == []
+
+
+@pytest.fixture(scope="module")
+def disconnected_linuxcnc_client():
+    """A client of a mock that plays a server not yet connected to LinuxCNC."""
+    with MockServerFixture(port=50096, extra_arguments=("--disconnected",)) as server:
+        channel = grpc.insecure_channel(server.address)
+        yield linuxcnc_pb2_grpc.LinuxCNCServiceStub(channel)
+        channel.close()
+
+
+class TestMockWithoutLinuxCNC:
+    """The mock mirrors the real server's answer while it is not connected."""
+
+    @pytest.mark.parametrize(
+        "rpc_name, request_message",
+        [
+            ("GetStatus", linuxcnc_pb2.GetStatusRequest()),
+            (
+                "SendCommand",
+                linuxcnc_pb2.LinuxCNCCommand(mdi=linuxcnc_pb2.MdiCommand(command="G0 X1")),
+            ),
+            ("WaitComplete", linuxcnc_pb2.WaitCompleteRequest(timeout=1)),
+            ("ResolveFile", linuxcnc_pb2.ResolveFileRequest(filename="mock_program.ngc")),
+            ("GetMachineConfig", linuxcnc_pb2.GetMachineConfigRequest()),
+        ],
+    )
+    def test_rpc_that_needs_linuxcnc_is_unavailable_with_the_reason(
+        self, disconnected_linuxcnc_client, rpc_name, request_message
+    ):
+        with pytest.raises(grpc.RpcError) as rpc_error:
+            getattr(disconnected_linuxcnc_client, rpc_name)(request_message, timeout=5)
+
+        assert rpc_error.value.code() == grpc.StatusCode.UNAVAILABLE
+        assert rpc_error.value.details() == (
+            "LinuxCNC is not running, or the server has not connected to it yet"
+        )
+        assert ("linuxcnc-grpc-reason", "not-connected") in rpc_error.value.trailing_metadata()
+
+    @pytest.mark.parametrize("rpc_name", ["StreamStatus", "StreamErrors"])
+    def test_stream_is_unavailable_with_the_reason(self, disconnected_linuxcnc_client, rpc_name):
+        request_message = (
+            linuxcnc_pb2.StreamStatusRequest() if rpc_name == "StreamStatus"
+            else linuxcnc_pb2.StreamErrorsRequest()
+        )
+        with pytest.raises(grpc.RpcError) as rpc_error:
+            list(getattr(disconnected_linuxcnc_client, rpc_name)(request_message, timeout=5))
+
+        assert rpc_error.value.code() == grpc.StatusCode.UNAVAILABLE
+        assert ("linuxcnc-grpc-reason", "not-connected") in rpc_error.value.trailing_metadata()
+
+    def test_server_info_and_files_still_answer(self, disconnected_linuxcnc_client):
+        server_info = disconnected_linuxcnc_client.GetServerInfo(
+            linuxcnc_pb2.GetServerInfoRequest(), timeout=5
+        )
+        read_response = disconnected_linuxcnc_client.ReadFile(
+            linuxcnc_pb2.ReadFileRequest(filename="mock_program.ngc"), timeout=5
+        )
+
+        assert not server_info.linuxcnc_connected
+        assert read_response.content == b"G21\nG0 X1 Y1\nM2\n"
+
+    def test_a_refused_name_is_refused_before_the_connection_is_looked_at(
+        self, disconnected_linuxcnc_client
+    ):
+        with pytest.raises(grpc.RpcError) as rpc_error:
+            disconnected_linuxcnc_client.ResolveFile(
+                linuxcnc_pb2.ResolveFileRequest(filename="../outside.ngc"), timeout=5
+            )
+
+        assert rpc_error.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert "linuxcnc-grpc-reason" not in dict(rpc_error.value.trailing_metadata())
 
 
 # =============================================================================

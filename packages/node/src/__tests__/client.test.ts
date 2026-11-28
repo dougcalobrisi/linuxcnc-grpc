@@ -174,6 +174,34 @@ describe('LinuxCNCService', () => {
     expect(response.linuxcncSerial).not.toBe(response.serial);
   });
 
+  it('SendCommand reports that the task acknowledged the command', async () => {
+    const sendCommand = promisify<LinuxCNCCommand, any>(
+      linuxcncClient.sendCommand.bind(linuxcncClient)
+    );
+
+    const response = await sendCommand(
+      LinuxCNCCommand.create({ serial: 103, mdi: { command: 'G0 X1' } })
+    );
+    expect(response.status).toBe(RcsStatus.RCS_DONE);
+    expect(response.acknowledged).toBe(true);
+    expect(response.notSent).toBe(false);
+  });
+
+  it('SendCommand marks a refused command as not sent', async () => {
+    const sendCommand = promisify<LinuxCNCCommand, any>(
+      linuxcncClient.sendCommand.bind(linuxcncClient)
+    );
+
+    // The mock machine has three joints, so joint 3 is refused before
+    // anything is sent.
+    const response = await sendCommand(
+      LinuxCNCCommand.create({ serial: 104, home: { joint: 3 } })
+    );
+    expect(response.status).toBe(RcsStatus.RCS_ERROR);
+    expect(response.notSent).toBe(true);
+    expect(response.acknowledged).toBeUndefined();
+  });
+
   it('SendCommand with jog command succeeds', async () => {
     const sendCommand = promisify<LinuxCNCCommand, any>(
       linuxcncClient.sendCommand.bind(linuxcncClient)

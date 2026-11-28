@@ -39,6 +39,26 @@ Complete API documentation for LinuxCNC gRPC services.
 
 Main service for machine control and status monitoring.
 
+**Before the server has connected to LinuxCNC**, the RPCs that need LinuxCNC
+(`GetStatus`, `SendCommand`, `WaitComplete`, `StreamStatus`, `StreamErrors`,
+`ResolveFile`, `GetMachineConfig`) fail with `UNAVAILABLE` and the message
+"LinuxCNC is not running, or the server has not connected to it yet". The
+failure also carries the trailing metadata entry
+`linuxcnc-grpc-reason: not-connected`, so a client can tell it from an
+`UNAVAILABLE` of the connection to the server itself (server not running,
+network down), which has no such entry, without parsing the message. A 1.0
+server sends the same code and message without the entry. See
+[Starting before LinuxCNC](server.md#starting-before-linuxcnc).
+
+```python
+try:
+    status = stub.GetStatus(linuxcnc_pb2.GetStatusRequest(), timeout=5)
+except grpc.RpcError as error:
+    reason = dict(error.trailing_metadata() or ()).get("linuxcnc-grpc-reason")
+    if error.code() == grpc.StatusCode.UNAVAILABLE and reason == "not-connected":
+        ...  # the server is up and waiting for LinuxCNC
+```
+
 ### GetStatus
 
 Get the current machine status.
@@ -131,9 +151,11 @@ rpc SendCommand(LinuxCNCCommand) returns (CommandResponse)
 | Field | Type | Description |
 |-------|------|-------------|
 | `serial` | int32 | The request's `serial`, or one from the server's own counter if the request left it at 0 (the counter wraps to 1 after 2147483647). A label only: it is not LinuxCNC's serial (don't compare it with `echo_serial_number`) and `WaitComplete` ignores it |
-| `status` | RcsStatus | `RCS_DONE` if the command was dispatched. `RCS_ERROR` if the server rejected it, a LinuxCNC call failed or LinuxCNC did not take the command; a command made of several LinuxCNC messages may then be partly sent (see [`RCS_ERROR` from `SendCommand`](server.md#rcs_error-from-sendcommand)) |
+| `status` | RcsStatus | `RCS_DONE` if the command was dispatched. `RCS_ERROR` if the server rejected it, a LinuxCNC call failed, LinuxCNC did not take the command or the server's command helper process was lost with it; a command made of several LinuxCNC messages may then be partly sent (see [`RCS_ERROR` from `SendCommand`](server.md#rcs_error-from-sendcommand)) |
 | `error_message` | string | Error details if status is RCS_ERROR |
 | `linuxcnc_serial` | optional int32 | LinuxCNC's own serial for the command. Set when the command was dispatched. It identifies the command LinuxCNC was given; it is not proof that the task received it or finished it. Pass it to [WaitComplete](#waitcomplete), or compare it with `task.echo_serial_number` in the status, to follow the command and confirm it (see [Command and Error Semantics](server.md#linuxcnc_serial-identifies-the-command-to-linuxcnc)). For a command sent as several LinuxCNC messages it is the serial of the last one LinuxCNC took. Unset whenever `status` is `RCS_ERROR` (also when part of the command was sent), or if the LinuxCNC bindings on the server don't expose the serial (they do in 2.8, 2.9 and master) |
+| `acknowledged` | optional bool | Whether LinuxCNC's task had taken the command when the send returned. `true`: the task had echoed `linuxcnc_serial`. `false`: the command was written to LinuxCNC's command queue, but the task had not echoed it after LinuxCNC's own wait of about 5 seconds, so the task is not answering; the command is not withdrawn and runs when the task runs again. Unset when nothing was dispatched, when the bindings on the server don't expose the serial, when the server's status poll right after the send failed, and from a 1.0 server. It does not change `status`. For a command sent as several LinuxCNC messages it describes the last one. See [A LinuxCNC task that does not respond](server.md#a-linuxcnc-task-that-does-not-respond) |
+| `not_sent` | bool | With `RCS_ERROR`: `true` when the server is certain nothing was written to LinuxCNC for this request (it rejected the request, dropped it while it waited its turn, could not start its command helper, or LinuxCNC took none of its messages), so sending it again cannot run it twice. `false` means the server cannot rule out that something was written (a failure during a send, a command of several messages that failed part-way, the command helper lost with the command), and is what a 1.0 server always sends |
 
 **Example (Python):**
 
@@ -154,10 +176,18 @@ if response.status == linuxcnc_pb2.RCS_ERROR:
 > done. See [Command and Error Semantics](server.md#command-and-error-semantics).
 
 The server sends one command at a time. While it shuts down, commands still
-waiting their turn are answered `RCS_ERROR` without being sent, except those
-that only stop something (E-stop, machine off, program abort and pause, jog
-stop, spindle off), which are always sent. The same applies to a command
-whose client has gone away before its turn.
+waiting their turn are answered `RCS_ERROR` with `not_sent` true, without
+being sent, except those that only stop something (E-stop, machine off,
+program abort and pause, jog stop, spindle off), which are always sent. The
+same applies to a command whose client has gone away before its turn.
+
+If LinuxCNC's task does not answer, each command waits up to 5 seconds per
+LinuxCNC message, returns `RCS_DONE` with `acknowledged` false, and the
+commands behind it wait their turn. By default the server sends commands from
+a helper process, so its other RPCs keep answering meanwhile; started with
+`--in-process-commands` (the behaviour of versions up to 1.0) it does not
+answer anything until the send returns. See
+[A LinuxCNC task that does not respond](server.md#a-linuxcnc-task-that-does-not-respond).
 
 #### Values the server rejects
 
@@ -249,6 +279,17 @@ How refusals show up:
 - **An MDI command in the wrong mode** also returns `RCS_DONE` from
   `SendCommand`, but `WaitComplete` with its `linuxcnc_serial` returns
   `RCS_ERROR`.
+- **An MDI line the interpreter rejects** behaves the same way. Measured 3
+  times out of 3 with `M999` on the LinuxCNC 2.9.4 simulator, in MDI mode:
+  `SendCommand` returned `RCS_DONE` with a `linuxcnc_serial` (and
+  `acknowledged` true) after about 50 ms; `WaitComplete`, with or without
+  that `linuxcnc_serial`, returned `RCS_ERROR` ("Command failed") in about
+  1 ms; `task.state` stayed `RCS_ERROR` until the next command; the
+  interpreter stayed idle (`INTERP_IDLE`); and the operator error
+  "M-code greater than 199: M999" arrived on [StreamErrors](#streamerrors)
+  and in `status.errors` (a `StreamErrors` call was open, so the server was
+  reading the error channel). The error text is the only place that says what
+  was wrong with the line.
 - So after any motion command, confirm the effect in the status (position,
   `homed`, `motion_mode`) instead of trusting the response alone.
 
@@ -325,6 +366,11 @@ command such as an estop can be sent while a `WaitComplete` is in progress.
 The timeout also covers the time the call itself spends waiting for the
 server's internal lock: if another RPC holds the lock past the deadline, the
 answer is `RCS_EXEC`, as for any timeout.
+
+A wait without `linuxcnc_serial` that arrives while a command is still being
+sent (its `SendCommand` waiting for a task that does not respond, say) waits
+for that command: once its send is over the rules below apply to it, and
+while it lasts the answer at the timeout is `RCS_EXEC`.
 
 If LinuxCNC has already moved on to a later command, or the server has no
 command to wait for (nothing sent yet, or it reconnected to LinuxCNC), the

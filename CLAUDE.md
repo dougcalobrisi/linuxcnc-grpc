@@ -20,6 +20,8 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── linuxcnc_mapper.py     # linuxcnc.stat() -> LinuxCNCStatus
 │   ├── machine_config.py      # GetMachineConfig builder (status + INI)
 │   ├── error_broker.py        # Single reader and fan-out of the error channel
+│   ├── command_helper.py      # HelperCommandChannel: commands sent by a child process
+│   ├── command_helper_process.py  # The child process (run as a script, owns linuxcnc.command())
 │   └── hal_service.py, hal_mapper.py  # HalService
 ├── packages/
 │   ├── go/                    # Generated Go code (*.pb.go, package pb)
@@ -47,6 +49,8 @@ Repository: `dougcalobrisi/linuxcnc-grpc`
 │   ├── test_connection.py     # Start without LinuxCNC, reconnect, health
 │   ├── test_wait_for_linuxcnc.py  # scripts/wait-for-linuxcnc.py
 │   ├── test_error_broker.py   # Error fan-out, StreamErrors, status.errors
+│   ├── test_command_helper.py # Command helper, the two locks, acknowledged, not_sent, reason metadata
+│   ├── helper_stand_in/       # Stand-in linuxcnc module for the helper processes tests start
 │   ├── test_file_read_resolve.py  # ReadFile, ResolveFile
 │   ├── test_machine_config.py # GetMachineConfig
 │   ├── mock_server.py         # Mock gRPC server for integration tests
@@ -172,10 +176,21 @@ All packages use consistent naming across registries:
 
 ## Server Architecture Notes
 
-**Thread Safety**: `LinuxCNCServiceServicer` uses a `threading.RLock` to protect all
-accesses to `self._stat`, `self._command`, and `self._error_channel`. Streaming RPCs
-(`StreamStatus`, `StreamErrors`) hold the lock only during poll/map operations, releasing
-it before waiting and `yield` to avoid blocking other threads.
+**Thread Safety**: `LinuxCNCServiceServicer` has two `threading.RLock`s (see "Command
+helper process" below for why):
+- `_lock`, the state lock, guards `_stat`, `_error_channel`, the dispatch records
+  (`_latest_dispatch_record`, `_issued_linuxcnc_serials`) and the connection state
+  (`_connected`, `_connection_generation`). It is only ever held briefly: one status poll,
+  one bookkeeping step. Never across a send to LinuxCNC.
+- `_command_lock` is held by `SendCommand` for one whole command (every message of it) and by
+  every connect, so commands go to LinuxCNC one at a time and the command channel
+  (`_command_channel`) is never replaced under a command. It is the only lock a blocked send
+  holds.
+- Order: command lock first, then state lock, never the reverse. Nothing that holds the state
+  lock may call `_connect`/`_reconnect` (GetStatus and StreamStatus call `_reconnect` after
+  their `with self._lock` block has ended).
+- Streaming RPCs (`StreamStatus`, `StreamErrors`) hold the state lock only during poll/map
+  operations, releasing it before waiting and `yield` to avoid blocking other threads.
 
 **Streaming waits**: no stream sleeps through its interval. Each stream occupies a worker
 thread (10 by default), and a client that asked for a huge interval and went away used to
@@ -244,20 +259,22 @@ own `MAX_RESPONSE_SERIAL` (defined in `hal_service.py`, because importing
 `_record_dispatch` returns. It is set only on a successful dispatch with bindings that expose
 `command.serial`; rejected commands and the fallback path leave it unset (check with
 `HasField`). It identifies the command LinuxCNC was given; it does not prove the task received
-it. `command.serial` is read after the handler returns and the echo is not checked. LinuxCNC's
-send normally blocks until the task echoes the serial, but if the task does not answer it gives
-up after about 5 seconds without raising, and the serial is still returned. Receipt and outcome
-are confirmed with WaitComplete or the status. Multi-message handlers (coolant, set_limit,
-override_config, program_options) report the serial of the last message LinuxCNC took.
+it. `command.serial` is read after the handler returns. LinuxCNC's send normally blocks until
+the task echoes the serial, but if the task does not answer it gives up after about 5 seconds
+without raising, and the serial is still returned. One status poll right after the send says
+which of the two happened (`CommandResponse.acknowledged`, see "Command helper process");
+completion is confirmed with WaitComplete or the status. Multi-message handlers (coolant,
+set_limit, override_config, program_options, and program open, which the binding sends as a
+close followed by the open) report the serial of the last message LinuxCNC took.
 
 **A command LinuxCNC did not take**: when the write to the command channel fails,
 `emcSendCommand` returns before it updates the channel's serial, and the Python wrappers
 (`mdi`, `state`, ...) ignore its return value and come back normally. `command.serial` is
 then still the previous command's. `SendCommand` reads `command.serial` before and after the
-handler, inside the lock hold; if the handler returned normally and the value did not change,
-it answers `RCS_ERROR` (`COMMAND_NOT_ACCEPTED_MESSAGE`), sets no `linuxcnc_serial`, records
-no dispatch and adds nothing to `_issued_linuxcnc_serials`. Keep this check after the handler
-and before `_record_dispatch`.
+handler, inside the command-lock hold; if the handler returned normally and the value did not change,
+it answers `RCS_ERROR` (`COMMAND_NOT_ACCEPTED_MESSAGE`) with `not_sent` true, sets no
+`linuxcnc_serial`, records no dispatch and adds nothing to `_issued_linuxcnc_serials`. Keep
+this check after the handler and before `_record_dispatch`.
 - The 5 second give-up above is a different case: the write succeeded, so the serial changed,
   and the command counts as dispatched.
 - First command after connecting: `_connect` makes a new `linuxcnc.command()`, whose `serial`
@@ -273,8 +290,8 @@ and before `_record_dispatch`.
   those apart needs a serial comparison around every `self._command` call; not done.
 - Not detected in the fallback path (no `.serial`): there is nothing to compare.
 
-**Latest Dispatch Tracking**: after a handler succeeds, and inside the same lock hold,
-`SendCommand` calls `_record_dispatch`, which stores a `DispatchRecord` in
+**Latest Dispatch Tracking**: after a handler succeeds, in the same command-lock hold and
+under the state lock, `SendCommand` calls `_record_dispatch`, which stores a `DispatchRecord` in
 `_latest_dispatch_record`. Only the latest dispatch is kept; there is no per-serial map.
 - Normally the record holds LinuxCNC's real serial, read from `linuxcnc.command().serial`
   (a read-only member in LinuxCNC 2.8, 2.9 and master). It is read with `getattr` and
@@ -284,11 +301,163 @@ and before `_record_dispatch`.
   LinuxCNC's send blocks until the echo serial catches up, so a later sample never advances.
 - A dispatch that failed before sending anything does not replace the record. A handler that
   fails *after* sending a message (the multi-message handlers: coolant, set_limit,
-  override_config, program_options) does: `SendCommand` compares `command.serial` before and
+  override_config, program_options, program open) does: `SendCommand` compares `command.serial` before and
   after, and records the message that went out, because LinuxCNC is now working on it.
 - In the fallback path a failed pre-dispatch poll is not swallowed: the command is refused
   with `RCS_ERROR` rather than dispatched without a record. A partial dispatch cannot be
   detected in the fallback path.
+
+**Command helper process (`command_helper.py`, `command_helper_process.py`)**. Measured on
+the LinuxCNC 2.9.4 simulator (the local container runs Debian's `linuxcnc-uspace` 2.9.4
+package; CI's e2e job builds LinuxCNC from source instead, see CI/CD) with the task process
+`milltask` frozen by `SIGSTOP`. Do not change anything here without measuring again.
+- **What LinuxCNC does.** A `linuxcnc.command()` method writes its message to the command
+  queue (one FIFO for all clients; the write assigns the serial) and then waits for the task
+  to echo the serial, for at most 5.0 s (a compile-time constant), **without releasing the
+  GIL**. Then it returns normally. The command stays queued and runs when the task runs again
+  (35 ms after `SIGCONT`, in order when several were queued). `stat.poll()` returns at once.
+  The "serial did not move" refusal fires only when the queue is full (the write fails).
+- **What that did to the server.** One send stalled every thread for 5 s (10 s for a
+  two-message command): GetStatus, GetServerInfo, health, ListFiles and HAL QueryPins
+  answered 4.5 s late and StreamStatus sent nothing for 3 s (`--in-process-commands`, same
+  build). With the helper, during the same blocked send: 3 to 16 ms, stream gaps 0.10-0.11 s.
+  Healthy cost: medians of 100 within a few ms (mode change 50.4 vs 49.3 ms, feed override
+  28.6 vs 24.4 ms; two runs of one build differ by about 2 ms).
+- **Design.** By default (`create_server`, `serve`, the CLI) every call on LinuxCNC's command
+  channel is made by one long-lived child process, `command_helper_process.py`, which owns a
+  `linuxcnc.command()`. Handlers call `HelperCommandChannel`, which has the same methods
+  (`__getattr__` forwards `channel.mode(3)`), raises `linuxcnc.error` for one raised in the
+  helper (the type is passed in; `command_helper.py` never imports `linuxcnc`) and a builtin
+  of the same name for other exceptions, else `RuntimeError`. `stat`, the error channel and
+  the constants stay in the server's process. A directly constructed
+  `LinuxCNCServiceServicer` sends in-process (`command_helper=False`, the constructor
+  default) so unit tests and embedders start nothing; `create_server(command_helper=False)`
+  and `--in-process-commands` are the documented 1.0 behaviour.
+- **Protocol.** JSON lines. First line from the helper: `{"ready": true, "pid", "serial"}`
+  after its own `stat.poll()` and `linuxcnc.command()`, or `{"ready": false, "error"}` and
+  exit 1. Request `{"id", "method", "args"}`; reply `{"id", "ok", "serial"}` or `ok: false`
+  with `error_type`, `is_linuxcnc_error`, `error`; `serial` is read after the call either way.
+  Replies go to a duplicate of the original stdout; descriptor 1 is pointed at stderr before
+  `linuxcnc` is imported, so nothing a C library prints can land between replies. A line
+  without its newline (the server died mid-write) is not acted on. Methods starting with `_`
+  are refused. Arguments must be JSON (real ints, floats, strings, bools; the handlers pass
+  nothing else; a `json.dumps` failure is raised before anything is written).
+- **Process.** Started with `sys.executable` and the inherited environment (a child without
+  `HOME` could not connect), `start_new_session=True`, unbuffered pipes. Its script directory
+  is removed from `sys.path`. It ignores `SIGTERM`/`SIGINT` (a signal to the whole group or
+  cgroup must not cut a send in half) and ends at EOF on stdin, i.e. when the server closes
+  the pipe or dies. The server waits for replies with `select.poll()` (not `select()`, which
+  fails for a descriptor of 1024 or more), which releases the GIL.
+- **Lifecycle.** `_connect()` starts a new helper first, under the command lock and outside
+  the state lock, and ends it again if the connect fails; a successful connect ends the
+  previous one. The helper's own `stat.poll()` is its connection check, so "probe before
+  connect" (Starting without LinuxCNC) is kept: a helper that cannot connect costs only its
+  own process. `begin_command()` (inside the command lock, before the serial is read)
+  replaces a helper that died while idle; `restart_if_lost()` replaces one lost during a
+  command. It runs at the end of `_send_in_turn`, after the bookkeeping and **after the
+  command lock is released**, so a command queued behind the lost one (a stop, say) takes its
+  turn at once; that command's `begin_command()` takes the helper being started or starts
+  one itself, whichever comes first, under the channel's `_process_lock`. Each start reads the
+  new process's own serial, so the baseline is right either way. No probe is needed for
+  either, for the same reason. Bound: a command that needs a new helper waits for one start,
+  14 to 23 ms measured, at most `HELPER_START_TIMEOUT` (5 s) for a start that hangs.
+  At construction with `require_linuxcnc=False`, a failed helper start after a passing probe
+  leaves the servicer disconnected for the waiting thread (only the child tried); with
+  `require_linuxcnc=True` it raises. The waiting thread gives up after
+  `MAX_HELPER_START_FAILURES_AFTER_GOOD_PROBE` (10) consecutive helper failures with passing
+  probes (a failing probe resets the count) and reports through `on_unrecoverable`, naming
+  the helper. It goes through the same `_report_unrecoverable`, so the same caveat holds: the
+  stop flag is read right before the call, the call can cross with `close()` (arrive while it
+  runs or just after it returned), and callers must ignore it once they have decided to stop. If anything after `_connect()` fails in the constructor (the error reader's
+  thread start), the constructor calls `close()`, which ends the helper, and re-raises:
+  `create_server` has no servicer object to close.
+  `HelperCommandChannel.close()` ends an idle helper (pipe closed, 0.5 s to exit, then kill);
+  one in a call is left to finish and is ended by the thread waiting for its reply. After
+  `close()` a call that still arrives (a stop, or the rest of a command) starts a helper of its
+  own, ended after the call, so shutdown never cuts a command between its messages.
+  Measured: `SIGTERM` 1 s into a blocked single-message send, server exit 4.04 s later (gRPC's
+  grace waited for the RPC), no helper left; 1 s into a blocked coolant command, the client got
+  `UNAVAILABLE` at the end of the 5 s grace, a new helper sent flood after `close()`, and the
+  process exited 9.05 s after the signal (the gRPC worker thread is joined at exit), helper
+  gone 0.02 s before it.
+- **Helper lost.** If the helper dies, the pipe breaks or no reply comes within
+  `HELPER_REPLY_TIMEOUT` (30 s) after the request was written, the call raises
+  `CommandHelperLost` with `COMMAND_MAY_HAVE_BEEN_SENT_MESSAGE` (never "not sent": the helper
+  writes to LinuxCNC before it answers; measured, a helper killed 1 s into a blocked mode
+  change, and the mode change ran after `SIGCONT`). Any exception while waiting counts as a
+  loss. `SendCommand` answers `RCS_ERROR`, `not_sent` false, no `linuxcnc_serial`, and makes
+  no dispatch record, so an untargeted WaitComplete still reports the command before. Health
+  stays `SERVING` (the connection to LinuxCNC is unchanged), also when no helper can be
+  started; commands then get `RCS_ERROR` with `not_sent` true. A failed write of the request
+  is `CommandNotHandedOver` (nothing sent). The request pipe is non-blocking and
+  `write_request` gives up after `HELPER_WRITE_TIMEOUT` (5 s), polling for writability and
+  checking the deadline before every write but the first, also after one that made progress
+  (a helper that takes a little at a time cannot stretch it); once the whole line is written
+  the request is handed over, whatever the clock says: a
+  request larger than the pipe buffer (an operator message has no size limit below the
+  11 MiB receive limit) to a helper that has stopped reading used to block for ever under the
+  command lock, stops included. os.write reports exactly what it wrote and the newline is the
+  line's last byte, so a write that gives up has never delivered the newline: it is always
+  "not handed over" (`not_sent` true), and the helper, which may hold part of the line, is
+  killed and replaced, so the line is never completed. Measured live by stopping the helper
+  with `SIGSTOP` and sending a 4 MiB operator message (see below).
+- **Serial baseline.** `HelperCommandChannel.serial` behaves like `linuxcnc.command().serial`:
+  it moves when LinuxCNC took a write and stays when the write failed. Each helper process
+  has its own `command.serial`, starting at 0, so the channel compares each reply with the
+  serial that same process reported before (`_HelperProcess.command_serial`) and only then
+  updates its own. Replacing a helper therefore resets the baseline to the new process; the
+  channel's value stays that of the last message LinuxCNC took. With bindings that have no
+  serial it is `None`, and the fallback record and 2.8 behaviour are unchanged.
+- **Locks.** See Thread Safety. A blocked send holds only the command lock. `_send_in_turn`
+  waits for it in `LOCK_ACQUIRE_SLICE` pieces and gives up (`not_sent`) when
+  `_reason_not_to_send` says so; inside it: `begin_command()`, the fallback echo sample
+  (state lock), the serial read, `_reason_not_to_send` as the last step, the handler, then the
+  serial comparison and `_record_dispatch` under the state lock, then `_task_has_echoed`.
+  Handler validation (`_validate_joint_index`, `_validate_spindle_index`) polls `stat` under
+  the state lock, inside the command lock. So a command waits its turn even when it is going
+  to be refused (a bad joint index waited 4.4 s behind a blocked send). Known and left so:
+  validating before the wait would mean splitting every handler into a check and a send
+  (validation and sending are interleaved, and some checks poll `stat`), or running each
+  handler twice against a recording stand-in, which logs every command twice. Every waiting
+  command holds a gRPC worker thread.
+- **`acknowledged`** (`optional bool`, field 5): after a successful dispatch with a serial,
+  one `stat.poll()` under the state lock and `_signed_serial_difference(echo, serial) >= 0`.
+  A failed poll leaves it unset and does not fail the command. False logs a warning. For a
+  multi-message command it is the last message. Measured: false after 5.01 s, true for healthy
+  commands, true for `M999`.
+- **`not_sent`** (`bool`, field 6) is true exactly when nothing was written: unknown command
+  type; refused while waiting or at the last check (shutdown, client gone); `begin_command()`
+  or the fallback poll failed; the handler raised before reading `self._command` (the
+  property sets `_handler_reached_command_channel`; that is how validation refusals are told
+  apart); the helper got no request (`requests_handed_over == 0`, e.g. the write failed); the
+  serial is known and did not move (single or multi-message, raised or returned). False: a
+  loss, a partial multi-message dispatch, bindings without a serial after the channel was
+  reached, any other exception. `tests/test_command_helper.py::TestNotSent` has one test per
+  case.
+- **WaitComplete during a send (rule 0).** `_send_in_turn` marks the command outstanding
+  under the state lock right before the handler (`_begin_outstanding_dispatch`, a number from
+  `_dispatch_sequence`) and clears the mark after the record is made, on every path
+  (`_finish_outstanding_dispatch`: success in the same lock hold as `_record_dispatch`, the
+  not-taken refusal, a failed handler after the partial-dispatch record, and once more in
+  the `finally`). An untargeted WaitComplete that finds the mark keeps polling, without
+  reading the status, until the mark is gone, then takes the record that command left.
+  Policy for a command lost with its helper: the mark is cleared and the previous record
+  kept, so the wait reports on the command before (outcome unknown; the SendCommand answer
+  says "may have been sent"). Targeted waits ignore the mark. Measured: a 2 s untargeted wait
+  during a blocked send answered `RCS_EXEC` after 2.0 s (1.0 / `--in-process-commands`:
+  `RCS_EXEC` after 6.5 s, because the wait could not start before the send returned). The
+  mark is set before the handler's validation, so a command refused there holds a wait for
+  milliseconds only.
+- **Stops wait their turn.** An E-stop, abort or other stop sent through the server waits
+  behind a blocked command like any other command (it is only exempt from being dropped).
+  `_only_stops_things` is the one list of stop commands and `_reason_not_to_send` the one
+  place a command is refused before it is sent; keep it that way.
+- **Trailing metadata on not-connected.** `_abort_not_connected` sets
+  `REASON_METADATA_KEY` / `REASON_NOT_CONNECTED` (`linuxcnc-grpc-reason: not-connected`)
+  with `context.set_trailing_metadata` *before* `context.abort` (abort sends what the context
+  holds at that moment) and aborts with `LINUXCNC_UNAVAILABLE_MESSAGE`, whose text must not
+  change. WaitComplete's inline check calls the same function. `TestNotConnectedReason` checks
+  it through a real in-process gRPC server; the mock's `--disconnected` mirrors it.
 
 **Starting without LinuxCNC** (all measured on the 2.9 sim; do not "simplify" or extend any
 of this without re-measuring):
@@ -304,7 +473,10 @@ of this without re-measuring):
   away in between), the process is poisoned as above, while the child probes pass again once
   LinuxCNC is back. Retrying for ever would keep the server up and `NOT_SERVING` where no
   supervisor restarts it. It is three attempts and not one in case the failure was something
-  else. The thread then logs an error, calls `on_unrecoverable(error_text)` (a constructor
+  else. A failed start of the command helper (`CommandNotHandedOver` from `_connect`, which
+  starts the helper before it tries anything in-process) is not counted: only the helper's
+  own process tried to connect, so this one is not poisoned; the thread logs a warning and
+  probes again. The thread then logs an error, calls `on_unrecoverable(error_text)` (a constructor
   argument; called once, from the waiting thread, without the lock) and ends; the servicer
   stays disconnected. `_report_unrecoverable` reads the stop flag right before the call and
   logs only after it, so it says nothing once it has seen `close()`. Nothing makes `close()`
@@ -347,7 +519,10 @@ of this without re-measuring):
 - `_connect_if_unchanged_since(snapshot)` is how the waiting thread and `_reconnect()`
   connect: the probe runs without the lock, so each takes `_connection_snapshot()`
   (`_connected`, `_connection_generation`) first, and the connect happens only if that is
-  still current and `close()` has not been called, checked in the same lock hold.
+  still current and `close()` has not been called, checked in the same command-lock hold
+  (every connect takes the command lock, so no other connect can come between). It waits for
+  a command in progress, which takes seconds with a task that does not answer; the wait
+  gives up when `close()` is called.
 - `_reconnect(failed_connection)` is 1.0's RPC-side reconnect (GetStatus/StreamStatus call it
   when a held `poll()` raises `linuxcnc.error`, which per the above rarely if ever happens).
   It keeps its backoff loop but asks the probe before every connect. The callers take the
@@ -358,8 +533,9 @@ of this without re-measuring):
   of `""` and `linuxcnc.LinuxCNCService` (`NOT_SERVING` until connected). `hal.HalService` is
   always `SERVING`. The listener must not call `close()`.
 - `_abort_if_disconnected(context)` at the top of an RPC is the only connection check an RPC
-  needs (`UNAVAILABLE` while waiting for LinuxCNC): once it has passed, the channels exist
-  and are only ever replaced by newer ones. RPCs covered: GetStatus, SendCommand,
+  needs (`UNAVAILABLE` while waiting for LinuxCNC, with the trailing metadata
+  `linuxcnc-grpc-reason: not-connected`, see "Command helper process"): once it has passed,
+  the channels exist and are only ever replaced by newer ones. RPCs covered: GetStatus, SendCommand,
   WaitComplete, StreamStatus, StreamErrors, ResolveFile, GetMachineConfig.
   Upload/List/Read/Delete and GetServerInfo need no LinuxCNC. Two RPCs check something else
   first: StreamErrors answers `FAILED_PRECONDITION` in `off` mode, and ResolveFile validates
@@ -394,18 +570,19 @@ of this without re-measuring):
   health service turns `NOT_SERVING` (`enter_graceful_shutdown`), the gRPC server's own
   `stop(grace)` is called (it returns its event at once), and `servicer.close()` runs. Each
   of the three runs whatever the others did, and the first failure is raised at the end. The
-  servicer comes last because `close()` can wait for the servicer lock, and
-  `SendCommand` holds that lock for a whole dispatch, which takes seconds when LinuxCNC's
-  task is not answering. The transport's shutdown and grace period must not start late
-  because of that.
+  servicer comes last because `close()` takes up to about 6.5 s (the bounds below). The
+  transport's shutdown and grace period must not start late because of that.
 - `close()` is bounded. It sets the stop flag first, without the lock; a connect checks the
   flag and publishes its channels in one lock hold, so no connect starts after that. Then it
   sets every stream wake event (they have their own lock), so status streams end even when
   the servicer lock is stuck; the flag has to be set before that, because a stream registers
   its event and then checks the flag. Then it passes through the servicer lock, which waits
   out a connect that had just checked the flag, for at most `CLOSE_LOCK_TIMEOUT` (1 s). Then
-  it stops the error reader and joins the waiting thread (at most 2 s each). What holds when
-  it returns:
+  it closes the command helper channel (at most about 1.5 s: 0.5 s for the channel's own
+  lock, 0.5 s for an idle helper to end after its pipe is closed, 0.5 s after a kill), stops
+  the error reader and joins the waiting thread (at most 2 s each). It never takes the
+  command lock: a command in progress can hold that for as long as the task does not answer.
+  What holds when it returns:
   - If it got the lock: nothing connects afterwards.
   - If it did not: a connect that was already under way in the lock hold that blocked it can
     still finish (its health report is ignored after `enter_graceful_shutdown`). No other
@@ -416,11 +593,16 @@ of this without re-measuring):
     the flag is set).
   - `close()` may be called again.
   - A command is not sent afterwards, unless it only stops things. `SendCommand` asks
-    `_reason_not_to_send(request, context)` inside its lock hold, right before the handler:
+    `_reason_not_to_send(request, context)` while it waits for the command lock (every
+    `LOCK_ACQUIRE_SLICE`) and once more inside the command lock as the last step before the
+    handler, after `begin_command()` (which may start a helper) and the fallback echo sample:
     with the stop flag set, or with `context.is_active()` false (the client went away while
-    the command waited for the lock), the answer is `RCS_ERROR` and nothing is sent or
-    recorded. Keep the check inside the lock and before the first thing that talks to
-    LinuxCNC.
+    the command waited), the answer is `RCS_ERROR` with `not_sent` true and nothing is sent or
+    recorded. Keep the check inside the command lock and right before the first thing that
+    talks to LinuxCNC.
+  - A helper that is in a send when `close()` comes is left to finish it; the thread waiting
+    for its reply ends it afterwards. A stop that still arrives after `close()` gets a helper
+    of its own, which is ended after the call (`HelperCommandChannel.close()` docstring).
   - **A client must always be able to stop**: sending a stop late is safe, dropping it is
     not. `_only_stops_things(request)` names the commands that are never refused there:
     state `STATE_ESTOP` and `STATE_OFF`, program `abort` and `pause`, jog `JOG_STOP`,
@@ -476,10 +658,16 @@ of this without re-measuring):
   by shutdown, so a process stopping while an RPC is in one can exit later than the grace
   period. StreamStatus's wait between updates is interrupted (see Streaming waits).
 
-**Connecting**: `_connect()` holds the lock throughout (as it always did). It creates the
-new `stat`, `command` and `error_channel` in locals and polls the new `stat` first. Only if
-all of that succeeds does it publish the three channels, reset `_latest_dispatch_record` to
-`None` and increment `_connection_generation`. A failed attempt changes nothing.
+**Connecting**: `_connect()` holds the command lock throughout, so it waits for a command in
+progress and no command runs while the channels change. With the helper it first starts a new
+`HelperCommandChannel` (outside the state lock; the helper's own `stat.poll()` is its
+connection check, so a LinuxCNC that is down fails the child, not this process). Then, under
+the state lock, it creates the new `stat`, command channel (the helper channel, or
+`linuxcnc.command()` without the helper) and `error_channel` in locals and polls the new
+`stat` first. Only if all of that succeeds does it publish the three channels, reset
+`_latest_dispatch_record` to `None`, empty `_issued_linuxcnc_serials` and increment
+`_connection_generation`. A failed attempt changes nothing and ends the helper it started;
+a successful one ends the previous helper.
 
 **WaitComplete**: waits on the latest command this server dispatched and **ignores
 `request.serial`** (legacy semantics, same as 1.0.0; the serial is only echoed back). Do not
@@ -497,6 +685,16 @@ The rule in `_completion_state`, checked in this order. Rules 2 to 4 mirror the 
 LinuxCNC's own `wait_complete` (`emcWaitCommandComplete` in `emcmodule.cc`). Rule 1 is this
 server's own: the native function has no such shortcut, but nothing dispatched through this
 server means there is nothing of ours to wait for.
+0. (Untargeted waits only, checked before the others.) A command being sent when the wait
+   took its target (`_outstanding_dispatch`, see "Command helper process"): keep waiting
+   until that command's send is over, then apply rules 1 to 5 to the record its send left:
+   `_finished_dispatch_records` keeps, per command number, the latest record at the moment
+   the command was cleared, for the last `FINISHED_DISPATCHES_REMEMBERED` (64) commands, so a
+   wait whose command and then a later one finished between two of its looks still judges
+   its own command. A wait that finds its number no longer kept uses
+   `_latest_dispatch_record`, as an untargeted wait always did. While the send lasts the wait ends only at its timeout (`RCS_EXEC`). This keeps
+   1.0's meaning (there the wait could not take its target before the send was over)
+   without holding a lock.
 1. No record at all (nothing sent since connecting, or a reconnect reset it):
    `RCS_DONE` immediately, whatever `state` is.
 2. Record with a LinuxCNC serial, echo serial **past** it: `RCS_DONE` immediately, whatever
@@ -712,9 +910,9 @@ as `ini_readable = false` like any file that cannot be opened.
 **GetServerInfo**: returns `ServerInfo` (`server_version`, `linuxcnc_connected`,
 `linuxcnc_version`) and always answers, also while the server is waiting for LinuxCNC.
 - It takes **no lock** and makes **no LinuxCNC call** (no `_abort_if_disconnected`, no
-  `stat.poll()`). `SendCommand` can hold the servicer lock for seconds when LinuxCNC's task is
-  not answering, and a client asking which server it has must not queue behind that. Keep it
-  that way; `TestGetServerInfo` in `tests/test_connection.py` holds the lock in another thread
+  `stat.poll()`). With `--in-process-commands` a send that waits for a task that does not
+  answer stalls the whole process anyway, but no lock of the servicer may ever make a client
+  asking which server it has queue behind a command. Keep it that way; `TestGetServerInfo` in `tests/test_connection.py` holds the lock in another thread
   and counts polls.
 - `_connected` is read without the lock: one attribute read, and an answer that is out of date
   for a moment is harmless. It is the servicer's state, the same one health reports, so it
@@ -886,6 +1084,16 @@ they run later in the same session. The fixtures in `test_machine_config.py`,
 `test_file_read_resolve.py`, `test_error_broker.py` and `test_connection.py` close what they
 build; `test_linuxcnc_service.py`, which constructs servicers inline, has an autouse fixture
 that records every `ErrorBroker.start` and stops those brokers after the test.
+
+**Tests and helper processes**: an autouse fixture in `tests/conftest.py` (`helper_stand_in`)
+puts `tests/helper_stand_in/` first on `PYTHONPATH` for every test, so any helper a test starts
+imports the stand-in `linuxcnc` module, never a real one. The stand-in is steered through
+files in a temporary directory (`behaviour.json`: `block`, `write_fails`,
+`raise_linuxcnc_error`, `raise_value_error`, `print_to_stdout`, `no_serial`) and logs every
+call; `block` waits on a FIFO, which is how tests order threads and processes without sleeps.
+`make_channel`/`make_service` in `test_command_helper.py` close what they start. Requests are
+JSON, so the `service_module` fixture there gives every `linuxcnc` constant a handler passes
+on a real int (the shared mock module has MagicMocks for most of them).
 
 ## Development Setup
 
