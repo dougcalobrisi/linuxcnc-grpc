@@ -115,6 +115,18 @@ More rules for the motion examples, the same in all four languages:
   at its last non-zero value until the machine is turned on again, so a wait on velocity
   alone ran into its 10 s timeout ("X was still moving"). The jog stop on the way out is
   still sent; LinuxCNC refuses it, which is harmless.
+- **`mdi_command`'s confirmation also requires `task_state == STATE_ON`** (`machine_is_on` /
+  `machineIsOn`, checked on every poll before the busy test). Measured on the 2.9 sim in all
+  four languages: an E-stop from a second client 1 unit into `G1 X-2 F60` ended the targeted
+  wait with `RCS_DONE` within 10 ms, and the status read interpreter idle, in position,
+  velocity 0 (`task_state` `STATE_ESTOP_RESET` for 30-50 ms, then `STATE_ESTOP`), so the
+  example printed `Done.` and exited 0. It now reports "The machine is no longer on (state
+  ...). The command was stopped and did not finish." and exits 1.
+- **Known limit, documented and not worked around:** an abort from another client
+  (`program.abort`) also ends the wait with `RCS_DONE` and leaves the machine on, idle and in
+  position. Measured in Python on the sim: `Done.`, exit 0, with X at 0.95 of a move to
+  -2.09, and nothing in `status.errors` (the server was not reading the error channel). The
+  examples do not parse a target position out of the G-code; do not add that.
 - Ctrl+C in `mdi_command` ends the program at once and sends no abort (an example must not
   decide to abort what a machine is doing). Python catches `KeyboardInterrupt`; Go and Rust
   install no handler and are ended by the signal; Node needs a `SIGINT` listener on the

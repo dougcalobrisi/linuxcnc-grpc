@@ -169,6 +169,10 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function machineIsOn(status: LinuxCNCStatus): boolean {
+  return status.task?.taskState === TaskState.STATE_ON;
+}
+
 /**
  * True while a program, an MDI command or a jog is under way.
  *
@@ -195,7 +199,7 @@ async function ensureMDIReady(): Promise<void> {
   }
 
   // Never take the machine out of E-stop or power it on from here.
-  if (task.taskState !== TaskState.STATE_ON) {
+  if (!machineIsOn(status)) {
     throw new Error(
       `The machine is not on (state ${taskStateToJSON(task.taskState)}). Take it out of E-stop ` +
         "and turn it on at the machine, then run this again."
@@ -260,13 +264,30 @@ async function ensureMDIReady(): Promise<void> {
  * changing the feed override, say), and the MDI move may then still be
  * running. The status settles it: machineIsBusy is false again.
  *
+ * The machine must also still be on. An E-stop from another client ends the
+ * wait with RCS_DONE too, and the status then reads idle, in position and
+ * standing still although the move was cut short.
+ *
+ * One case cannot be told from completion here: an abort from another
+ * client. It stops the move and leaves the machine on, idle and in
+ * position, exactly as a finished command does. Only the position shows
+ * it: the move ends short of its target.
+ *
  * Resolves to false if the status did not show that by `deadlineMs` (a
  * Date.now() value). The status is read at least once, and each read has its
- * own deadline.
+ * own deadline. Throws if the machine is not on.
  */
 async function confirmMDIFinished(deadlineMs: number): Promise<boolean> {
   for (;;) {
-    if (!machineIsBusy(await getStatus())) {
+    const status = await getStatus();
+    if (!machineIsOn(status)) {
+      const taskState = status.task?.taskState;
+      throw new Error(
+        `The machine is no longer on (state ${taskState === undefined ? "unknown" : taskStateToJSON(taskState)}). ` +
+          "The command was stopped and did not finish."
+      );
+    }
+    if (!machineIsBusy(status)) {
       return true;
     }
     if (Date.now() >= deadlineMs) {

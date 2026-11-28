@@ -57,7 +57,12 @@ Example Rust clients demonstrating how to connect to and use the LinuxCNC gRPC s
   LinuxCNC takes a later command from any client, while the MDI move may
   still be running. So the example then reads the status until the
   machine is idle by the rule above, and says that the result
-  is not confirmed if that does not show within the timeout. A wait that
+  is not confirmed if that does not show within the timeout. If the machine
+  is no longer on (an E-stop from another client also ends the wait with
+  `RCS_DONE`), it says that the command was stopped and exits non-zero. One
+  thing it cannot detect: an abort from another client leaves the machine on
+  and idle like a finished command, so the example prints `Done.` although
+  the move ended short of its target. A wait that
   runs out (`--wait-timeout`, 60 seconds by default) is reported as a timeout
   and the program exits non-zero; the command itself keeps running. In
   interactive mode a failed command does not end the session, but the exit

@@ -109,6 +109,10 @@ class LinuxCNCClient:
         return self.send_command(command)
 
 
+def machine_is_on(status: linuxcnc_pb2.LinuxCNCStatus) -> bool:
+    return status.task.task_state == linuxcnc_pb2.STATE_ON
+
+
 def machine_is_busy(status: linuxcnc_pb2.LinuxCNCStatus) -> bool:
     """True while a program, an MDI command or a jog is under way.
 
@@ -127,7 +131,7 @@ def ensure_mdi_ready(client: LinuxCNCClient) -> None:
     status = client.get_status()
 
     # Never take the machine out of E-stop or power it on from here.
-    if status.task.task_state != linuxcnc_pb2.STATE_ON:
+    if not machine_is_on(status):
         state_name = linuxcnc_pb2.TaskState.Name(status.task.task_state)
         raise ExampleError(
             f"The machine is not on (state {state_name}). Take it out of E-stop "
@@ -184,12 +188,27 @@ def confirm_mdi_finished(client: LinuxCNCClient, deadline: float) -> bool:
     changing the feed override, say), and the MDI move may then still be
     running. The status settles it: machine_is_busy is false again.
 
+    The machine must also still be on. An E-stop from another client ends
+    the wait with RCS_DONE too, and the status then reads idle, in position
+    and standing still although the move was cut short.
+
+    One case cannot be told from completion here: an abort from another
+    client. It stops the move and leaves the machine on, idle and in
+    position, exactly as a finished command does. Only the position shows
+    it: the move ends short of its target.
+
     Returns False if the status did not show that by `deadline` (a
     time.monotonic() value). The status is read at least once, and each read
-    has its own deadline.
+    has its own deadline. Raises ExampleError if the machine is not on.
     """
     while True:
-        if not machine_is_busy(client.get_status()):
+        status = client.get_status()
+        if not machine_is_on(status):
+            state_name = linuxcnc_pb2.TaskState.Name(status.task.task_state)
+            raise ExampleError(
+                f"The machine is no longer on (state {state_name}). The command "
+                "was stopped and did not finish.")
+        if not machine_is_busy(status):
             return True
         if time.monotonic() >= deadline:
             return False

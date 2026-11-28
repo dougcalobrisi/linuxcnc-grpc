@@ -336,7 +336,11 @@ A wait with `linuxcnc_serial` follows LinuxCNC's own serial rule for that
 command. It is exact as long as nothing else is sent to LinuxCNC meanwhile.
 Once a later command has been echoed, sent through this server or by any
 other client of the same LinuxCNC, the answer is `RCS_DONE` and the outcome
-of the earlier command is not known from the wait. A client that needs to
+of the earlier command is not known from the wait. An E-stop or an abort
+from another client is such a later command: it also ends the wait with
+`RCS_DONE`, while the move was cut short. Check `task.task_state` for the
+E-stop; after an abort the machine is on and idle as after a finished move,
+and only the position (short of the target) shows it. A client that needs to
 know a motion has finished should also read the status (`task.interp_state`,
 `trajectory.inpos` and `trajectory.current_vel` together; see
 [Modes and teleop](#modes-and-teleop-what-to-send-first) for why the

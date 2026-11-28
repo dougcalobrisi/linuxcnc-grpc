@@ -545,8 +545,16 @@ Execute G-code commands via MDI (Manual Data Input).
   the machine is idle (`task.interp_state` is `INTERP_IDLE`,
   `trajectory.inpos` is true and `trajectory.current_vel` is zero), within
   what is left of `--wait-timeout`, and prints `Done.` only then.
-- Telling the four outcomes apart: finished, failed, timed out, and not
-  confirmed (the wait ended but the status did not settle in time)
+- Requiring the machine to be still on when it confirms. An E-stop from
+  another client also ends the wait with `RCS_DONE`, and the status then
+  reads idle, in position and standing still; the example reports "The
+  machine is no longer on ... The command was stopped and did not finish."
+  and exits non-zero.
+- Telling the five outcomes apart: finished, failed, timed out, stopped by
+  an E-stop or power-off, and not confirmed (the wait ended but the status
+  did not settle in time)
+- A limit: an abort from another client cannot be told from completion (see
+  below)
 - Interactive command loop
 
 ### Key code (Python)
@@ -583,10 +591,16 @@ def confirm_mdi_finished(client, deadline):
 
     Returns False if the status did not show that by `deadline` (a
     time.monotonic() value). The status is read at least once, and each read
-    has its own deadline.
+    has its own deadline. Raises ExampleError if the machine is not on.
     """
     while True:
-        if not machine_is_busy(client.get_status()):
+        status = client.get_status()
+        if not machine_is_on(status):
+            state_name = linuxcnc_pb2.TaskState.Name(status.task.task_state)
+            raise ExampleError(
+                f"The machine is no longer on (state {state_name}). The command "
+                "was stopped and did not finish.")
+        if not machine_is_busy(status):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -637,6 +651,22 @@ confirmation share one `--wait-timeout`; the last status read can add its own
 running. It does not show whether a command whose wait ended early succeeded
 or failed: for that, look at the operator messages
 ([`StreamErrors`](api-reference.md#streamerrors) or `status.errors`).
+
+`machine_is_on(status)` is `status.task.task_state == linuxcnc_pb2.STATE_ON`.
+The confirmation needs it because of what an E-stop looks like. Measured on
+the 2.9 simulator: an E-stop sent by another client during an MDI move ended
+the wait with `RCS_DONE` at once, and the status read interpreter idle, in
+position and velocity zero, with the axis a third of the way to its target.
+Without the check the example printed `Done.`.
+
+**What the example cannot detect.** An abort from another client (the GUI's
+stop button, for example) also ends the wait with `RCS_DONE` and stops the
+move, but it leaves the machine on, idle and in position, which is exactly
+what a finished command looks like. In that case the example prints `Done.`
+although the move ended short of its target. Only the position shows it. The
+example does not parse the G-code for a target, so it does not check; a
+client that knows where its move should end can compare
+`position.actual_position` with that after the wait.
 
 `ensure_mdi_ready` runs before every command. It refuses to go on unless the
 machine is on, homed and idle, and switches to MDI mode the same way
@@ -690,8 +720,8 @@ its own 5 second default, and a negative value would give the wait a deadline
 that has already passed.
 
 The exit code is non-zero when the command was refused, failed, was still
-running when the wait ran out, or could not be confirmed as finished in the
-status. In interactive mode a command that fails does
+running when the wait ran out, was stopped by an E-stop or power-off, or
+could not be confirmed as finished in the status. In interactive mode a command that fails does
 not end the session: the error is printed and the prompt comes back. The
 failure is remembered, and the exit code after `quit` or end of input is
 non-zero if any command in the session failed. An error while reading the

@@ -170,6 +170,21 @@ fn task_mode(status: &LinuxCncStatus) -> Option<i32> {
     status.task.as_ref().map(|task| task.task_mode)
 }
 
+fn machine_is_on(status: &LinuxCncStatus) -> bool {
+    status
+        .task
+        .as_ref()
+        .is_some_and(|task| task.task_state == TaskState::StateOn as i32)
+}
+
+fn task_state_name(status: &LinuxCncStatus) -> &'static str {
+    status
+        .task
+        .as_ref()
+        .and_then(|task| TaskState::try_from(task.task_state).ok())
+        .map_or("unknown", |state| state.as_str_name())
+}
+
 /// True while a program, an MDI command or a jog is under way.
 ///
 /// The interpreter state alone does not tell. On the LinuxCNC 2.9 simulator
@@ -197,10 +212,8 @@ async fn ensure_mdi_ready(client: &mut LinuxCncClient) -> ExampleResult<()> {
         .ok_or("the status has no trajectory section")?;
 
     // Never take the machine out of E-stop or power it on from here.
-    if task.task_state != TaskState::StateOn as i32 {
-        let state_name = TaskState::try_from(task.task_state)
-            .map(|state| state.as_str_name())
-            .unwrap_or("unknown");
+    if !machine_is_on(&status) {
+        let state_name = task_state_name(&status);
         return Err(format!(
             "The machine is not on (state {state_name}). Take it out of E-stop and turn it on \
              at the machine, then run this again."
@@ -279,14 +292,33 @@ async fn ensure_mdi_ready(client: &mut LinuxCncClient) -> ExampleResult<()> {
 /// changing the feed override, say), and the MDI move may then still be
 /// running. The status settles it: `machine_is_busy` is false again.
 ///
+/// The machine must also still be on. An E-stop from another client ends the
+/// wait with `RcsDone` too, and the status then reads idle, in position and
+/// standing still although the move was cut short.
+///
+/// One case cannot be told from completion here: an abort from another
+/// client. It stops the move and leaves the machine on, idle and in
+/// position, exactly as a finished command does. Only the position shows
+/// it: the move ends short of its target.
+///
 /// Returns `false` if the status did not show that by `deadline`. The status
-/// is read at least once, and each read has its own deadline.
+/// is read at least once, and each read has its own deadline. Returns an
+/// error if the machine is not on.
 async fn confirm_mdi_finished(
     client: &mut LinuxCncClient,
     deadline: Instant,
 ) -> ExampleResult<bool> {
     loop {
-        if !machine_is_busy(&client.get_status().await?) {
+        let status = client.get_status().await?;
+        if !machine_is_on(&status) {
+            return Err(format!(
+                "The machine is no longer on (state {}). The command was stopped and did not \
+                 finish.",
+                task_state_name(&status)
+            )
+            .into());
+        }
+        if !machine_is_busy(&status) {
             return Ok(true);
         }
         if Instant::now() >= deadline {
