@@ -22,8 +22,9 @@ from typing import Callable
 
 import grpc
 
-from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+from grpc_health.v1 import health_pb2, health_pb2_grpc
 from linuxcnc_pb import linuxcnc_pb2_grpc, hal_pb2_grpc
+from .health_service import HealthServicer, health_watcher_limit
 from .linuxcnc_service import MAX_UPLOAD_SIZE, LinuxCNCServiceServicer
 from .error_broker import ERROR_CHANNEL_MODES, ERROR_CHANNEL_ON_DEMAND
 from .hal_service import HalServiceServicer
@@ -132,7 +133,11 @@ def create_server(
     )
 
     address = f"{host}:{port}"
-    health_servicer = health.HealthServicer()
+    # Each open Watch holds a worker thread, so the number of watchers is
+    # capped well below the number of workers (see health_service.py).
+    health_servicer = HealthServicer(
+        max_concurrent_watchers=health_watcher_limit(max_workers)
+    )
     linuxcnc_servicer = None
     try:
         # Health check service. The overall status ("") and the LinuxCNC

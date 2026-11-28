@@ -797,6 +797,53 @@ The server automatically handles LinuxCNC connection issues:
 See [Starting before LinuxCNC](#starting-before-linuxcnc) for the details and
 for what a LinuxCNC shutdown does to the server.
 
+### Health service
+
+The server answers the standard gRPC health service (`grpc.health.v1.Health`)
+for `""` (the server as a whole), `linuxcnc.LinuxCNCService` and
+`hal.HalService`:
+
+- `""` and `linuxcnc.LinuxCNCService` are `NOT_SERVING` while the server is
+  waiting for LinuxCNC and `SERVING` once it has connected. `hal.HalService`
+  is always `SERVING`.
+- When the server stops, every service turns `NOT_SERVING` before the gRPC
+  shutdown begins, and stays so. Each open `Watch` then sends `NOT_SERVING`
+  and ends with status `OK`, so watchers do not hold up the stop.
+- A service name the server does not know gets `NOT_FOUND` from `Check`.
+
+**Use `Check` for probes.** It answers at once and holds nothing on the
+server.
+
+`Watch` is supported for up to 4 watchers at a time (with the default 10
+worker threads; a server built with `create_server(max_workers=n)` allows half
+of `n`, at most 4, so one worker is always left for other RPCs; with a single
+worker `Watch` is not available at all). Each open `Watch` occupies one
+worker thread for as long as it lasts. The first message is the current status
+(`SERVICE_UNKNOWN` for a name the server has not set), and after that the
+status whenever it differs from the last one sent; a status that did not
+change is not sent again. Changes in quick succession can arrive as one
+message with the newest status.
+
+A `Watch` over the limit ends at once with `UNIMPLEMENTED` and a message
+saying that the watcher limit is reached (or, with one worker, that `Watch`
+is not available) and to use `Check`. A slot is free again as soon as a
+watcher's call ends (cancel, disconnect, deadline), but a refused client is
+not told. What that means for gRPC's client-side health checking (a channel
+configured with a `healthCheckConfig`): a client whose `Watch` gets
+`UNIMPLEMENTED` treats the server as healthy and stops health checking on
+that connection; it does not start watching again when a slot frees, so it
+will not notice the server turning `NOT_SERVING`. Any other error code would
+make that client's channel fail, and it could not use the server at all
+while the other watchers stay. A client that needs to follow the status
+should poll `Check`.
+
+When a `Watch` ends after `NOT_SERVING` at shutdown, a client using gRPC's
+client-side health checking marks the connection as failed and retries with
+backoff, which is what it should do with a server that is going away. A
+watcher sees `NOT_SERVING` only if the transport still delivers it: `serve()`
+stops with a 5-second grace period, which gives it time; a server stopped
+with `stop(0)` may close the stream first.
+
 ### Thread Pool
 
 The server uses a thread pool for handling concurrent requests:
@@ -805,8 +852,11 @@ The server uses a thread pool for handling concurrent requests:
 - Sufficient for most use cases
 - Can be customized in code if needed
 
-Every stream that is open (`StreamStatus`, `StreamErrors`, the HAL streams)
-occupies one worker thread for as long as it lasts. A stream gives its thread
+Every stream that is open (`StreamStatus`, `StreamErrors`, the HAL streams,
+health `Watch` calls) occupies one worker thread for as long as it lasts. With
+10 streams open every worker is taken, and other RPCs, the health `Check`
+included, wait until one ends (or time out). Health watchers are capped for
+this reason (see [Health service](#health-service)). A stream gives its thread
 back as soon as the client cancels or disconnects, whatever interval it asked
 for. So does every `SendCommand` that waits for its turn behind a command the
 LinuxCNC task is not answering (see
