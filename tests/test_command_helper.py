@@ -314,6 +314,93 @@ class TestHelperChannel:
         assert channel._process.read_reply(THREAD_WAIT_TIMEOUT)["ok"] is True
         assert helper_stand_in.calls() == [("mode", [3])]
 
+    def test_interrupt_during_the_readiness_wait_ends_the_child(self, make_channel):
+        """The exception is raised as it was, and the child does not outlive it."""
+        started_processes = []
+        real_init = command_helper._HelperProcess.__init__
+
+        def init_and_remember(process, helper_argv):
+            real_init(process, helper_argv)
+            started_processes.append(process)
+
+        channel = make_channel(start=False)
+        with patch.object(command_helper._HelperProcess, "__init__", init_and_remember), \
+                patch.object(
+                    command_helper._HelperProcess, "read_reply", side_effect=KeyboardInterrupt
+                ):
+            with pytest.raises(KeyboardInterrupt):
+                channel.start()
+
+        (started_process,) = started_processes
+        assert channel.process_id is None
+        assert not process_exists(started_process.process_id)
+        assert started_process._popen.returncode is not None  # reaped
+        assert started_process._popen.stdin.closed and started_process._popen.stdout.closed
+
+    def test_unexpected_error_during_the_readiness_wait_is_not_made_a_start_failure(
+        self, make_channel
+    ):
+        channel = make_channel(start=False)
+        with patch.object(
+            command_helper._HelperProcess, "read_reply", side_effect=MemoryError("no memory")
+        ):
+            with pytest.raises(MemoryError, match="no memory"):
+                channel.start()
+        assert channel.process_id is None
+
+    def test_restart_during_a_call_on_a_dead_helper_leaves_no_process_behind(
+        self, make_channel, helper_stand_in, worker_threads
+    ):
+        """
+        A call waits for the reply of a helper that has died; restart_if_lost()
+        runs meanwhile; then the read fails. Every helper started must still
+        be ended by close().
+        """
+        started_processes = []
+        real_init = command_helper._HelperProcess.__init__
+
+        def init_and_remember(process, helper_argv):
+            real_init(process, helper_argv)
+            started_processes.append(process)
+
+        call_is_reading = threading.Event()
+        let_the_read_fail = threading.Event()
+        real_read_reply = command_helper._HelperProcess.read_reply
+
+        channels = []
+
+        def read_reply_held(process, timeout):
+            if channels and process is started_processes[0] and channels[0]._call_in_flight:
+                call_is_reading.set()
+                let_the_read_fail.wait(THREAD_WAIT_TIMEOUT)
+                raise CommandHelperLost("the helper process ended")
+            return real_read_reply(process, timeout)
+
+        with patch.object(command_helper._HelperProcess, "__init__", init_and_remember), \
+                patch.object(command_helper._HelperProcess, "read_reply", read_reply_held):
+            channel = make_channel()
+            channels.append(channel)
+            channel.begin_command()
+            call = worker_threads.submit(channel.mode, 3)
+            assert call_is_reading.wait(THREAD_WAIT_TIMEOUT)
+            dead_process = started_processes[0]
+            os.kill(dead_process.process_id, signal.SIGKILL)
+            dead_process._popen.wait(timeout=THREAD_WAIT_TIMEOUT)
+
+            channel.restart_if_lost()
+            let_the_read_fail.set()
+            with pytest.raises(CommandHelperLost):
+                call.result(timeout=THREAD_WAIT_TIMEOUT)
+
+            # The next command gets a helper as usual.
+            channel.restart_if_lost()
+            channel.begin_command()
+            channel.mode(1)
+
+        channel.close()
+        assert len(started_processes) >= 2
+        assert not any(process_exists(process.process_id) for process in started_processes)
+
     def test_close_ends_an_idle_helper(self, make_channel):
         channel = make_channel()
         helper_process_id = channel.process_id
@@ -1605,6 +1692,60 @@ class TestHelperLoss:
 
         assert lock_held_during_restart[0] is False
         assert [name for name, _ in helper_stand_in.calls()] == ["mode", "state"]
+
+    def test_loss_during_the_first_message_leaves_the_previous_record(
+        self, helper_service, helper_stand_in, worker_threads
+    ):
+        earlier = helper_service.SendCommand(feedrate_command(), active_context())
+        helper_stand_in.set_behaviour("mist", "block")
+        send = worker_threads.submit(
+            helper_service.SendCommand, coolant_command(), active_context()
+        )
+        helper_stand_in.wait_until_entered()
+        helper_stand_in.release("exit")
+
+        response = send.result(timeout=THREAD_WAIT_TIMEOUT)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == COMMAND_MAY_HAVE_BEEN_SENT_MESSAGE
+        assert not response.not_sent
+        assert not response.HasField("linuxcnc_serial")
+        assert helper_service._latest_dispatch_record.linuxcnc_serial == earlier.linuxcnc_serial
+        assert list(helper_service._issued_linuxcnc_serials) == [earlier.linuxcnc_serial]
+
+    def test_loss_during_a_later_message_records_the_message_that_went_out(
+        self, helper_service, helper_stand_in, worker_threads, mock_linuxcnc_stat
+    ):
+        """
+        Coolant: mist is answered (serial 101), then the helper is lost
+        during flood. Mist went out, so it is what WaitComplete waits on.
+        """
+        helper_stand_in.set_behaviour("flood", "block")
+        send = worker_threads.submit(
+            helper_service.SendCommand, coolant_command(), active_context()
+        )
+        assert helper_stand_in.wait_until_entered() == "flood"
+        helper_stand_in.release("exit")
+
+        response = send.result(timeout=THREAD_WAIT_TIMEOUT)
+
+        assert response.status == linuxcnc_pb2.RCS_ERROR
+        assert response.error_message == COMMAND_MAY_HAVE_BEEN_SENT_MESSAGE
+        assert not response.not_sent
+        assert not response.HasField("linuxcnc_serial")
+        assert [name for name, _ in helper_stand_in.calls()] == ["mist", "flood"]
+        mist_serial = FIRST_STAND_IN_SERIAL
+        # The serial kept across the loss is the mist message's, not the
+        # replacement helper's own starting value.
+        assert helper_service._command_channel.serial == mist_serial
+        assert helper_service._latest_dispatch_record.linuxcnc_serial == mist_serial
+        assert list(helper_service._issued_linuxcnc_serials) == [mist_serial]
+        mock_linuxcnc_stat.echo_serial_number = mist_serial + 1
+        targeted = helper_service.WaitComplete(
+            linuxcnc_pb2.WaitCompleteRequest(timeout=5, linuxcnc_serial=mist_serial),
+            active_context(),
+        )
+        assert targeted.status == linuxcnc_pb2.RCS_DONE
 
     def test_serial_baseline_is_right_after_a_helper_was_replaced(
         self, helper_service, helper_stand_in

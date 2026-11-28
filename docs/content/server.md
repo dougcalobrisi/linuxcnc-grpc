@@ -654,9 +654,12 @@ The rest of this section describes the wait without `linuxcnc_serial`.
   for any command still in progress. That is also what versions up to 1.0
   answered, only later: there the wait could not even start until the send
   had returned. If the server's command helper process is lost with that
-  command, what became of it is not known; the wait then reports on the
-  command before it, and the `SendCommand` itself says the command may have
-  been sent.
+  command before any of its messages is known to have gone out, what became
+  of it is not known, and the wait reports on the command before it. If an
+  earlier message of the same command is known to have gone out (the mist
+  message of a `coolant` command lost during the flood message, say), the
+  wait is on that message, as for any command that failed part-way. Either
+  way the `SendCommand` itself says the command may have been sent.
 - A wait with `linuxcnc_serial` is not held up by a command being sent. After
   `acknowledged` false it waits for the task to take the command, and answers
   `RCS_EXEC` at its timeout while the task does not answer.

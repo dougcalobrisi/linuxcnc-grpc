@@ -385,8 +385,19 @@ package; CI's e2e job builds LinuxCNC from source instead, see CI/CD) with the t
   `CommandHelperLost` with `COMMAND_MAY_HAVE_BEEN_SENT_MESSAGE` (never "not sent": the helper
   writes to LinuxCNC before it answers; measured, a helper killed 1 s into a blocked mode
   change, and the mode change ran after `SIGCONT`). Any exception while waiting counts as a
-  loss. `SendCommand` answers `RCS_ERROR`, `not_sent` false, no `linuxcnc_serial`, and makes
-  no dispatch record, so an untargeted WaitComplete still reports the command before. Health
+  loss. `SendCommand` answers `RCS_ERROR`, `not_sent` false, no `linuxcnc_serial`. If the
+  loss came during the command's first message it makes no dispatch record, so an untargeted
+  WaitComplete still reports the command before. If an earlier message of the command had
+  been answered (coolant: mist answered, helper lost during flood), the channel's `serial` is
+  that message's (it is updated only from a reply, and the replacement helper is started
+  after the bookkeeping), so the partial-dispatch branch records it and adds it to
+  `_issued_linuxcnc_serials`, as for any part-sent command.
+- **Every helper process stays referenced until it is ended.** A loss handler forgets only
+  the process it was using (identity check under `_process_lock`); `restart_if_lost()` does
+  nothing while a call is in flight (the call handles its own loss); a failure of any kind
+  during the readiness wait ends the child before the exception, unchanged, is raised (a
+  `CommandHelperLost` there becomes `CommandNotHandedOver`, anything else, an interrupt
+  included, stays what it was). Health
   stays `SERVING` (the connection to LinuxCNC is unchanged), also when no helper can be
   started; commands then get `RCS_ERROR` with `not_sent` true. A failed write of the request
   is `CommandNotHandedOver` (nothing sent). The request pipe is non-blocking and
@@ -441,9 +452,12 @@ package; CI's e2e job builds LinuxCNC from source instead, see CI/CD) with the t
   not-taken refusal, a failed handler after the partial-dispatch record, and once more in
   the `finally`). An untargeted WaitComplete that finds the mark keeps polling, without
   reading the status, until the mark is gone, then takes the record that command left.
-  Policy for a command lost with its helper: the mark is cleared and the previous record
-  kept, so the wait reports on the command before (outcome unknown; the SendCommand answer
-  says "may have been sent"). Targeted waits ignore the mark. Measured: a 2 s untargeted wait
+  Policy for a command lost with its helper: the mark is cleared. A command lost before any of
+  its messages is known to have gone out leaves the previous record, so the wait reports on
+  the command before (outcome unknown; the SendCommand answer says "may have been sent"). If
+  an earlier message of it is known to have gone out, that message is recorded (Latest
+  Dispatch Tracking: a message known to have gone out is recorded, because LinuxCNC is now
+  working on it). Targeted waits ignore the mark. Measured: a 2 s untargeted wait
   during a blocked send answered `RCS_EXEC` after 2.0 s (1.0 / `--in-process-commands`:
   `RCS_EXEC` after 6.5 s, because the wait could not start before the send returned). The
   mark is set before the handler's validation, so a command refused there holds a wait for

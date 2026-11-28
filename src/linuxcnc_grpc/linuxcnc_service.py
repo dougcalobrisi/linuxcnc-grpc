@@ -1381,8 +1381,12 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                     # must wait on from now on.
                     with self._lock:
                         self._record_dispatch(None)
-                # Otherwise the previous record stays, also for a command
-                # lost with its helper: what became of it is not known.
+                # Otherwise the previous record stays. That includes a
+                # command lost with its helper before any of its messages
+                # was known to have gone out; if an earlier message of it
+                # is known to have gone out (the serial moved), that
+                # message was recorded just above, as for any part-sent
+                # command.
                 self._finish_outstanding_dispatch()
                 return response
             with self._lock:

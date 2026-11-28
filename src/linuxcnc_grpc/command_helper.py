@@ -286,6 +286,12 @@ class HelperCommandChannel:
             raise CommandNotHandedOver(
                 f"The command helper process did not start: {start_error}"
             ) from None
+        except BaseException:
+            # Anything else (an interrupt, an unexpected error) is raised as
+            # it is, but the child must not outlive it: nothing refers to it
+            # yet, so nothing else could ever end it.
+            process.end(kill_now=True)
+            raise
         if ready_message.get("ready") is not True:
             process.end(kill_now=True)
             raise CommandNotHandedOver(
@@ -345,6 +351,11 @@ class HelperCommandChannel:
         if self._closed:
             return
         with self._process_lock:
+            if self._call_in_flight:
+                # The next command is already using the helper. If that one
+                # has died, the call's own loss handling deals with it, and
+                # the command after that starts a new one.
+                return
             process = self._process
             if process is not None and process.is_running():
                 return
@@ -401,7 +412,8 @@ class HelperCommandChannel:
                 # not get through (see write_request), so nothing was sent.
                 # The helper is ended either way: it may hold part of the
                 # line, which must never be completed.
-                self._process = None
+                if self._process is process:
+                    self._process = None
                 process.end(kill_now=True)
                 raise CommandNotHandedOver(
                     "The command could not be handed to the command helper process "
@@ -424,7 +436,11 @@ class HelperCommandChannel:
             self.helper_was_lost = True
             with self._process_lock:
                 self._call_in_flight = False
-                self._process = None
+                # Only the process this call used is forgotten: a helper
+                # started meanwhile by someone else stays referenced, so it
+                # is still ended by close().
+                if self._process is process:
+                    self._process = None
                 # Either it has ended already, or it has been silent for
                 # longer than any send to LinuxCNC takes.
                 process.end(kill_now=True)
