@@ -14,6 +14,8 @@ import linuxcnc
 
 from linuxcnc_pb import linuxcnc_pb2
 
+from .linuxcnc_mapper import real_entry_count
+
 logger = logging.getLogger(__name__)
 
 # Axis letters in LinuxCNC's fixed order; the index is the axis number.
@@ -176,7 +178,10 @@ def build_machine_config(
         def ini_lookup(section: str, key: str) -> None:
             return None
 
-    joint_count = min(stat.joints, len(stat.joint))
+    # The same rule as the status mapper, so the two never disagree about
+    # which joints and spindles the machine has, whatever the counts hold.
+    joint_count = real_entry_count(getattr(stat, "joints", None), len(stat.joint))
+    spindle_count = real_entry_count(getattr(stat, "spindles", None), len(stat.spindle))
     kinematics = _ini_string(ini_lookup, "KINS", "KINEMATICS")
     kinematics_words = kinematics.split()
     letters_by_joint = joint_axis_letters(
@@ -230,7 +235,8 @@ def build_machine_config(
         ))
 
     return linuxcnc_pb2.MachineConfig(
-        ini_filename=stat.ini_filename,
+        # LinuxCNC 2.8's status has no ini_filename.
+        ini_filename=getattr(stat, "ini_filename", ""),
         ini_readable=ini_readable,
         machine_name=_ini_string(ini_lookup, "EMC", "MACHINE"),
         kinematics=kinematics,
@@ -239,7 +245,7 @@ def build_machine_config(
         coordinates="".join(_ini_string(ini_lookup, "TRAJ", "COORDINATES").split()).upper(),
         axis_mask=stat.axis_mask,
         joint_count=joint_count,
-        spindle_count=stat.spindles,
+        spindle_count=spindle_count,
         joint_axis_mapping_known=letters_by_joint is not None,
         linear_units=stat.linear_units,
         angular_units=stat.angular_units,

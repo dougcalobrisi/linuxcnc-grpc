@@ -367,6 +367,9 @@ def mock_linuxcnc_stat(mock_linuxcnc_module):
     # Homed flags
     stat.homed = [1, 1, 1]
 
+    # Motion's miscellaneous error codes
+    stat.misc_error = [0, 0, 0, 0]
+
     return stat
 
 

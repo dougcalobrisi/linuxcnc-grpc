@@ -15,9 +15,9 @@ enum HalType {
   HAL_FLOAT = 2;            // Double precision float
   HAL_S32 = 3;              // Signed 32-bit integer
   HAL_U32 = 4;              // Unsigned 32-bit integer
-  HAL_S64 = 5;              // Signed 64-bit integer
-  HAL_U64 = 6;              // Unsigned 64-bit integer
-  HAL_PORT = 7;             // Port type (advanced)
+  HAL_S64 = 5;              // Signed integer; only reported for a value that does not fit 32 bits
+  HAL_U64 = 6;              // Unsigned integer; only reported for a value that does not fit 32 bits
+  HAL_PORT = 7;             // Port type (advanced); the server reports port pins with no value
 }
 
 // Pin direction (from component's perspective)
@@ -57,9 +57,11 @@ message HalValue {
     double float_value = 2;
     int32 s32_value = 3;
     uint32 u32_value = 4;
+    // The two 64-bit values are numbers in the Node.js/TypeScript client:
+    // exact up to 2^53, the nearest number beyond that.
     int64 s64_value = 5;
     uint64 u64_value = 6;
-    string port_value = 7;       // Port type (advanced)
+    string port_value = 7;       // Port type (advanced); never set by the server
   }
 }
 
@@ -75,8 +77,10 @@ message HalPinInfo {
   HalType type = 4;             // Data type
   PinDirection direction = 5;   // Pin direction
   HalValue value = 6;           // Current value
-  string signal = 7;            // Connected signal name (empty if none)
-  bool has_writer = 8;          // True if pin has a writer
+  string signal = 7;            // Always empty: LinuxCNC's HAL Python module does not expose the connected signal
+  // True if the pin's signal has a writer. In StreamStatus this is refreshed
+  // every 2 seconds, not with every update.
+  bool has_writer = 8;
 }
 
 // Information about a HAL signal
@@ -99,13 +103,16 @@ message HalParamInfo {
   HalValue value = 6;           // Current value
 }
 
-// Information about a HAL component
+// Information about a HAL component. LinuxCNC's HAL Python module has no
+// component list, so the server infers components from pin and parameter
+// names (the part before the last dot). Only name, pins and params are filled
+// in.
 message HalComponentInfo {
   string name = 1;              // Component name
-  int32 id = 2;                 // Component ID
-  bool ready = 3;               // True if component is ready
-  int32 type = 4;               // Component type (RT, user, etc)
-  int32 pid = 5;                // Process ID (for userspace components)
+  int32 id = 2;                 // Component ID; always 0
+  bool ready = 3;               // Never set by the server
+  int32 type = 4;               // Never set by the server
+  int32 pid = 5;                // Never set by the server
   repeated string pins = 6;     // List of pin names
   repeated string params = 7;   // List of parameter names
 }
@@ -116,12 +123,12 @@ message HalSystemStatus {
   repeated HalPinInfo pins = 2;                 // All pins
   repeated HalSignalInfo signals = 3;           // All signals
   repeated HalParamInfo params = 4;             // All parameters
-  repeated HalComponentInfo components = 5;     // All components
-  MessageLevel message_level = 6;               // Current message level
+  repeated HalComponentInfo components = 5;     // Components inferred from pin and parameter names
+  MessageLevel message_level = 6;               // RTAPI message level of the server process
   bool is_sim = 7;                              // Running in simulation
   bool is_rt = 8;                               // Running real-time
   bool is_userspace = 9;                        // Userspace HAL
-  string kernel_version = 10;                   // Kernel version
+  string kernel_version = 10;                   // Kernel version as HAL reports it; "Not Available" on uspace builds
 }
 
 // ============================================================================
@@ -284,7 +291,11 @@ message HalCommand {
     ConnectCommand connect = 50;
     DisconnectCommand disconnect = 51;
 
-    // Query commands
+    // Query commands. SendCommand answers only component_exists,
+    // component_ready and pin_has_writer. It refuses get_value and the
+    // query_* commands (its response cannot carry a result) and names the RPC
+    // to call instead: GetValue, QueryPins, QuerySignals, QueryParams or
+    // QueryComponents.
     GetValueCommand get_value = 60;
     QueryPinsCommand query_pins = 61;
     QuerySignalsCommand query_signals = 62;
@@ -362,8 +373,10 @@ message QueryComponentsResponse {
 
 // Subscribe to value changes
 message WatchRequest {
-  repeated string names = 1;    // Pin/signal/param names to watch
-  int32 interval_ms = 2;        // Minimum update interval in milliseconds (default: 100)
+  repeated string names = 1;    // Pin/signal/param names to watch; duplicates are ignored, at most 1000 names
+  // Minimum update interval in milliseconds (default: 100). Values above
+  // 60000 are treated as 60000.
+  int32 interval_ms = 2;
 }
 
 // Value change notification
@@ -418,6 +431,8 @@ message GetSystemStatusRequest {
 }
 
 message HalStreamStatusRequest {
-  int32 interval_ms = 1;        // Update interval in milliseconds (default: 100)
-  repeated string filter = 2;   // Optional: only include these components
+  // Update interval in milliseconds (default: 100). Values above 60000 are
+  // treated as 60000.
+  int32 interval_ms = 1;
+  repeated string filter = 2;   // Currently ignored by the server: every component is included
 }

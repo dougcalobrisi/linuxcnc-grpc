@@ -27,7 +27,12 @@ The linuxcnc-grpc server runs on your LinuxCNC machine and exposes both LinuxCNC
 LinuxCNC 2.8 is not enough for the server as shipped. The HAL service lists
 pins, signals and parameters with `hal.get_info_pins`, `hal.get_info_signals`
 and `hal.get_info_params`, which 2.8's `hal` module does not have, and the
-server does not start without the HAL service.
+server does not start without the HAL service. The LinuxCNC service on its own
+(status, commands, machine configuration) also works with 2.8's bindings, which
+matters only if you build a gRPC server from `LinuxCNCServiceServicer`
+yourself. On 2.8 the status fields that LinuxCNC does not report there
+(`ini_filename`, `num_extrajoints`, `tool_from_pocket`, `misc_error`) are left
+at their defaults.
 
 ## Installation
 
@@ -634,6 +639,11 @@ The server uses a thread pool for handling concurrent requests:
 - Sufficient for most use cases
 - Can be customized in code if needed
 
+Every stream that is open (`StreamStatus`, `StreamErrors`, the HAL streams)
+occupies one worker thread for as long as it lasts. A stream gives its thread
+back as soon as the client cancels or disconnects, whatever interval it asked
+for.
+
 ## Troubleshooting
 
 ### RPCs return `UNAVAILABLE` ("LinuxCNC is not running…")
@@ -697,6 +707,10 @@ Clients specify the interval when calling `StreamStatus`:
 ```python
 request = linuxcnc_pb2.StreamStatusRequest(interval_ms=50)
 ```
+
+The longest interval is 60 seconds: a larger `interval_ms` is treated as
+60000. The same default and limit apply to the HAL service's `StreamStatus`
+and `WatchValues`.
 
 ### Network Latency
 

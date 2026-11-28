@@ -116,7 +116,8 @@
       {
         "id": 1,
         "z_offset": 1.5,
-        "diameter": 6.0
+        "diameter": 6.0,
+        "table_index": 0
       }
     ]
   },

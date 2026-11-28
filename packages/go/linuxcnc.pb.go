@@ -1959,7 +1959,7 @@ type SpindleStatus struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	SpindleNumber   int32                  `protobuf:"varint,1,opt,name=spindle_number,json=spindleNumber,proto3" json:"spindle_number,omitempty"`
 	Brake           bool                   `protobuf:"varint,2,opt,name=brake,proto3" json:"brake,omitempty"`
-	Direction       int32                  `protobuf:"varint,3,opt,name=direction,proto3" json:"direction,omitempty"` // 0=stopped, 1=forward, 2=reverse
+	Direction       int32                  `protobuf:"varint,3,opt,name=direction,proto3" json:"direction,omitempty"` // LinuxCNC's value: -1=reverse, 0=stopped, 1=forward
 	Enabled         bool                   `protobuf:"varint,4,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	OverrideEnabled bool                   `protobuf:"varint,5,opt,name=override_enabled,json=overrideEnabled,proto3" json:"override_enabled,omitempty"`
 	Speed           float64                `protobuf:"fixed64,6,opt,name=speed,proto3" json:"speed,omitempty"`       // Commanded speed (RPM)
@@ -2073,22 +2073,28 @@ func (x *SpindleStatus) GetOrientFault() int32 {
 
 // Tool entry in tool table
 type ToolEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"` // Tool number
-	XOffset       float64                `protobuf:"fixed64,2,opt,name=x_offset,json=xOffset,proto3" json:"x_offset,omitempty"`
-	YOffset       float64                `protobuf:"fixed64,3,opt,name=y_offset,json=yOffset,proto3" json:"y_offset,omitempty"`
-	ZOffset       float64                `protobuf:"fixed64,4,opt,name=z_offset,json=zOffset,proto3" json:"z_offset,omitempty"`
-	AOffset       float64                `protobuf:"fixed64,5,opt,name=a_offset,json=aOffset,proto3" json:"a_offset,omitempty"`
-	BOffset       float64                `protobuf:"fixed64,6,opt,name=b_offset,json=bOffset,proto3" json:"b_offset,omitempty"`
-	COffset       float64                `protobuf:"fixed64,7,opt,name=c_offset,json=cOffset,proto3" json:"c_offset,omitempty"`
-	UOffset       float64                `protobuf:"fixed64,8,opt,name=u_offset,json=uOffset,proto3" json:"u_offset,omitempty"`
-	VOffset       float64                `protobuf:"fixed64,9,opt,name=v_offset,json=vOffset,proto3" json:"v_offset,omitempty"`
-	WOffset       float64                `protobuf:"fixed64,10,opt,name=w_offset,json=wOffset,proto3" json:"w_offset,omitempty"`
-	Diameter      float64                `protobuf:"fixed64,11,opt,name=diameter,proto3" json:"diameter,omitempty"`
-	FrontAngle    float64                `protobuf:"fixed64,12,opt,name=front_angle,json=frontAngle,proto3" json:"front_angle,omitempty"`
-	BackAngle     float64                `protobuf:"fixed64,13,opt,name=back_angle,json=backAngle,proto3" json:"back_angle,omitempty"`
-	Orientation   int32                  `protobuf:"varint,14,opt,name=orientation,proto3" json:"orientation,omitempty"`
-	Comment       string                 `protobuf:"bytes,15,opt,name=comment,proto3" json:"comment,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"` // Tool number
+	XOffset     float64                `protobuf:"fixed64,2,opt,name=x_offset,json=xOffset,proto3" json:"x_offset,omitempty"`
+	YOffset     float64                `protobuf:"fixed64,3,opt,name=y_offset,json=yOffset,proto3" json:"y_offset,omitempty"`
+	ZOffset     float64                `protobuf:"fixed64,4,opt,name=z_offset,json=zOffset,proto3" json:"z_offset,omitempty"`
+	AOffset     float64                `protobuf:"fixed64,5,opt,name=a_offset,json=aOffset,proto3" json:"a_offset,omitempty"`
+	BOffset     float64                `protobuf:"fixed64,6,opt,name=b_offset,json=bOffset,proto3" json:"b_offset,omitempty"`
+	COffset     float64                `protobuf:"fixed64,7,opt,name=c_offset,json=cOffset,proto3" json:"c_offset,omitempty"`
+	UOffset     float64                `protobuf:"fixed64,8,opt,name=u_offset,json=uOffset,proto3" json:"u_offset,omitempty"`
+	VOffset     float64                `protobuf:"fixed64,9,opt,name=v_offset,json=vOffset,proto3" json:"v_offset,omitempty"`
+	WOffset     float64                `protobuf:"fixed64,10,opt,name=w_offset,json=wOffset,proto3" json:"w_offset,omitempty"`
+	Diameter    float64                `protobuf:"fixed64,11,opt,name=diameter,proto3" json:"diameter,omitempty"`
+	FrontAngle  float64                `protobuf:"fixed64,12,opt,name=front_angle,json=frontAngle,proto3" json:"front_angle,omitempty"`
+	BackAngle   float64                `protobuf:"fixed64,13,opt,name=back_angle,json=backAngle,proto3" json:"back_angle,omitempty"`
+	Orientation int32                  `protobuf:"varint,14,opt,name=orientation,proto3" json:"orientation,omitempty"`
+	Comment     string                 `protobuf:"bytes,15,opt,name=comment,proto3" json:"comment,omitempty"`
+	// Index of this entry in the tool table as LinuxCNC's status lists it.
+	// tool_table leaves out entries without a tool, so an entry's position in
+	// that list is not this index. Unset when the server is older than 1.1.
+	// An entry's id can be -1 for an empty slot (index 0 is the spindle, and
+	// holds -1 when no tool is loaded): ignore entries whose id is not positive.
+	TableIndex    *int32 `protobuf:"varint,16,opt,name=table_index,json=tableIndex,proto3,oneof" json:"table_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2228,13 +2234,23 @@ func (x *ToolEntry) GetComment() string {
 	return ""
 }
 
+func (x *ToolEntry) GetTableIndex() int32 {
+	if x != nil && x.TableIndex != nil {
+		return *x.TableIndex
+	}
+	return 0
+}
+
 // Tool status
 type ToolStatus struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	PocketPrepped  int32                  `protobuf:"varint,1,opt,name=pocket_prepped,json=pocketPrepped,proto3" json:"pocket_prepped,omitempty"`      // Pocket index prepped for change (-1 if none)
-	ToolInSpindle  int32                  `protobuf:"varint,2,opt,name=tool_in_spindle,json=toolInSpindle,proto3" json:"tool_in_spindle,omitempty"`    // Tool number in spindle (0 if none)
-	ToolFromPocket int32                  `protobuf:"varint,3,opt,name=tool_from_pocket,json=toolFromPocket,proto3" json:"tool_from_pocket,omitempty"` // Pocket of current tool (0 if none)
-	ToolTable      []*ToolEntry           `protobuf:"bytes,4,rep,name=tool_table,json=toolTable,proto3" json:"tool_table,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Index, in LinuxCNC's own tool table, of the entry prepared for the next
+	// tool change (-1 if none). It is not an index into tool_table below: find
+	// the entry whose table_index equals it.
+	PocketPrepped  int32        `protobuf:"varint,1,opt,name=pocket_prepped,json=pocketPrepped,proto3" json:"pocket_prepped,omitempty"`
+	ToolInSpindle  int32        `protobuf:"varint,2,opt,name=tool_in_spindle,json=toolInSpindle,proto3" json:"tool_in_spindle,omitempty"`    // Tool number in spindle (0 if none)
+	ToolFromPocket int32        `protobuf:"varint,3,opt,name=tool_from_pocket,json=toolFromPocket,proto3" json:"tool_from_pocket,omitempty"` // Pocket of current tool (0 if none)
+	ToolTable      []*ToolEntry `protobuf:"bytes,4,rep,name=tool_table,json=toolTable,proto3" json:"tool_table,omitempty"`                   // Entries that hold a tool (tool number not 0); see ToolEntry.table_index
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2485,10 +2501,12 @@ func (x *GCodeStatus) GetG64QTolerance() float64 {
 
 // Limit status for a joint (bitmask: 1=min_hard, 2=max_hard, 4=min_soft, 8=max_soft)
 type LimitStatus struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	LimitFlags    []int32                `protobuf:"varint,1,rep,packed,name=limit_flags,json=limitFlags,proto3" json:"limit_flags,omitempty"` // One per joint
-	Homed         []bool                 `protobuf:"varint,2,rep,packed,name=homed,proto3" json:"homed,omitempty"`                             // Homed status per joint
-	MiscError     []int32                `protobuf:"varint,3,rep,packed,name=misc_error,json=miscError,proto3" json:"misc_error,omitempty"`    // Misc error codes
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	LimitFlags []int32                `protobuf:"varint,1,rep,packed,name=limit_flags,json=limitFlags,proto3" json:"limit_flags,omitempty"` // One per joint the machine has, in joint order
+	Homed      []bool                 `protobuf:"varint,2,rep,packed,name=homed,proto3" json:"homed,omitempty"`                             // Homed status, one per joint the machine has
+	// LinuxCNC's misc error inputs. The length is that of LinuxCNC's own array,
+	// not one entry per joint. Empty on LinuxCNC 2.8, which does not report it.
+	MiscError     []int32 `protobuf:"varint,3,rep,packed,name=misc_error,json=miscError,proto3" json:"misc_error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2627,9 +2645,9 @@ type LinuxCNCStatus struct {
 	Task       *TaskStatus       `protobuf:"bytes,10,opt,name=task,proto3" json:"task,omitempty"`
 	Trajectory *TrajectoryStatus `protobuf:"bytes,11,opt,name=trajectory,proto3" json:"trajectory,omitempty"`
 	Position   *PositionStatus   `protobuf:"bytes,12,opt,name=position,proto3" json:"position,omitempty"`
-	Joints     []*JointStatus    `protobuf:"bytes,13,rep,name=joints,proto3" json:"joints,omitempty"`     // Up to 16 joints
+	Joints     []*JointStatus    `protobuf:"bytes,13,rep,name=joints,proto3" json:"joints,omitempty"`     // One per joint the machine has (trajectory.joints of them); 1.0 servers sent 16
 	Axes       []*AxisStatus     `protobuf:"bytes,14,rep,name=axes,proto3" json:"axes,omitempty"`         // Up to 9 axes (XYZABCUVW)
-	Spindles   []*SpindleStatus  `protobuf:"bytes,15,rep,name=spindles,proto3" json:"spindles,omitempty"` // Up to 8 spindles
+	Spindles   []*SpindleStatus  `protobuf:"bytes,15,rep,name=spindles,proto3" json:"spindles,omitempty"` // One per spindle the machine has (trajectory.spindles of them); 1.0 servers sent 8
 	Tool       *ToolStatus       `protobuf:"bytes,16,opt,name=tool,proto3" json:"tool,omitempty"`
 	Io         *IOStatus         `protobuf:"bytes,17,opt,name=io,proto3" json:"io,omitempty"`
 	Gcode      *GCodeStatus      `protobuf:"bytes,18,opt,name=gcode,proto3" json:"gcode,omitempty"`
@@ -5081,8 +5099,10 @@ func (x *WaitCompleteRequest) GetLinuxcncSerial() int32 {
 }
 
 type StreamStatusRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	IntervalMs    int32                  `protobuf:"varint,1,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"` // Update interval in milliseconds (default: 100)
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Update interval in milliseconds (default: 100). Values above 60000 are
+	// treated as 60000.
+	IntervalMs    int32 `protobuf:"varint,1,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6485,7 +6505,7 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\x05homed\x18\b \x01(\bR\x05homed\x12!\n" +
 	"\forient_state\x18\t \x01(\x05R\vorientState\x12!\n" +
 	"\forient_fault\x18\n" +
-	" \x01(\x05R\vorientFault\"\xa6\x03\n" +
+	" \x01(\x05R\vorientFault\"\xdc\x03\n" +
 	"\tToolEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x05R\x02id\x12\x19\n" +
 	"\bx_offset\x18\x02 \x01(\x01R\axOffset\x12\x19\n" +
@@ -6504,7 +6524,10 @@ const file_linuxcnc_proto_rawDesc = "" +
 	"\n" +
 	"back_angle\x18\r \x01(\x01R\tbackAngle\x12 \n" +
 	"\vorientation\x18\x0e \x01(\x05R\vorientation\x12\x18\n" +
-	"\acomment\x18\x0f \x01(\tR\acomment\"\xb9\x01\n" +
+	"\acomment\x18\x0f \x01(\tR\acomment\x12$\n" +
+	"\vtable_index\x18\x10 \x01(\x05H\x00R\n" +
+	"tableIndex\x88\x01\x01B\x0e\n" +
+	"\f_table_index\"\xb9\x01\n" +
 	"\n" +
 	"ToolStatus\x12%\n" +
 	"\x0epocket_prepped\x18\x01 \x01(\x05R\rpocketPrepped\x12&\n" +
@@ -7123,6 +7146,7 @@ func file_linuxcnc_proto_init() {
 	if File_linuxcnc_proto != nil {
 		return
 	}
+	file_linuxcnc_proto_msgTypes[7].OneofWrappers = []any{}
 	file_linuxcnc_proto_msgTypes[28].OneofWrappers = []any{
 		(*ProgramCommand_Open)(nil),
 		(*ProgramCommand_RunFromLine)(nil),

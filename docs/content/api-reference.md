@@ -21,6 +21,7 @@ Complete API documentation for LinuxCNC gRPC services.
   - [GetMachineConfig](#getmachineconfig)
 - [HalService](#halservice)
   - [GetSystemStatus](#getsystemstatus)
+  - [SendCommand](#sendcommand-hal)
   - [GetValue](#getvalue)
   - [QueryPins](#querypins)
   - [QuerySignals](#querysignals)
@@ -56,20 +57,28 @@ rpc GetStatus(GetStatusRequest) returns (LinuxCNCStatus)
 | `task` | TaskStatus | Task/interpreter state |
 | `trajectory` | TrajectoryStatus | Motion planning state |
 | `position` | PositionStatus | All position information |
-| `joints` | JointStatus[] | Per-joint status (up to 16) |
+| `joints` | JointStatus[] | Per-joint status, one entry for each joint the machine has (`trajectory.joints` of them), in joint order |
 | `axes` | AxisStatus[] | Per-axis status (up to 9: XYZABCUVW) |
-| `spindles` | SpindleStatus[] | Per-spindle status (up to 8) |
-| `tool` | ToolStatus | Tool table and current tool |
+| `spindles` | SpindleStatus[] | Per-spindle status, one entry for each spindle the machine has (`trajectory.spindles` of them) |
+| `tool` | ToolStatus | Tool table and current tool. `tool_table` leaves out empty slots; see [ToolEntry](#toolentry) for how to find the tool `pocket_prepped` refers to |
 | `io` | IOStatus | Digital/analog I/O state |
 | `gcode` | GCodeStatus | Active G-codes and M-codes |
-| `limits` | LimitStatus | Limit switch states |
+| `limits` | LimitStatus | Limit switch states. `limit_flags` and `homed` have one entry for each joint the machine has. `misc_error` carries LinuxCNC's misc error inputs; its length is that of LinuxCNC's own array, not the joint count, and it is empty on LinuxCNC 2.8 |
 | `errors` | ErrorMessage[] | The most recent messages the server has read from LinuxCNC's error channel (at most 20, oldest first). Empty unless the server reads the channel: see [StreamErrors](#streamerrors) |
+
+LinuxCNC's own status always has 16 joint entries and 8 spindle entries,
+whatever the machine has. The server reports only the real ones, so `joints`,
+`spindles`, `limits.limit_flags` and `limits.homed` can be used as they come.
+A 1.0 server sent all 16 and 8. A client that also talks to one should look
+only at the first `trajectory.joints` joints and `trajectory.spindles`
+spindles, which gives the same result with either server.
 
 **Error codes:**
 
 | Code | Condition |
 |------|-----------|
 | `UNAVAILABLE` | The server is not connected to LinuxCNC, or LinuxCNC could not be read |
+| `INTERNAL` | Reading or mapping LinuxCNC's status failed in a way the server does not expect. The message names the error |
 
 **Example (Python):**
 
@@ -172,8 +181,8 @@ that fails a check gets `RCS_ERROR` with the reason in `error_message`, has no
 - **Joint, axis and spindle numbers** in jog, home, unhome, spindle, spindle
   override, brake, `set_limit` and `override_config` commands must exist on
   the machine. Joints are counted as the machine has them
-  (`trajectory.joints`) and spindles likewise (`spindles`), not by the 16 joint
-  and 8 spindle entries the status always carries. A
+  (`trajectory.joints`) and spindles likewise (`trajectory.spindles`), which is
+  also how many entries `joints` and `spindles` have in the status. A
   negative number is rejected, except `-1` for home and unhome, which means
   all joints. A command made of several messages (`set_limit`,
   `override_config`) is checked completely before the first one is sent.
@@ -349,9 +358,15 @@ rpc StreamStatus(StreamStatusRequest) returns (stream LinuxCNCStatus)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `interval_ms` | int32 | Update interval in milliseconds (default: 100) |
+| `interval_ms` | int32 | Update interval in milliseconds. 0 or less means the default, 100. Values above 60000 (60 seconds) are treated as 60000 |
 
 **Response:** Stream of `LinuxCNCStatus` messages
+
+The stream ends as soon as the client cancels or disconnects; the server does
+not wait for the current interval to pass. It ends with `UNAVAILABLE` when
+LinuxCNC can no longer be read, and with `INTERNAL` (after the statuses
+already sent) when reading or mapping the status fails in a way the server
+does not expect; the message names the error.
 
 **Example (Python):**
 
@@ -646,8 +661,9 @@ but the directory may hold larger files put there by other means).
 - An `offset` at or past the end of the file is not an error: `content` is
   empty and `end_of_file` is true.
 - Node.js/TypeScript: the client gives `modified_timestamp` in milliseconds,
-  not nanoseconds, as it does every timestamp field (a nanosecond value does
-  not fit a JavaScript number). Compared between chunks, it cannot show a
+  not nanoseconds (see
+  [64-bit integers in Node.js/TypeScript](#64-bit-integers-in-nodejstypescript)).
+  Compared between chunks, it cannot show a
   rewrite that keeps the size and falls in the same millisecond as the
   previous one. The server's own check while it reads one chunk uses the
   nanosecond value and is not affected.
@@ -755,7 +771,7 @@ right after you ask.
 |------|-----------|
 | `INVALID_ARGUMENT` | Path traversal attempt, a symbolic link loop in the name, or an empty name |
 | `UNAVAILABLE` | LinuxCNC could not be read, so the loaded program is unknown |
-| `INTERNAL` | The server's NC files directory could not be resolved (a symbolic link loop). The message names the error |
+| `INTERNAL` | The server's NC files directory could not be resolved (a symbolic link loop), or reading LinuxCNC's status failed in a way the server does not expect. The message names the error |
 
 If the path LinuxCNC reports for the loaded program cannot be resolved (a
 symbolic link loop), `is_loaded_program` is false.
@@ -797,7 +813,7 @@ rpc GetMachineConfig(GetMachineConfigRequest) returns (MachineConfig)
 | `kinematics_type` | KinematicsType | status | Identity, forward only, inverse only or both |
 | `coordinates` | string | INI | `[TRAJ]COORDINATES` without spaces, upper case |
 | `axis_mask` | int32 | status | Bit 0 = X … bit 8 = W |
-| `joint_count`, `spindle_count` | int32 | status | |
+| `joint_count`, `spindle_count` | int32 | status | The number of joints and spindles [GetStatus](#getstatus) lists: LinuxCNC's counts, or the length of its full lists (16 and 8) if a count cannot be right (zero, negative or more than it lists) |
 | `joint_axis_mapping_known` | bool | | True if the server could work out which axis each joint drives (see below) |
 | `linear_units`, `angular_units` | double | status | Machine units per mm, and per degree |
 | `linear_units_name` | string | status | `mm`, `inch` or `cm`; empty for anything else |
@@ -874,7 +890,7 @@ Notes:
 | Code | Condition |
 |------|-----------|
 | `UNAVAILABLE` | LinuxCNC could not be read |
-| `INTERNAL` | The server's NC files directory could not be resolved (a symbolic link loop). The message names the error |
+| `INTERNAL` | The server's NC files directory could not be resolved (a symbolic link loop), or reading LinuxCNC's status failed in a way the server does not expect. The message names the error |
 
 **Example (Python):**
 
@@ -916,9 +932,39 @@ rpc GetSystemStatus(GetSystemStatusRequest) returns (HalSystemStatus)
 | `pins` | HalPinInfo[] | All HAL pins |
 | `signals` | HalSignalInfo[] | All HAL signals |
 | `params` | HalParamInfo[] | All HAL parameters |
-| `components` | HalComponentInfo[] | All HAL components |
-| `is_sim` | bool | Running in simulation mode |
-| `is_rt` | bool | Running real-time kernel |
+| `components` | HalComponentInfo[] | Groups inferred from pin and parameter names, not HAL's own component list: see [QueryComponents](#querycomponents) |
+| `message_level` | MessageLevel | The RTAPI message level of the server process. `MSG_LEVEL_UNSPECIFIED` if HAL does not say |
+| `is_sim` | bool | HAL's `is_sim` flag |
+| `is_rt` | bool | HAL's `is_rt` flag |
+| `is_userspace` | bool | HAL's `is_userspace` flag |
+| `kernel_version` | string | HAL's `kernel_version`; "Not Available" on uspace builds |
+
+The three flags and the kernel version are what LinuxCNC's `hal` Python module
+reports on the server's machine.
+
+---
+
+### SendCommand (HAL)
+
+```protobuf
+rpc SendCommand(HalCommand) returns (HalCommandResponse)
+```
+
+The service is read-only, and `HalCommandResponse` carries only `success` and
+`error`, so `SendCommand` answers three commands:
+
+| Command | `success` | `error` |
+|---------|-----------|---------|
+| `component_exists` | true | Empty if the component exists, otherwise a message saying it does not |
+| `component_ready` | true if the component exists | Empty if it is ready, otherwise a message |
+| `pin_has_writer` | true | Empty if the pin's signal has a writer, otherwise a message |
+
+`get_value` and the `query_*` commands return `success = false` with an error
+that names the RPC to call instead ([GetValue](#getvalue),
+[QueryPins](#querypins), [QuerySignals](#querysignals),
+[QueryParams](#queryparams), [QueryComponents](#querycomponents)). Every other
+command (creating, setting, connecting) returns `success = false`: the service
+does not change HAL.
 
 ---
 
@@ -945,6 +991,10 @@ rpc GetValue(GetValueCommand) returns (GetValueResponse)
 | `value` | HalValue | The value |
 | `type` | HalType | Data type (BIT, FLOAT, S32, etc.) |
 
+Where HAL lists no type for a name (parameters on LinuxCNC 2.9), the type is
+worked out from the value: an integer up to 2147483647 is reported as
+`HAL_S32`, a larger one as `HAL_U32`. See [HalType](#haltype).
+
 ---
 
 ### QueryPins
@@ -966,7 +1016,8 @@ rpc QueryPins(QueryPinsCommand) returns (QueryPinsResponse)
 | Field | Type | Description |
 |-------|------|-------------|
 | `success` | bool | Whether the query succeeded |
-| `pins` | HalPinInfo[] | Matching pins |
+| `error` | string | Error message if failed |
+| `pins` | HalPinInfo[] | Matching pins. `signal` is always empty; `has_writer` is HAL's answer for the pin: see [HalPinInfo](#halpininfo) |
 
 **Example (Python):**
 
@@ -1014,6 +1065,13 @@ rpc QueryComponents(QueryComponentsCommand) returns (QueryComponentsResponse)
 
 Same pattern as QueryPins, returns `HalComponentInfo[]`.
 
+LinuxCNC's `hal` Python module has no component list, so the server infers
+components from pin and parameter names: the part of a name before its last
+dot is taken as the component. That is a naming group and not always a real
+HAL component, and a component with no pins or parameters is not listed. Only
+`name`, `pins` and `params` are filled in. `ready`, `type` and `pid` are never
+set and `id` is 0.
+
 ---
 
 ### StreamStatus (HAL)
@@ -1028,8 +1086,12 @@ rpc StreamStatus(HalStreamStatusRequest) returns (stream HalSystemStatus)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `interval_ms` | int32 | Update interval in milliseconds |
+| `interval_ms` | int32 | Update interval in milliseconds. 0 or less means the default, 100. Values above 60000 (60 seconds) are treated as 60000 |
 | `filter` | string[] | Currently ignored by the server: the stream always carries the full HAL status |
+
+The stream ends as soon as the client cancels or disconnects. `has_writer` is
+refreshed every 2 seconds, not with every update. If HAL cannot be read five
+times in a row, the stream ends with `INTERNAL` and the cause.
 
 ---
 
@@ -1045,8 +1107,8 @@ rpc WatchValues(WatchRequest) returns (stream ValueChangeBatch)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `names` | string[] | Pin/signal/param names to watch |
-| `interval_ms` | int32 | Check interval in milliseconds |
+| `names` | string[] | Pin/signal/param names to watch. Duplicates are ignored. At most 1000 different names |
+| `interval_ms` | int32 | Check interval in milliseconds. 0 or less means the default, 100. Values above 60000 (60 seconds) are treated as 60000 |
 
 **Response:** Stream of `ValueChangeBatch` containing `ValueChange` messages:
 
@@ -1056,6 +1118,17 @@ rpc WatchValues(WatchRequest) returns (stream ValueChangeBatch)
 | `old_value` | HalValue | Previous value |
 | `new_value` | HalValue | New value |
 | `timestamp` | int64 | When change was detected |
+
+A batch is sent only when at least one watched value changed. Two NaN readings
+in a row count as unchanged. The stream ends as soon as the client cancels or
+disconnects.
+
+**Error codes:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_ARGUMENT` | No names, more than 1000 different names, or a name that cannot be read when the watch starts |
+| `INTERNAL` | HAL could not be read when the watch started, or a watched name could not be read in five polls in a row (it was removed, for example). The message names an item that failed. Changes of the other names are still sent until then |
 
 ---
 
@@ -1143,11 +1216,20 @@ enum HalType {
   HAL_FLOAT = 2;  // Double precision float
   HAL_S32 = 3;    // Signed 32-bit integer
   HAL_U32 = 4;    // Unsigned 32-bit integer
-  HAL_S64 = 5;    // Signed 64-bit integer
-  HAL_U64 = 6;    // Unsigned 64-bit integer
+  HAL_S64 = 5;    // Signed integer that does not fit 32 bits
+  HAL_U64 = 6;    // Unsigned integer that does not fit 32 bits
   HAL_PORT = 7;   // Port type (advanced)
 }
 ```
+
+- `HAL_S64` and `HAL_U64` are only reported for a value that does not fit 32
+  bits. HAL itself has no separate 64-bit types.
+- A port has no value the server can read, so a port pin is reported with an
+  empty `value`. Its type is `HAL_PORT` where LinuxCNC's `hal` module reports
+  the type, and `HAL_TYPE_UNSPECIFIED` where it does not (LinuxCNC 2.9).
+- LinuxCNC 2.9 lists no type for parameters, so a parameter's type is worked
+  out from its value. An unsigned parameter holding 2147483647 or less is
+  therefore reported as `HAL_S32`.
 
 ### PinDirection
 
@@ -1234,6 +1316,48 @@ message SpindleStatus {
 }
 ```
 
+### ToolEntry
+
+One tool in `tool.tool_table`.
+
+```protobuf
+message ToolEntry {
+  int32 id = 1;                    // Tool number
+  double x_offset = 2;
+  double z_offset = 4;
+  double diameter = 11;
+  int32 orientation = 14;
+  optional int32 table_index = 16; // Index in LinuxCNC's own tool table
+  // ... additional fields
+}
+```
+
+- `tool_table` holds only the entries with a tool (a tool number other than
+  0), so an entry's position in the list is not its position in LinuxCNC's
+  tool table.
+- An entry's `id` can be -1 for an empty slot: index 0 is the spindle, and
+  LinuxCNC gives it id -1 when no tool is loaded (seen on the 2.9 simulator).
+  Ignore entries whose `id` is not positive.
+- `table_index` is the entry's index in the tool table as LinuxCNC's status
+  lists it. `tool.pocket_prepped` is an index into that same table (-1 when
+  nothing is prepared), so the tool prepared for the next change is the entry
+  whose `table_index` equals `pocket_prepped`. If no entry matches, the
+  prepared slot is empty.
+- `table_index` is unset in a status from a 1.0 server. Check for presence
+  (`HasField("table_index")` in Python, `TableIndex != nil` in Go,
+  `tableIndex !== undefined` in TypeScript, `table_index.is_some()` in Rust)
+  rather than comparing with 0, which is a real index.
+
+```python
+status = stub.GetStatus(linuxcnc_pb2.GetStatusRequest())
+prepped_tool = next(
+    (entry for entry in status.tool.tool_table
+     if entry.HasField("table_index")
+     and entry.table_index == status.tool.pocket_prepped),
+    None,
+)
+```
+
 ### HalPinInfo
 
 Information about a HAL pin.
@@ -1246,10 +1370,18 @@ message HalPinInfo {
   HalType type = 4;           // Data type
   PinDirection direction = 5; // IN/OUT/IO
   HalValue value = 6;         // Current value
-  string signal = 7;          // Connected signal
-  bool has_writer = 8;        // Has a writer connected
+  string signal = 7;          // Always empty
+  bool has_writer = 8;        // The pin's signal has a writer
 }
 ```
+
+- `signal` is always empty: LinuxCNC's `hal` Python module does not say which
+  signal a pin is connected to. `HalSignalInfo.driver` names the pin that
+  drives a signal.
+- `has_writer` is HAL's own answer (`hal.pin_has_writer`): true when the pin
+  is connected to a signal that an output pin drives. In
+  [StreamStatus](#streamstatus-hal) it is refreshed every 2 seconds.
+- `direction` is `PIN_DIR_UNSPECIFIED` if HAL does not report one.
 
 ### HalValue
 
@@ -1264,10 +1396,30 @@ message HalValue {
     uint32 u32_value = 4;
     int64 s64_value = 5;
     uint64 u64_value = 6;
-    string port_value = 7;       // Port type (advanced)
+    string port_value = 7;       // Never set by the server
   }
 }
 ```
+
+No field is set for a port, or for a value the server could not read.
+
+### 64-bit integers in Node.js/TypeScript
+
+The Node.js/TypeScript client gives every `int64` and `uint64` field as a
+JavaScript `number`, which holds whole numbers exactly only up to 2^53 - 1
+(`Number.MAX_SAFE_INTEGER`).
+
+- **Timestamps** (`timestamp` and `modified_timestamp` fields) are sent in
+  nanoseconds, which are beyond that range. The client scales them to
+  milliseconds, so `new Date(status.timestamp)` works as it is.
+- **Everything else** (`s64_value` and `u64_value` in `HalValue`,
+  `ErrorMessage.sequence`, file sizes and offsets) is not scaled. A value
+  beyond 2^53 arrives as the nearest number, so its low digits are lost:
+  9007199254740993 arrives as 9007199254740992. Up to 1.0 such a value was
+  divided by 1,000,000.
+
+The Python, Go and Rust clients use 64-bit integer types and get every value
+exactly, with timestamps in nanoseconds.
 
 ---
 

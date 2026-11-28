@@ -10,8 +10,38 @@ import linuxcnc
 from linuxcnc_pb import linuxcnc_pb2
 
 
+def real_entry_count(reported_count, listed_entry_count: int) -> int:
+    """
+    How many leading entries of one of LinuxCNC's fixed-size lists are real.
+
+    stat.joint always has 16 entries and stat.spindle always has 8; only the
+    first stat.joints and stat.spindles of them belong to the machine. The
+    reported count is used when it is a plain int from 1 up to the list
+    length. Anything else (missing, not an int, zero, negative, too large)
+    means the whole list: listing spare slots is better than dropping a
+    joint the machine has. The command checks in the service use the same
+    rule.
+    """
+    count_is_plain_int = (
+        isinstance(reported_count, int) and not isinstance(reported_count, bool)
+    )
+    if count_is_plain_int and 0 < reported_count < listed_entry_count:
+        return reported_count
+    return listed_entry_count
+
+
 class LinuxCNCMapper:
-    """Maps linuxcnc.stat() to LinuxCNCStatus protobuf messages."""
+    """
+    Maps linuxcnc.stat() to LinuxCNCStatus protobuf messages.
+
+    LinuxCNC 2.8's status lacks a few attributes that 2.9 has (ini_filename,
+    num_extrajoints, tool_from_pocket, misc_error; motion_id is called id
+    there). Those are read with a fallback, so a 2.8 status still maps and
+    the missing values are reported as the proto defaults.
+
+    Only the machine's own joints and spindles are reported, not the spare
+    entries LinuxCNC's status carries after them (see real_entry_count).
+    """
 
     def __init__(self, stat: linuxcnc.stat, version: str = "unknown"):
         """
@@ -43,15 +73,35 @@ class LinuxCNCMapper:
             task=self._map_task_status(),
             trajectory=self._map_trajectory_status(),
             position=self._map_position_status(),
-            joints=[self._map_joint_status(j, i) for i, j in enumerate(s.joint)],
+            joints=[
+                self._map_joint_status(joint, joint_index)
+                for joint_index, joint in enumerate(self._real_joints())
+            ],
             axes=[self._map_axis_status(a, i) for i, a in enumerate(s.axis)],
-            spindles=[self._map_spindle_status(sp, i) for i, sp in enumerate(s.spindle)],
+            spindles=[
+                self._map_spindle_status(spindle, spindle_index)
+                for spindle_index, spindle in enumerate(self._real_spindles())
+            ],
             tool=self._map_tool_status(),
             io=self._map_io_status(),
             gcode=self._map_gcode_status(),
             limits=self._map_limit_status(),
             errors=errors or []
         )
+
+    # =========================================================================
+    # Real joints and spindles
+    # =========================================================================
+
+    def _real_joints(self) -> list:
+        """The entries of stat.joint that are joints the machine has."""
+        s = self._stat
+        return list(s.joint)[:real_entry_count(getattr(s, "joints", None), len(s.joint))]
+
+    def _real_spindles(self) -> list:
+        """The entries of stat.spindle that are spindles the machine has."""
+        s = self._stat
+        return list(s.spindle)[:real_entry_count(getattr(s, "spindles", None), len(s.spindle))]
 
     # =========================================================================
     # Position mapping
@@ -112,7 +162,7 @@ class LinuxCNCMapper:
             task_paused=s.task_paused,
             input_timeout=s.input_timeout,
             rotation_xy=s.rotation_xy,
-            ini_filename=s.ini_filename,
+            ini_filename=getattr(s, "ini_filename", ""),
             delay_left=s.delay_left,
             queued_mdi_commands=s.queued_mdi_commands
         )
@@ -124,6 +174,10 @@ class LinuxCNCMapper:
     def _map_trajectory_status(self) -> linuxcnc_pb2.TrajectoryStatus:
         """Map trajectory-related stat attributes to TrajectoryStatus proto."""
         s = self._stat
+        # LinuxCNC 2.8 has the same value under the name "id".
+        motion_id = getattr(s, "motion_id", None)
+        if motion_id is None:
+            motion_id = getattr(s, "id", 0)
         return linuxcnc_pb2.TrajectoryStatus(
             linear_units=s.linear_units,
             angular_units=s.angular_units,
@@ -137,7 +191,7 @@ class LinuxCNCMapper:
             queue=s.queue,
             active_queue=s.active_queue,
             queue_full=s.queue_full,
-            motion_id=s.motion_id,
+            motion_id=motion_id,
             paused=s.paused,
             feedrate=s.feedrate,
             rapidrate=s.rapidrate,
@@ -155,7 +209,7 @@ class LinuxCNCMapper:
             feed_override_enabled=s.feed_override_enabled,
             adaptive_feed_enabled=s.adaptive_feed_enabled,
             feed_hold_enabled=s.feed_hold_enabled,
-            num_extrajoints=s.num_extrajoints
+            num_extrajoints=getattr(s, "num_extrajoints", 0)
         )
 
     # =========================================================================
@@ -226,8 +280,13 @@ class LinuxCNCMapper:
     # Tool status mapping
     # =========================================================================
 
-    def _map_tool_entry(self, tool) -> linuxcnc_pb2.ToolEntry:
-        """Map a tool table entry to ToolEntry proto."""
+    def _map_tool_entry(self, tool, table_index: int) -> linuxcnc_pb2.ToolEntry:
+        """
+        Map a tool table entry to ToolEntry proto.
+
+        table_index is the entry's position in LinuxCNC's own table, which is
+        what pocket_prepped refers to.
+        """
         return linuxcnc_pb2.ToolEntry(
             id=tool.id,
             x_offset=tool.xoffset,
@@ -243,22 +302,26 @@ class LinuxCNCMapper:
             front_angle=tool.frontangle,
             back_angle=tool.backangle,
             orientation=tool.orientation,
-            comment=""
+            comment="",
+            table_index=table_index
         )
 
     def _map_tool_status(self) -> linuxcnc_pb2.ToolStatus:
         """Map tool-related stat attributes to ToolStatus proto."""
         s = self._stat
-        # Filter to only tools with non-zero IDs
+        # Entries with tool number 0 are left out, as they always were. Each
+        # entry that is returned carries its index in LinuxCNC's table, so
+        # the list positions changing does not lose what pocket_prepped
+        # points at.
         filtered_tools = [
-            self._map_tool_entry(t)
-            for t in s.tool_table
-            if t.id != 0
+            self._map_tool_entry(tool, table_index)
+            for table_index, tool in enumerate(s.tool_table)
+            if tool.id != 0
         ]
         return linuxcnc_pb2.ToolStatus(
             pocket_prepped=s.pocket_prepped,
             tool_in_spindle=s.tool_in_spindle,
-            tool_from_pocket=s.tool_from_pocket,
+            tool_from_pocket=getattr(s, "tool_from_pocket", 0),
             tool_table=filtered_tools
         )
 
@@ -308,8 +371,9 @@ class LinuxCNCMapper:
     def _map_limit_status(self) -> linuxcnc_pb2.LimitStatus:
         """Map limit-related stat attributes to LimitStatus proto."""
         s = self._stat
+        real_joints = self._real_joints()
         limit_flags = []
-        for joint in s.joint:
+        for joint in real_joints:
             flags = 0
             if joint['min_hard_limit']:
                 flags |= 1
@@ -323,8 +387,9 @@ class LinuxCNCMapper:
 
         return linuxcnc_pb2.LimitStatus(
             limit_flags=limit_flags,
-            homed=list(s.homed),
-            misc_error=[0] * len(s.joint)
+            # stat.homed has an entry per slot of stat.joint, like stat.joint.
+            homed=list(s.homed)[:len(real_joints)],
+            misc_error=list(getattr(s, "misc_error", ()))
         )
 
     # =========================================================================

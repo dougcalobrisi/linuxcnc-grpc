@@ -115,6 +115,23 @@ accesses to `self._stat`, `self._command`, and `self._error_channel`. Streaming 
 (`StreamStatus`, `StreamErrors`) hold the lock only during poll/map operations, releasing
 it before waiting and `yield` to avoid blocking other threads.
 
+**Streaming waits**: no stream sleeps through its interval. Each stream occupies a worker
+thread (10 by default), and a client that asked for a huge interval and went away used to
+hold its thread for the whole interval; ten such calls blocked every RPC.
+- `LinuxCNCService.StreamStatus` creates a `threading.Event`, registers it with
+  `context.add_callback(event.set)` (gRPC runs the callback when the RPC ends for any reason:
+  cancel, disconnect, deadline, server stop) and waits with `event.wait(interval)`. If
+  `add_callback` returns False the RPC is already over and the handler returns. The event is
+  also kept in `_stream_wake_events`, and `close()` sets them all. The stream registers its
+  event *before* checking `_stop_requested`, and `close()` sets the flag before the events, so
+  a stream starting during `close()` sees one or the other.
+- `HalService.StreamStatus` and `WatchValues` use `watch_for_cancellation(context)` in
+  `hal_service.py`, the same `add_callback` + `Event.wait` (the HAL servicer has no `close()`).
+- `interval_ms` of 0 or less means 100 ms. Anything above 60 s is clamped, not rejected:
+  `MAX_STREAM_STATUS_INTERVAL_MS` (60000) in `linuxcnc_service.py`,
+  `MAX_STREAM_INTERVAL_SECONDS` (60.0) in `hal_service.py` (`stream_interval_seconds`). Keep the
+  two equal. `tests/mock_server.py` mirrors both the clamp and the wait.
+
 **Command Dispatch**: `SendCommand` uses an explicit `_command_handlers` dict mapping
 command type strings to handler methods (no dynamic `getattr` dispatch).
 
@@ -286,6 +303,31 @@ of this without re-measuring):
   StreamErrors answers `FAILED_PRECONDITION` in `off` mode, and ResolveFile validates the
   name (`INVALID_ARGUMENT`) before it looks at the connection. WaitComplete makes the check
   under the lock and answers `RCS_EXEC` if it cannot get the lock by its deadline.
+- **Every RPC that polls turns an unexpected exception into a deliberate status, and never
+  catches its own abort.** A poll can fail with something other than `linuxcnc.error`: some
+  builds return NULL from `stat.poll()` without setting an exception, which Python raises as
+  `SystemError`, and the mapper can raise on a value it does not expect. Left alone that
+  reaches the client as gRPC `UNKNOWN`. GetStatus, StreamStatus, ResolveFile and
+  GetMachineConfig abort with `INTERNAL` ("<RPC> failed: <type>: <text>", from
+  `_unexpected_failure_details`, which also logs the traceback); WaitComplete returns
+  `RCS_ERROR` with the same text; SendCommand already answered `RCS_ERROR` for any exception.
+  None of these reconnects: only `linuxcnc.error` does. GetStatus polls a second time after a
+  successful reconnect, and that poll follows the same rule: an unexpected exception from it
+  is `INTERNAL` with its own type and text (recorded in the inner `try`, aborted after it),
+  and only a second `linuxcnc.error` is `UNAVAILABLE` with the first error's text.
+  StreamStatus has no second poll: after a reconnect its loop polls again in the same inner
+  `try`. With real gRPC `context.abort` raises
+  a bare `Exception`, so an `except Exception` may only sit on a `try` whose body contains no
+  abort (direct or through `_abort_if_disconnected`): GetStatus, WaitComplete and
+  GetMachineConfig have it on their one `try`; ResolveFile has it on the inner `try` around
+  the poll only (the outer one contains aborts and keeps catching just `ValueError` and
+  `OSError`), with `except OSError: raise` before it so an `OSError` keeps its old message
+  (StreamStatus's inner `try` has the same clause); StreamStatus records the failure in the inner `try`, breaks, and aborts after
+  the `finally`, as the HAL streams do, and its `yield` is outside the inner `try`.
+  `TestUnexpectedPollErrors` uses a context whose `abort` raises and checks that each RPC
+  aborted exactly once with the original code. The file RPCs and StreamErrors do not poll
+  (the error broker's reader thread does, and catches every exception itself); their `try`
+  bodies contain aborts, so do not add a catch-all there without moving the aborts out.
 - `create_server` wraps `server.stop`. Stopping does three things, in this order: every
   health service turns `NOT_SERVING` (`enter_graceful_shutdown`), the gRPC server's own
   `stop(grace)` is called (it returns its event at once), and `servicer.close()` runs. Each
@@ -296,9 +338,12 @@ of this without re-measuring):
   because of that.
 - `close()` is bounded. It sets the stop flag first, without the lock; a connect checks the
   flag and publishes its channels in one lock hold, so no connect starts after that. Then it
-  passes through the servicer lock, which waits out a connect that had just checked the
-  flag, for at most `CLOSE_LOCK_TIMEOUT` (1 s). Then it stops the error reader and joins the
-  waiting thread (at most 2 s each). What holds when it returns:
+  sets every stream wake event (they have their own lock), so status streams end even when
+  the servicer lock is stuck; the flag has to be set before that, because a stream registers
+  its event and then checks the flag. Then it passes through the servicer lock, which waits
+  out a connect that had just checked the flag, for at most `CLOSE_LOCK_TIMEOUT` (1 s). Then
+  it stops the error reader and joins the waiting thread (at most 2 s each). What holds when
+  it returns:
   - If it got the lock: nothing connects afterwards.
   - If it did not: a connect that was already under way in the lock hold that blocked it can
     still finish (its health report is ignored after `enter_graceful_shutdown`). No other
@@ -367,7 +412,7 @@ of this without re-measuring):
   the closest there is, because leaving its own handler would swallow every later signal.
 - Known and left as in 1.0: `_reconnect()`'s backoff sleeps (up to 16 s) are not interrupted
   by shutdown, so a process stopping while an RPC is in one can exit later than the grace
-  period.
+  period. StreamStatus's wait between updates is interrupted (see Streaming waits).
 
 **Connecting**: `_connect()` holds the lock throughout (as it always did). It creates the
 new `stat`, `command` and `error_channel` in locals and polls the new `stat` first. Only if
@@ -568,10 +613,18 @@ against a hostile local user changing ancestor directories.
 
 **GetMachineConfig**: `machine_config.py` builds `MachineConfig` from a polled `stat` plus an
 INI lookup (`linuxcnc.ini(stat.ini_filename).find`, opened on every call, inside the lock).
+`ini_filename` is read with `getattr(stat, "ini_filename", "")` in both the RPC and
+`build_machine_config`: LinuxCNC 2.8's status has no such attribute, and an empty name ends
+as `ini_readable = false` like any file that cannot be opened.
 - Status supplies limits, units, `axis_mask`, counts and `kinematics_type`; the INI supplies
   kinematics, coordinates, velocities, accelerations, home sequences and display hints.
 - `stat.joint` always has 16 entries; only the first `stat.joints` are real, and only those
-  are reported.
+  are reported. The count is `real_entry_count` imported from the status mapper (see "Status
+  mapper"), so GetMachineConfig lists exactly the joints GetStatus lists also when the count
+  is zero, missing or not an int (then: the full list). `spindle_count` is the same rule
+  applied to `stat.spindles` and `stat.spindle`, i.e. the number of spindles the status
+  lists, not the raw `stat.spindles`. `machine_config.py` imports the mapper, never the
+  service.
 - Joint-to-axis mapping (`joint_axis_letters`) is only derived for `trivkins`: joint N drives
   letter N of `coordinates=` (default `XYZABCUVW`), letters may repeat (gantry). Any other
   module gives `joint_axis_mapping_known = false`. Do not guess a mapping for other kinematics.
@@ -606,8 +659,8 @@ the descriptor is closed by the handler. Size and mtime come from
 returned. A second `fstat` taken before the read is compared with it: if size or
 `st_mtime_ns` changed during the read, the RPC aborts `ABORTED` (the client starts again from
 offset 0) rather than pair bytes of one version with the size and mtime of another. The
-Node client delivers `modified_timestamp` in milliseconds (its decoder scales nanosecond
-values to fit a number), so a Node client comparing it between chunks misses a same-size
+Node client delivers `modified_timestamp` in milliseconds (see "Node.js 64-bit integers"
+below), so a Node client comparing it between chunks misses a same-size
 rewrite within one millisecond; the server's own check is unaffected. Ancestor
 directories are not protected against a hostile local user (see File Management RPCs for
 what each RPC does and does not guard).
@@ -629,6 +682,114 @@ the target, the link stays); that is 1.0 behaviour, now
 documented, and `ResolveFile` shows clients the target first. If the loaded program's path
 cannot be resolved (`RuntimeError` from `resolve()` for a symlink loop, Python <= 3.12),
 `is_loaded_program` is false and `loaded_program` is the path as LinuxCNC reported it.
+
+**Status mapper (`linuxcnc_mapper.py`)**:
+- **Only real joints and spindles are reported.** `stat.joint` always has 16 entries and
+  `stat.spindle` always has 8 (measured on the 2.9 sim: 3 joints and 1 spindle configured, 16
+  and 8 listed). `LinuxCNCStatus.joints` gets the first `stat.joints` of them and `spindles`
+  the first `stat.spindles`; 1.0 sent all 16 and 8. `limits.limit_flags` and `limits.homed`
+  (`stat.homed` is as long as `stat.joint`) are cut to the same joint count. `axes` is not
+  touched (`axis_mask` says which are real), nor is `limits.misc_error`.
+- The count rule is `real_entry_count(reported_count, listed_entry_count)`: the reported count
+  is used when it is a plain `int` (not `bool`) with `0 < count < len(list)`; anything else
+  (missing attribute, wrong type, 0, negative, larger than the list) means the whole list. It
+  is the rule of `_validate_joint_index`/`_validate_spindle_index`, written out again in the
+  mapper because the service imports the mapper. Change both together. `machine_config.py`
+  imports `real_entry_count` itself.
+- `limits.misc_error` is `list(stat.misc_error)`: LinuxCNC's own array, whose length is not
+  the joint count. Do not pad or cut it to the joints (1.0 sent one zero per joint).
+- LinuxCNC 2.8's status lacks `ini_filename`, `num_extrajoints`, `tool_from_pocket` and
+  `misc_error`, and calls `motion_id` `id`. Each is read with `getattr` and a default (and
+  `motion_id` falls back to `id`), so a 2.8 status maps. `tests/test_linuxcnc_mapper.py`
+  builds a strict 2.8-shaped status (`status_shaped_like_linuxcnc_2_8`) that raises on any
+  other missing attribute; a new attribute read must be checked against it.
+- `tool.tool_table` leaves out entries with id 0 (as 1.0 did; keeping empty slots would
+  change what existing clients receive), while `tool.pocket_prepped` is an index into
+  LinuxCNC's own table. So each returned entry carries `ToolEntry.table_index`
+  (`optional int32`, field 16): its index in `stat.tool_table` before filtering. A client
+  finds the prepped tool by matching `pocket_prepped` against it. Measured on the 2.9 sim
+  (`sim/axis`): the table came back as ids `[-1, 1, 2, 3, 99999, 4]` with indices 0..5 (slot 0
+  is the spindle slot and holds id -1 when no tool is loaded, so nothing was filtered), and
+  after `T4` `pocket_prepped` was 5, matching the entry with id 4. It is `optional` because 0
+  is a real index and a 1.0 server sets nothing, and because an optional field is not a
+  required property in ts-proto object literals. LinuxCNC's binding builds `stat.tool_table`
+  with one entry per table index and skips none (read in `emcmodule.cc`, 2.8 and 2.9), so
+  the position in that tuple is the index. So an entry's id can be -1 (an empty slot; only
+  id 0 is left out), and the proto comment and `api-reference.md` tell clients to ignore
+  entries whose id is not positive. The e2e test
+  `test_get_status_tool_table_entries_carry_their_table_index` requires a non-empty table,
+  prepares a tool with MDI `T<n>` (one that is not prepared or loaded already, preferring an
+  id that differs from its index) and requires exactly one entry with
+  `table_index == pocket_prepped`, with id n.
+
+**HAL service (`hal_service.py`, `hal_mapper.py`)**: read-only. `hal_mapper.py` does not
+import `hal`; the service passes in what it read, so the mapper is testable without LinuxCNC.
+- **Needs LinuxCNC 2.9.** The service lists everything with `hal.get_info_pins`,
+  `get_info_signals` and `get_info_params`, which 2.8's `hal` module does not have, and
+  `HalServiceServicer()` calls `get_info_pins` in its constructor. `create_server` always
+  builds it, so the packaged server needs 2.9 even though the LinuxCNC service handles 2.8.
+- **Type numbers** come from the `hal` module (`read_hal_type_constants`; the newer names
+  `HAL_BOOL`/`HAL_REAL`/`HAL_SINT`/`HAL_UINT` are tried first), with hal.h's numbers as the
+  fallback: bit 1, float 2, s32 3, u32 4, **port 5**. HAL has no separate 64-bit type numbers
+  in any version. Do not confuse these with the proto enum, where 5 and 6 are `HAL_S64` and
+  `HAL_U64` and `HAL_PORT` is 7; 1.0 used the proto's numbers as HAL's and reported a port as
+  a 64-bit integer. `HAL_S64`/`HAL_U64` are reported only for a value that does not fit 32
+  bits (`_describe_integer`).
+- LinuxCNC 2.9 gives no `TYPE` for parameters, and `TYPE`/`VALUE` of `None` for a port. A
+  missing type is inferred from the value: an int up to 2147483647 is s32, above it u32.
+  `describe_value` never makes a value up: a port, an unreadable value or an unknown type gets
+  an empty `HalValue`.
+- **`has_writer`** is `hal.pin_has_writer(name)`, asked pin by pin (`_read_pin_writers`).
+  Each answer walks HAL's pin list, so a full status costs O(N^2) in the number of pins.
+  `StreamStatus` therefore refreshes the answers only every `PIN_WRITERS_REFRESH_SECONDS`
+  (2 s); `QueryPins` asks only for the matching pins. Do not go back to
+  `direction == HAL_OUT`, which is what 1.0 reported.
+- `HalPinInfo.signal` is always empty and `HalSignalInfo.readers` is always empty: the pin
+  dicts carry no signal name.
+- **Components are inferred** from pin and parameter names (the part before the last dot);
+  the `hal` module has no component list. Only `name`, `pins` and `params` are known. `ready`,
+  `type` and `pid` stay at the proto defaults and `id` is 0. Do not fill them with guesses
+  (1.0 reported `ready = true`, `type = 1` for every component).
+- **System flags** (`is_sim`, `is_rt`, `is_userspace`, `kernel_version`) are read once from
+  the module (`read_hal_system_info`); `message_level` is `hal.get_msg_level()` read on every
+  status, mapped through `MESSAGE_LEVELS`. A missing attribute leaves the proto default.
+- A pin or parameter direction HAL does not report maps to `UNSPECIFIED`, not to a default.
+- `map_each` leaves out (and logs) an item that cannot be mapped, so one odd item does not
+  fail a whole listing. The loops that run before it are isolated per item the same way,
+  because the constructor runs them for every listing: `_derive_components` (a pin or param
+  whose name is not a string, e.g. `NAME: None`), `_build_signal_pin_map` and
+  `declared_types` (a name that cannot be a dict key). The service's own per-item steps
+  follow the same rule: the filtered `QueryPins`/`QuerySignals`/`QueryParams` match names in
+  `_items_with_name_matching`, which leaves out and logs an item `fnmatch` cannot take (a
+  name that is not a string, an item that is not a dict), and `_read_pin_writers` reads the
+  name inside a `try`, so such a pin is skipped and logged (a pin HAL can no longer answer
+  for is skipped without a log line, as before). `QueryComponents` filters the mapper's
+  derived components through the same helper: a pin named by a tuple becomes a component
+  whose name is that tuple.
+- **`WatchValues`**: names are de-duplicated; more than `MAX_WATCHED_NAMES` (1000) is
+  `INVALID_ARGUMENT`, as is a name that cannot be read at the start. A poll in which any name
+  cannot be read counts as failed; after `MAX_CONSECUTIVE_POLL_ERRORS` (5) failed polls in a
+  row the stream ends with `INTERNAL` naming the first item that failed in the last poll.
+  `values_differ` treats two NaNs as equal (NaN != NaN would report a change on every poll).
+  `StreamStatus` uses the same count of five.
+- **`context.abort` is called once, outside the `try`**, in both streams (`abort_details` is
+  set in the loop, the loop breaks, and the abort follows the `finally`). `abort` raises; an
+  `except Exception` around it catches that and replaces the status with another one.
+- **`SendCommand` answers only** `component_exists`, `component_ready` and `pin_has_writer`.
+  `get_value` and the `query_*` commands return `success = false` naming their RPC
+  (`DEDICATED_RPC_FOR_COMMAND`): the response has no field for a result, and 1.0 answered
+  them `success = true` with nothing. Everything else is refused as a modification.
+- `tests/mock_server.py` keeps fixed HAL values that a real server would not report (the
+  comment at the top of its mock data lists them), because the client tests in four languages
+  compare against `tests/fixtures/hal_status.json`.
+- The mock's `WatchValues` mirrors the real one: no names, more than 1000 distinct names, or a
+  name that is not one of its fixture pins, signals or params is `INVALID_ARGUMENT` (in that
+  order), there is no initial batch, and a batch is sent only on a change. The mock's values
+  never change, so an accepted stream sends nothing until the client goes away; tests see
+  "accepted" as a client deadline passing (`DEADLINE_EXCEEDED`), not as a first batch. The
+  mock knows 8 names, so "exactly 1000 names accepted" cannot be tested against it.
+- In Node/TypeScript `s64_value`/`u64_value` are JavaScript numbers: exact up to 2^53, the
+  nearest number beyond, never scaled (1.0 divided them by 1e6). See "Generating Protos".
 
 **Tests and servicer threads**: every `LinuxCNCServiceServicer` whose error-channel mode is
 not `off` starts the `linuxcnc-error-reader` thread in its constructor. Tests must stop it
@@ -679,6 +840,31 @@ cargo install protoc-gen-prost protoc-gen-tonic
 cd packages/node && npm install
 # or globally: npm install -g ts-proto
 ```
+
+**Node.js 64-bit integers (post-processing in `generate-protos.sh`)**: ts-proto's
+`longToNumber` throws beyond +-2^53, and every int64/uint64 field is a `number` in the
+published TypeScript types. The script's last Node step (an inline Python program) rewrites
+the generated files:
+- **Timestamps are scaled to milliseconds, values are not.** Fields named `timestamp` or
+  ending in `Timestamp` (`timestamp`, `modifiedTimestamp`) decode through `timestampToNumber`,
+  which divides a value beyond the safe range by 1e6 and passes a smaller one through. That
+  is exactly what 1.0 did and clients rely on it (`new Date(status.timestamp)`). Every other
+  64-bit field (`HalValue.s64Value`/`u64Value`, `ErrorMessage.sequence`, `sizeBytes`,
+  `offset`, `totalSizeBytes`) decodes through `longToNumber`, now a plain `Number(...)`: the
+  nearest number, never scaled. 1.0 scaled those too, which made a large HAL value wrong by a
+  factor of a million.
+- A new int64 time field must be named `timestamp` or `*_timestamp`, or the pattern
+  (`TIMESTAMP_FIELD_DECODE`) extended; otherwise it arrives in nanoseconds, inexact.
+- Only decoding is patched. Encoding, `fromJSON` and `toJSON` never scaled anything. Encoding
+  a number above the int64/uint64 maximum throws (a decoded value near the maximum rounds up
+  to 2^63 or 2^64); the HAL service is read-only, so no client has to send one.
+- **Do not change the TypeScript type of these fields before 2.0.** Exact 64-bit values need
+  `bigint` or `string` (ts-proto's `forceLong`), which changes the type of every int64
+  field and breaks every TypeScript user.
+- The step is a no-op on an already patched file (it also runs without `--node`) and exits
+  with an error on a file it does not recognise.
+- `packages/node/src/__tests__/int64.test.ts` pins the decoding: values unscaled, timestamps
+  in milliseconds.
 
 ## Generated Code Locations
 

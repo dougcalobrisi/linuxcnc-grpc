@@ -923,7 +923,7 @@ export interface AxisStatus {
 export interface SpindleStatus {
   spindleNumber: number;
   brake: boolean;
-  /** 0=stopped, 1=forward, 2=reverse */
+  /** LinuxCNC's value: -1=reverse, 0=stopped, 1=forward */
   direction: number;
   enabled: boolean;
   overrideEnabled: boolean;
@@ -954,16 +954,29 @@ export interface ToolEntry {
   backAngle: number;
   orientation: number;
   comment: string;
+  /**
+   * Index of this entry in the tool table as LinuxCNC's status lists it.
+   * tool_table leaves out entries without a tool, so an entry's position in
+   * that list is not this index. Unset when the server is older than 1.1.
+   * An entry's id can be -1 for an empty slot (index 0 is the spindle, and
+   * holds -1 when no tool is loaded): ignore entries whose id is not positive.
+   */
+  tableIndex?: number | undefined;
 }
 
 /** Tool status */
 export interface ToolStatus {
-  /** Pocket index prepped for change (-1 if none) */
+  /**
+   * Index, in LinuxCNC's own tool table, of the entry prepared for the next
+   * tool change (-1 if none). It is not an index into tool_table below: find
+   * the entry whose table_index equals it.
+   */
   pocketPrepped: number;
   /** Tool number in spindle (0 if none) */
   toolInSpindle: number;
   /** Pocket of current tool (0 if none) */
   toolFromPocket: number;
+  /** Entries that hold a tool (tool number not 0); see ToolEntry.table_index */
   toolTable: ToolEntry[];
 }
 
@@ -997,11 +1010,14 @@ export interface GCodeStatus {
 
 /** Limit status for a joint (bitmask: 1=min_hard, 2=max_hard, 4=min_soft, 8=max_soft) */
 export interface LimitStatus {
-  /** One per joint */
+  /** One per joint the machine has, in joint order */
   limitFlags: number[];
-  /** Homed status per joint */
+  /** Homed status, one per joint the machine has */
   homed: boolean[];
-  /** Misc error codes */
+  /**
+   * LinuxCNC's misc error inputs. The length is that of LinuxCNC's own array,
+   * not one entry per joint. Empty on LinuxCNC 2.8, which does not report it.
+   */
   miscError: number[];
 }
 
@@ -1096,11 +1112,11 @@ export interface LinuxCNCStatus {
   position:
     | PositionStatus
     | undefined;
-  /** Up to 16 joints */
+  /** One per joint the machine has (trajectory.joints of them); 1.0 servers sent 16 */
   joints: JointStatus[];
   /** Up to 9 axes (XYZABCUVW) */
   axes: AxisStatus[];
-  /** Up to 8 spindles */
+  /** One per spindle the machine has (trajectory.spindles of them); 1.0 servers sent 8 */
   spindles: SpindleStatus[];
   tool: ToolStatus | undefined;
   io: IOStatus | undefined;
@@ -1470,7 +1486,10 @@ export interface WaitCompleteRequest {
 }
 
 export interface StreamStatusRequest {
-  /** Update interval in milliseconds (default: 100) */
+  /**
+   * Update interval in milliseconds (default: 100). Values above 60000 are
+   * treated as 60000.
+   */
   intervalMs: number;
 }
 
@@ -3861,6 +3880,7 @@ function createBaseToolEntry(): ToolEntry {
     backAngle: 0,
     orientation: 0,
     comment: "",
+    tableIndex: undefined,
   };
 }
 
@@ -3910,6 +3930,9 @@ export const ToolEntry: MessageFns<ToolEntry> = {
     }
     if (message.comment !== "") {
       writer.uint32(122).string(message.comment);
+    }
+    if (message.tableIndex !== undefined) {
+      writer.uint32(128).int32(message.tableIndex);
     }
     return writer;
   },
@@ -4041,6 +4064,14 @@ export const ToolEntry: MessageFns<ToolEntry> = {
           message.comment = reader.string();
           continue;
         }
+        case 16: {
+          if (tag !== 128) {
+            break;
+          }
+
+          message.tableIndex = reader.int32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4067,6 +4098,7 @@ export const ToolEntry: MessageFns<ToolEntry> = {
       backAngle: isSet(object.backAngle) ? globalThis.Number(object.backAngle) : 0,
       orientation: isSet(object.orientation) ? globalThis.Number(object.orientation) : 0,
       comment: isSet(object.comment) ? globalThis.String(object.comment) : "",
+      tableIndex: isSet(object.tableIndex) ? globalThis.Number(object.tableIndex) : undefined,
     };
   },
 
@@ -4117,6 +4149,9 @@ export const ToolEntry: MessageFns<ToolEntry> = {
     if (message.comment !== "") {
       obj.comment = message.comment;
     }
+    if (message.tableIndex !== undefined) {
+      obj.tableIndex = Math.round(message.tableIndex);
+    }
     return obj;
   },
 
@@ -4140,6 +4175,7 @@ export const ToolEntry: MessageFns<ToolEntry> = {
     message.backAngle = object.backAngle ?? 0;
     message.orientation = object.orientation ?? 0;
     message.comment = object.comment ?? "";
+    message.tableIndex = object.tableIndex ?? undefined;
     return message;
   },
 };
@@ -4847,7 +4883,7 @@ export const ErrorMessage: MessageFns<ErrorMessage> = {
             break;
           }
 
-          message.timestamp = longToNumber(reader.int64());
+          message.timestamp = timestampToNumber(reader.int64());
           continue;
         }
         case 4: {
@@ -4984,7 +5020,7 @@ export const LinuxCNCStatus: MessageFns<LinuxCNCStatus> = {
             break;
           }
 
-          message.timestamp = longToNumber(reader.int64());
+          message.timestamp = timestampToNumber(reader.int64());
           continue;
         }
         case 2: {
@@ -7522,7 +7558,7 @@ export const LinuxCNCCommand: MessageFns<LinuxCNCCommand> = {
             break;
           }
 
-          message.timestamp = longToNumber(reader.int64());
+          message.timestamp = timestampToNumber(reader.int64());
           continue;
         }
         case 2: {
@@ -8638,7 +8674,7 @@ export const FileInfo: MessageFns<FileInfo> = {
             break;
           }
 
-          message.modifiedTimestamp = longToNumber(reader.int64());
+          message.modifiedTimestamp = timestampToNumber(reader.int64());
           continue;
         }
         case 5: {
@@ -9065,7 +9101,7 @@ export const ReadFileResponse: MessageFns<ReadFileResponse> = {
             break;
           }
 
-          message.modifiedTimestamp = longToNumber(reader.int64());
+          message.modifiedTimestamp = timestampToNumber(reader.int64());
           continue;
         }
       }
@@ -10648,7 +10684,21 @@ type KeysOfUnion<T> = T extends T ? keyof T : never;
 type Exact<P, I extends P> = P extends Builtin ? P
   : P & { [K in keyof P]: Exact<P[K], I[K]> } & { [K in Exclude<keyof I, KeysOfUnion<P>>]: never };
 
+/**
+ * A 64-bit integer that is a value, not a timestamp. Beyond 2^53 the result
+ * is the nearest number, so the low digits are lost; it is never scaled.
+ * (Patched in by scripts/generate-protos.sh.)
+ */
 function longToNumber(int64: { toString(): string }): number {
+  return globalThis.Number(int64.toString());
+}
+
+/**
+ * A timestamp. The server sends nanoseconds, which do not fit a number, so a
+ * value beyond the safe integer range is scaled to milliseconds.
+ * (Patched in by scripts/generate-protos.sh.)
+ */
+function timestampToNumber(int64: { toString(): string }): number {
   const num = globalThis.Number(int64.toString());
   if (num > globalThis.Number.MAX_SAFE_INTEGER) {
     return Math.floor(num / 1e6);

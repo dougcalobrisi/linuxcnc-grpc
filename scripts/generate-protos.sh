@@ -195,17 +195,112 @@ if [ "$GENERATE_NODE" = true ]; then
     echo "Generated Node.js/TypeScript code in $NODE_OUT_DIR"
 fi
 
-# --- Post-process Node.js: fix longToNumber for int64 nanosecond timestamps ---
+# --- Post-process Node.js: how 64-bit integers become JavaScript numbers ---
+#
+# The TypeScript type of every int64/uint64 field is `number`, and that must
+# not change in 1.x (bigint or string would break every TypeScript user).
+# ts-proto decodes all of them with one helper, longToNumber, which throws
+# for anything outside the safe integer range (beyond +-2^53). Two kinds of
+# field go through it and they need different handling:
+#
+#   - Timestamps are sent in nanoseconds, which are always beyond 2^53. They
+#     are scaled to milliseconds, which fit a number and suit `new Date()`.
+#     1.0 clients rely on that, so it stays exactly as it was: a value beyond
+#     the safe range is divided by 1e6, a smaller one is passed through.
+#   - Everything else (HAL s64/u64 values, sizes, offsets, sequences) is a
+#     value and must not be scaled. It is decoded to the nearest number, so
+#     beyond 2^53 it loses its low digits, as any JavaScript number does.
+#     1.0 scaled these too, which made a large HAL value wrong by a factor
+#     of a million.
+#
+# So the step below gives timestamp fields their own helper and makes
+# longToNumber a plain conversion. A timestamp field is an int64 field whose
+# name is `timestamp` or ends in `_timestamp` (`timestamp`, `...Timestamp` in
+# the generated code). Name a new time field that way, or extend the pattern.
+#
+# The step does nothing to a file that is already patched (it also runs when
+# --node was not given) and fails on a file it does not recognise, so a new
+# ts-proto that generates different code cannot slip through unpatched.
 echo ""
 echo "=== Post-processing Node.js generated code ==="
 for TS_FILE in "$NODE_OUT_DIR/linuxcnc.ts" "$NODE_OUT_DIR/hal.ts"; do
     if [ -f "$TS_FILE" ]; then
-        sed -i.bak \
-            -e 's/throw new globalThis.Error("Value is larger than Number.MAX_SAFE_INTEGER");/return Math.floor(num \/ 1e6);/' \
-            -e 's/throw new globalThis.Error("Value is smaller than Number.MIN_SAFE_INTEGER");/return Math.ceil(num \/ 1e6);/' \
-            "$TS_FILE"
-        rm -f "${TS_FILE}.bak"
-        echo "Patched longToNumber in $(basename "$TS_FILE")"
+        python3 - "$TS_FILE" << 'PATCH_NODE_INT64'
+import re
+import sys
+from pathlib import Path
+
+generated_file = Path(sys.argv[1])
+source = generated_file.read_text(encoding="utf-8")
+
+HELPER_AS_GENERATED = """\
+function longToNumber(int64: { toString(): string }): number {
+  const num = globalThis.Number(int64.toString());
+  if (num > globalThis.Number.MAX_SAFE_INTEGER) {
+    throw new globalThis.Error("Value is larger than Number.MAX_SAFE_INTEGER");
+  }
+  if (num < globalThis.Number.MIN_SAFE_INTEGER) {
+    throw new globalThis.Error("Value is smaller than Number.MIN_SAFE_INTEGER");
+  }
+  return num;
+}
+"""
+
+HELPERS_AS_PATCHED = """\
+/**
+ * A 64-bit integer that is a value, not a timestamp. Beyond 2^53 the result
+ * is the nearest number, so the low digits are lost; it is never scaled.
+ * (Patched in by scripts/generate-protos.sh.)
+ */
+function longToNumber(int64: { toString(): string }): number {
+  return globalThis.Number(int64.toString());
+}
+
+/**
+ * A timestamp. The server sends nanoseconds, which do not fit a number, so a
+ * value beyond the safe integer range is scaled to milliseconds.
+ * (Patched in by scripts/generate-protos.sh.)
+ */
+function timestampToNumber(int64: { toString(): string }): number {
+  const num = globalThis.Number(int64.toString());
+  if (num > globalThis.Number.MAX_SAFE_INTEGER) {
+    return Math.floor(num / 1e6);
+  }
+  if (num < globalThis.Number.MIN_SAFE_INTEGER) {
+    return Math.ceil(num / 1e6);
+  }
+  return num;
+}
+"""
+
+# message.timestamp = longToNumber(...), message.modifiedTimestamp = ...
+TIMESTAMP_FIELD_DECODE = re.compile(
+    r"(message\.(?:timestamp|[A-Za-z0-9]+Timestamp) = )longToNumber\("
+)
+
+if HELPERS_AS_PATCHED in source:
+    patched = source
+elif source.count(HELPER_AS_GENERATED) == 1:
+    patched = source.replace(HELPER_AS_GENERATED, HELPERS_AS_PATCHED)
+    patched, timestamp_fields_patched = TIMESTAMP_FIELD_DECODE.subn(
+        r"\1timestampToNumber(", patched
+    )
+    if timestamp_fields_patched == 0:
+        sys.exit(f"{generated_file.name}: found no timestamp field to patch")
+else:
+    sys.exit(
+        f"{generated_file.name}: longToNumber is not as ts-proto is known to "
+        "generate it, nor already patched. Update the post-processing in "
+        "scripts/generate-protos.sh."
+    )
+
+if TIMESTAMP_FIELD_DECODE.search(patched):
+    sys.exit(f"{generated_file.name}: a timestamp field is still decoded unscaled")
+
+if patched != source:
+    generated_file.write_text(patched, encoding="utf-8")
+PATCH_NODE_INT64
+        echo "Patched 64-bit integer decoding in $(basename "$TS_FILE")"
     fi
 done
 

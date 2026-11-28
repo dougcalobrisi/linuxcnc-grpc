@@ -89,6 +89,13 @@ MAX_RESPONSE_SERIAL = 2**31 - 1
 STATUS_ERRORS_LIMIT = 20  # most recent error messages included in LinuxCNCStatus
 STREAM_ERRORS_WAIT_INTERVAL = 0.25  # seconds a StreamErrors call waits before rechecking the client
 
+# StreamStatus update interval
+DEFAULT_STREAM_STATUS_INTERVAL_MS = 100
+# Longer requested intervals are shortened to this. Each stream occupies a
+# server worker thread, and a stream that sends nothing for a very long time
+# is no use to its client either.
+MAX_STREAM_STATUS_INTERVAL_MS = 60_000
+
 # Default allowed NC file directory (override with LINUXCNC_NC_FILES env var)
 DEFAULT_NC_FILES_DIR = "/home/linuxcnc/linuxcnc/nc_files"
 
@@ -259,6 +266,10 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         self._error_channel = None
         self._waiting_thread: threading.Thread | None = None
         self._stop_requested = threading.Event()
+        # One event per StreamStatus call in progress, set to end the call's
+        # wait between updates. close() sets them all.
+        self._stream_wake_events: set[threading.Event] = set()
+        self._stream_wake_events_lock = threading.Lock()
 
         # Dispatch bookkeeping for WaitComplete (guarded by self._lock):
         # what LinuxCNC knows the most recent command this server dispatched
@@ -604,6 +615,19 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         mapper = LinuxCNCMapper(self._stat, version=self._version)
         return mapper.map_to_proto(errors=self._recent_errors())
 
+    @staticmethod
+    def _unexpected_failure_details(rpc_name: str, unexpected_error: Exception) -> str:
+        """
+        Log an exception no RPC expects from LinuxCNC and word it for the client.
+
+        A status poll can fail with something other than linuxcnc.error (some
+        builds return NULL without setting an exception, which Python raises
+        as SystemError). Left alone it would reach the client as UNKNOWN.
+        Call from inside the except block, so the traceback is logged.
+        """
+        logger.exception(f"Unexpected error in {rpc_name}")
+        return f"{rpc_name} failed: {type(unexpected_error).__name__}: {unexpected_error}"
+
     def close(self) -> None:
         """
         Stop the servicer's background threads. Call when the server shuts down.
@@ -619,6 +643,13 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         # A connect checks this flag and publishes its channels in one lock
         # hold, so from here on no new connect starts.
         self._stop_requested.set()
+        # Streams register their event before checking the stop flag, so one
+        # that missed the flag is in this set. Woken before the wait for the
+        # servicer lock, so they end even if that lock is never released.
+        with self._stream_wake_events_lock:
+            stream_wake_events = list(self._stream_wake_events)
+        for stream_wake_event in stream_wake_events:
+            stream_wake_event.set()
         # Passing through the lock waits out a connect that checked the flag
         # just before. The wait is bounded: an RPC can hold the lock for
         # seconds (a command LinuxCNC is not answering), and shutdown must
@@ -980,13 +1011,28 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 return self._poll_and_map_status()
         except linuxcnc.error as e:
             logger.error(f"LinuxCNC error in GetStatus: {e}")
+            retry_failure_details = None
             if self._reconnect(connection_polled):
                 try:
                     with self._lock:
                         return self._poll_and_map_status()
-                except Exception as retry_error:
+                except linuxcnc.error as retry_error:
                     logger.error(f"GetStatus failed after reconnect: {retry_error}")
-            context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
+                except Exception as retry_error:
+                    # Recorded here and aborted below: the abort raises, and
+                    # this clause would catch it.
+                    retry_failure_details = self._unexpected_failure_details(
+                        "GetStatus", retry_error
+                    )
+            if retry_failure_details is not None:
+                context.abort(grpc.StatusCode.INTERNAL, retry_failure_details)
+            else:
+                context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
+        except Exception as e:
+            # Nothing in the try block aborts, so this cannot catch an abort.
+            context.abort(
+                grpc.StatusCode.INTERNAL, self._unexpected_failure_details("GetStatus", e)
+            )
 
     # =========================================================================
     # SendCommand RPC
@@ -1608,6 +1654,13 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 status=linuxcnc_pb2.RCS_ERROR,
                 error_message=str(e)
             )
+        except Exception as e:
+            # Nothing in the try block aborts, so this cannot catch an abort.
+            return linuxcnc_pb2.CommandResponse(
+                serial=request.serial,
+                status=linuxcnc_pb2.RCS_ERROR,
+                error_message=self._unexpected_failure_details("WaitComplete", e)
+            )
 
     # =========================================================================
     # StreamStatus RPC
@@ -1623,37 +1676,77 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
 
         Polls LinuxCNC at the requested interval and streams status updates.
         Attempts to reconnect if the connection is lost.
+
+        request.interval_ms of 0 or less means the default (100 ms). An
+        interval above MAX_STREAM_STATUS_INTERVAL_MS (60 s) is shortened to
+        that maximum rather than refused. The wait between updates ends at
+        once when the client cancels or disconnects and when the server
+        shuts down.
         """
-        interval_ms = request.interval_ms if request.interval_ms > 0 else 100
+        interval_ms = (
+            request.interval_ms if request.interval_ms > 0
+            else DEFAULT_STREAM_STATUS_INTERVAL_MS
+        )
+        interval_ms = min(interval_ms, MAX_STREAM_STATUS_INTERVAL_MS)
         interval_sec = interval_ms / 1000.0
         if self._abort_if_disconnected(context):
             return
 
+        # Set when the RPC ends for any reason (client cancelled or went
+        # away, server stopping it) and by close(), so the wait between
+        # updates never holds a worker thread for a client that has gone.
+        stream_wake_event = threading.Event()
+        if not context.add_callback(stream_wake_event.set):
+            return  # the RPC is already over; the callback would never run
+        with self._stream_wake_events_lock:
+            self._stream_wake_events.add(stream_wake_event)
         logger.info(f"StreamStatus started - interval={interval_ms}ms")
+        unexpected_failure_details = None
 
         try:
+            # Checked after registering: close() sets the flag first and the
+            # registered events second, so one of the two is seen here.
+            if self._stop_requested.is_set():
+                return
             while context.is_active():
                 if self._abort_if_disconnected(context):
                     return
                 connection_polled = None
+                status = None
                 try:
                     with self._lock:
                         connection_polled = self._connection_snapshot()
                         status = self._poll_and_map_status()
-                    yield status
                 except linuxcnc.error as e:
                     logger.error(f"LinuxCNC error in StreamStatus: {e}")
                     if not self._reconnect(connection_polled):
                         context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
                         return
-                time.sleep(interval_sec)
+                except OSError:
+                    raise  # reported by the outer handler, as before
+                except Exception as e:
+                    unexpected_failure_details = self._unexpected_failure_details(
+                        "StreamStatus", e
+                    )
+                    break
+                if status is not None:
+                    yield status
+                if stream_wake_event.wait(interval_sec):
+                    return
         except grpc.RpcError:
             pass  # Client disconnected; normal shutdown
         except OSError as e:
             logger.error(f"StreamStatus error: {e}")
             context.abort(grpc.StatusCode.INTERNAL, f"Stream failed: {e}")
         finally:
+            with self._stream_wake_events_lock:
+                self._stream_wake_events.discard(stream_wake_event)
             logger.info("StreamStatus ended")
+
+        # Outside the try: abort raises, and nothing may catch that and
+        # replace the status with another one.
+        if unexpected_failure_details is not None:
+            context.abort(grpc.StatusCode.INTERNAL, unexpected_failure_details)
 
     # =========================================================================
     # UploadFile RPC
@@ -1994,6 +2087,15 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
                 logger.error(f"LinuxCNC error in ResolveFile: {e}")
                 context.abort(grpc.StatusCode.UNAVAILABLE, f"LinuxCNC unavailable: {e}")
                 return
+            except OSError:
+                raise  # reported by the outer handler, as before
+            except Exception as e:
+                # Only the poll is inside this try block, so this cannot
+                # catch an abort. The clauses of the outer one do not either.
+                context.abort(
+                    grpc.StatusCode.INTERNAL, self._unexpected_failure_details("ResolveFile", e)
+                )
+                return
 
             loaded_program = ""
             is_loaded_program = False
@@ -2062,7 +2164,8 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         try:
             with self._lock:
                 self._stat.poll()
-                ini_filename = self._stat.ini_filename
+                # LinuxCNC 2.8's status has no ini_filename.
+                ini_filename = getattr(self._stat, "ini_filename", "")
                 try:
                     ini_file = linuxcnc.ini(ini_filename)
                     ini_lookup = ini_file.find
@@ -2086,6 +2189,12 @@ class LinuxCNCServiceServicer(linuxcnc_pb2_grpc.LinuxCNCServiceServicer):
         except OSError as e:
             context.abort(
                 grpc.StatusCode.INTERNAL, f"Failed to resolve the NC files directory: {e}"
+            )
+        except Exception as e:
+            # Nothing in the try block aborts, so this cannot catch an abort.
+            context.abort(
+                grpc.StatusCode.INTERNAL,
+                self._unexpected_failure_details("GetMachineConfig", e),
             )
 
     # =========================================================================

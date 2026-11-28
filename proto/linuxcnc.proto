@@ -272,7 +272,7 @@ message AxisStatus {
 message SpindleStatus {
   int32 spindle_number = 1;
   bool brake = 2;
-  int32 direction = 3;             // 0=stopped, 1=forward, 2=reverse
+  int32 direction = 3;             // LinuxCNC's value: -1=reverse, 0=stopped, 1=forward
   bool enabled = 4;
   bool override_enabled = 5;
   double speed = 6;                // Commanded speed (RPM)
@@ -299,14 +299,23 @@ message ToolEntry {
   double back_angle = 13;
   int32 orientation = 14;
   string comment = 15;
+  // Index of this entry in the tool table as LinuxCNC's status lists it.
+  // tool_table leaves out entries without a tool, so an entry's position in
+  // that list is not this index. Unset when the server is older than 1.1.
+  // An entry's id can be -1 for an empty slot (index 0 is the spindle, and
+  // holds -1 when no tool is loaded): ignore entries whose id is not positive.
+  optional int32 table_index = 16;
 }
 
 // Tool status
 message ToolStatus {
-  int32 pocket_prepped = 1;        // Pocket index prepped for change (-1 if none)
+  // Index, in LinuxCNC's own tool table, of the entry prepared for the next
+  // tool change (-1 if none). It is not an index into tool_table below: find
+  // the entry whose table_index equals it.
+  int32 pocket_prepped = 1;
   int32 tool_in_spindle = 2;       // Tool number in spindle (0 if none)
   int32 tool_from_pocket = 3;      // Pocket of current tool (0 if none)
-  repeated ToolEntry tool_table = 4;
+  repeated ToolEntry tool_table = 4; // Entries that hold a tool (tool number not 0); see ToolEntry.table_index
 }
 
 // I/O status
@@ -333,9 +342,11 @@ message GCodeStatus {
 
 // Limit status for a joint (bitmask: 1=min_hard, 2=max_hard, 4=min_soft, 8=max_soft)
 message LimitStatus {
-  repeated int32 limit_flags = 1;       // One per joint
-  repeated bool homed = 2;              // Homed status per joint
-  repeated int32 misc_error = 3;        // Misc error codes
+  repeated int32 limit_flags = 1;       // One per joint the machine has, in joint order
+  repeated bool homed = 2;              // Homed status, one per joint the machine has
+  // LinuxCNC's misc error inputs. The length is that of LinuxCNC's own array,
+  // not one entry per joint. Empty on LinuxCNC 2.8, which does not report it.
+  repeated int32 misc_error = 3;
 }
 
 // Error/message from error channel
@@ -373,9 +384,9 @@ message LinuxCNCStatus {
   TaskStatus task = 10;
   TrajectoryStatus trajectory = 11;
   PositionStatus position = 12;
-  repeated JointStatus joints = 13;     // Up to 16 joints
+  repeated JointStatus joints = 13;     // One per joint the machine has (trajectory.joints of them); 1.0 servers sent 16
   repeated AxisStatus axes = 14;        // Up to 9 axes (XYZABCUVW)
-  repeated SpindleStatus spindles = 15; // Up to 8 spindles
+  repeated SpindleStatus spindles = 15; // One per spindle the machine has (trajectory.spindles of them); 1.0 servers sent 8
   ToolStatus tool = 16;
   IOStatus io = 17;
   GCodeStatus gcode = 18;
@@ -722,7 +733,9 @@ message WaitCompleteRequest {
 }
 
 message StreamStatusRequest {
-  int32 interval_ms = 1;                // Update interval in milliseconds (default: 100)
+  // Update interval in milliseconds (default: 100). Values above 60000 are
+  // treated as 60000.
+  int32 interval_ms = 1;
 }
 
 message StreamErrorsRequest {
